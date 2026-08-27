@@ -1,9 +1,10 @@
 <template>
   <div>
-    <h2>Gestión de Licencias</h2>
+    <h2 class="text-2xl font-bold mb-6">Gestión de Licencias</h2>
     
     <div class="card">
       <div class="card-body">
+        <!-- Filtros -->
         <div class="row mb-3">
           <div class="col-md-4">
             <input type="text" v-model="search" class="form-control" placeholder="Buscar usuario..." @input="cargarUsuarios" />
@@ -31,37 +32,126 @@
           </div>
         </div>
 
-        <div class="table-responsive">
-          <table class="table table-bordered table-hover">
-            <thead class="table-light">
+        <!-- =========================================
+             TABLA DESKTOP / TABLET
+        ========================================== -->
+        <div class="hidden md:block overflow-x-auto rounded-lg border border-gray-200">
+          <table class="min-w-[900px] w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
               <tr>
-                <th>Usuario</th>
-                <th>Email</th>
-                <th>Tipo</th>
-                <th>Fecha Inicio</th>
-                <th>Fecha Fin</th>
-                <th>Estado</th>
-                <th>Acciones</th>
+                <th class="px-4 lg:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                  Usuario
+                </th>
+                <th class="px-4 lg:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                  Email
+                </th>
+                <th class="px-4 lg:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                  Tipo
+                </th>
+                <th class="px-4 lg:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                  Fecha Inicio
+                </th>
+                <th class="px-4 lg:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                  Fecha Fin
+                </th>
+                <th class="px-4 lg:px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                  Estado
+                </th>
+                <th class="px-4 lg:px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                  Acciones
+                </th>
               </tr>
             </thead>
-            <tbody>
-              <tr v-for="user in filteredUsers" :key="user.id">
-                <td>{{ user.name }}</td>
-                <td>{{ user.email }}</td>
-                <td><span class="badge bg-primary">{{ user.licencia_tipo || 'Sin licencia' }}</span></td>
-                <td>{{ user.licencia_fecha_inicio || '-' }}</td>
-                <td>{{ user.licencia_fecha_fin || '-' }}</td>
-                <td>
-                  <span class="badge" :class="licenciaActiva(user) ? 'bg-success' : 'bg-danger'">
+            <tbody class="bg-white divide-y divide-gray-200">
+              <tr v-if="filteredUsers.length === 0">
+                <td colspan="7" class="px-6 py-8 text-center text-sm text-gray-500">
+                  No hay usuarios registrados
+                </td>
+              </tr>
+              <tr v-for="user in filteredUsers" :key="user.id" class="hover:bg-gray-50 transition-colors">
+                <td class="px-4 lg:px-6 py-4 text-sm font-medium whitespace-nowrap">
+                  {{ user.name }}
+                </td>
+                <td class="px-4 lg:px-6 py-4 text-sm whitespace-nowrap">
+                  {{ user.email }}
+                </td>
+                <td class="px-4 lg:px-6 py-4 text-sm whitespace-nowrap">
+                  <span class="inline-flex px-2 py-1 text-xs rounded-full bg-primary text-white">
+                    {{ user.licencia_tipo || 'Sin licencia' }}
+                  </span>
+                </td>
+                <td class="px-4 lg:px-6 py-4 text-sm whitespace-nowrap">
+                  {{ user.licencia_fecha_inicio ? formatDate(user.licencia_fecha_inicio) : '-' }}
+                </td>
+                <td class="px-4 lg:px-6 py-4 text-sm whitespace-nowrap">
+                  {{ user.licencia_fecha_fin ? formatDate(user.licencia_fecha_fin) : '-' }}
+                </td>
+                <td class="px-4 lg:px-6 py-4 text-sm text-center whitespace-nowrap">
+                  <span class="inline-flex px-2 py-1 text-xs rounded-full" 
+                        :class="licenciaActiva(user) ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'">
                     {{ licenciaActiva(user) ? 'Activa' : 'Vencida' }}
                   </span>
                 </td>
-                <td>
-                  <button class="btn btn-sm btn-primary" @click="editarLicencia(user)">✏️ Editar</button>
+                <td class="px-4 lg:px-6 py-4 text-sm text-center whitespace-nowrap">
+                  <button class="btn btn-sm btn-primary" @click="editarLicencia(user)">
+                    ✏️ Editar
+                  </button>
                 </td>
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- =========================================
+             VISTA MÓVIL (CARDS)
+        ========================================== -->
+        <div class="md:hidden space-y-3">
+          <div v-if="filteredUsers.length === 0" class="bg-white border border-gray-200 rounded-lg p-6 text-center text-sm text-gray-500">
+            No hay usuarios registrados
+          </div>
+
+          <div v-for="user in filteredUsers" :key="user.id" class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+            <!-- Encabezado -->
+            <div class="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-200">
+              <div class="min-w-0">
+                <p class="text-sm font-semibold text-gray-900 truncate">{{ user.name }}</p>
+                <p class="text-xs text-gray-500 truncate">{{ user.email }}</p>
+              </div>
+              <span class="inline-flex px-2 py-1 text-xs rounded-full" 
+                    :class="licenciaActiva(user) ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'">
+                {{ licenciaActiva(user) ? 'Activa' : 'Vencida' }}
+              </span>
+            </div>
+
+            <!-- Información -->
+            <div class="px-4 py-3 space-y-3">
+              <div>
+                <p class="text-xs font-medium text-gray-500">Tipo de Licencia</p>
+                <p class="text-sm text-gray-900">
+                  <span class="inline-flex px-2 py-1 text-xs rounded-full bg-primary text-white">
+                    {{ user.licencia_tipo || 'Sin licencia' }}
+                  </span>
+                </p>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <p class="text-xs font-medium text-gray-500">Fecha Inicio</p>
+                  <p class="text-sm text-gray-900">{{ user.licencia_fecha_inicio ? formatDate(user.licencia_fecha_inicio) : '-' }}</p>
+                </div>
+                <div>
+                  <p class="text-xs font-medium text-gray-500">Fecha Fin</p>
+                  <p class="text-sm text-gray-900">{{ user.licencia_fecha_fin ? formatDate(user.licencia_fecha_fin) : '-' }}</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Acciones -->
+            <div class="flex border-t border-gray-200">
+              <button @click="editarLicencia(user)" class="flex-1 py-3 text-sm font-medium text-primary hover:bg-blue-50 transition-colors">
+                ✏️ Editar Licencia
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -109,6 +199,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue';
 import axios from 'axios';
+import Swal from 'sweetalert2';
 
 const users = ref([]);
 const mostrarModal = ref(false);
@@ -117,12 +208,26 @@ const search = ref('');
 const filtroTipo = ref('');
 const filtroEstado = ref('');
 
-const form = ref({ licencia_tipo: 'mes', licencia_fecha_inicio: null, licencia_fecha_fin: null });
+const form = ref({
+  licencia_tipo: 'mes',
+  licencia_fecha_inicio: null,
+  licencia_fecha_fin: null
+});
 
 function licenciaActiva(user) {
   if (user.licencia_tipo === 'permanente') return true;
   if (!user.licencia_fecha_fin) return false;
   return new Date(user.licencia_fecha_fin) > new Date();
+}
+
+function formatDate(date) {
+  if (!date) return '-';
+  const d = new Date(date);
+  return d.toLocaleDateString('es-MX', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
 }
 
 const filteredUsers = computed(() => {
@@ -151,15 +256,24 @@ async function cargarUsuarios() {
     const res = await axios.get('/api/v1/admin/usuarios', {
       headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
     });
-    users.value = res.data.data;
+    users.value = res.data.data || [];
   } catch (error) {
     console.error('Error al cargar usuarios:', error);
+    await Swal.fire({
+      icon: 'error',
+      title: 'Error',
+      text: 'Error al cargar usuarios'
+    });
   }
 }
 
 function editarLicencia(user) {
   usuarioEditando.value = user;
-  form.value = { ...user };
+  form.value = {
+    licencia_tipo: user.licencia_tipo || 'mes',
+    licencia_fecha_inicio: user.licencia_fecha_inicio || null,
+    licencia_fecha_fin: user.licencia_fecha_fin || null
+  };
   mostrarModal.value = true;
 }
 
@@ -170,18 +284,31 @@ function cerrarModal() {
 
 async function guardarLicencia() {
   try {
-    await axios.put(`/api/v1/admin/usuarios/${usuarioEditando.value.id}`, {
+    const response = await axios.put(`/api/v1/admin/usuarios/${usuarioEditando.value.id}`, {
       licencia_tipo: form.value.licencia_tipo,
       licencia_fecha_inicio: form.value.licencia_fecha_inicio,
       licencia_fecha_fin: form.value.licencia_fecha_fin,
     }, {
       headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
     });
+
     cerrarModal();
-    cargarUsuarios();
+    await cargarUsuarios();
+
+    await Swal.fire({
+      icon: 'success',
+      title: 'Licencia actualizada',
+      text: `Licencia de ${usuarioEditando.value.name} actualizada correctamente`,
+      timer: 2000,
+      showConfirmButton: false
+    });
   } catch (error) {
-    alert('Error al guardar licencia');
-    console.error(error);
+    console.error('Error al guardar licencia:', error);
+    await Swal.fire({
+      icon: 'error',
+      title: 'Error',
+      text: error.response?.data?.message || 'Error al guardar licencia'
+    });
   }
 }
 
@@ -203,6 +330,8 @@ onMounted(cargarUsuarios);
   border-radius: 12px;
   max-width: 500px;
   width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
 }
 .modal-header-custom {
   padding: 16px 20px;

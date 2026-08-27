@@ -8,12 +8,11 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
-use Illuminate\Database\Eloquent\SoftDeletes; // ← Importar
-
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class User extends Authenticatable
 {
-    use HasApiTokens, HasFactory, Notifiable,SoftDeletes;
+    use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
 
     /**
      * The attributes that are mass assignable.
@@ -128,23 +127,38 @@ class User extends Authenticatable
     }
 
     /**
-     * Generar un número de usuario único de 10 dígitos (inicia en 1000000001).
+     * Generar un número de usuario único basado en el ID + prefijo.
+     * Formato: 1000000001, 1000000002, etc.
+     * Usa el ID del usuario como base para garantizar unicidad.
      */
     public static function generarNumeroUsuario(): int
     {
-        $ultimo = User::orderBy('numero_usuario', 'desc')->value('numero_usuario');
-
-        // Si no existe, empezar desde 1000000001
-        // Si existe, incrementar en 1
-        $nuevo = $ultimo ? $ultimo + 1 : 1000000001;
-
-        // Opcional: asegurar que no pase de 10 dígitos (por si acaso)
-        if ($nuevo > 9999999999) {
-            throw new \Exception('No hay más números de usuario disponibles (límite de 10 dígitos)');
-        }
-
-        return $nuevo;
+        // Obtener el próximo ID disponible
+        $nextId = self::withTrashed()->max('id') + 1;
+        
+        // El número de usuario será el ID + 1000000000
+        // Así siempre será único y coincidirá con el ID
+        $numero = 1000000000 + $nextId;
+        
+        return $numero;
     }
+
+    /**
+     * Boot del modelo - Asigna el número de usuario automáticamente.
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function ($user) {
+            if (empty($user->numero_usuario)) {
+                // Calcular el próximo ID antes de guardar
+                $nextId = self::withTrashed()->max('id') + 1;
+                $user->numero_usuario = 1000000000 + $nextId;
+            }
+        });
+    }
+
     public function getNumeroUsuarioFormateadoAttribute(): string
     {
         return str_pad($this->numero_usuario, 10, '0', STR_PAD_LEFT);

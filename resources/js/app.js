@@ -8,6 +8,9 @@ import routes from './routes'; // ✅ routes.js exporta default
 
 import * as bootstrap from 'bootstrap';
 window.bootstrap = bootstrap;
+// SweetAlert2 (global)
+import Swal from 'sweetalert2';
+window.Swal = Swal;
 
 const router = createRouter({
     history: createWebHistory(),

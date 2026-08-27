@@ -12,7 +12,8 @@
       <div class="card-body">
         <div class="row g-3">
           <div class="col-md-4">
-            <input type="text" v-model="filtros.search" class="form-control" placeholder="Buscar por nombre, email, teléfono..." @input="buscar" />
+            <input type="text" v-model="filtros.search" class="form-control"
+              placeholder="Buscar por nombre, email, teléfono..." @input="buscar" />
           </div>
           <div class="col-md-3">
             <select v-model="filtros.tipo" class="form-control" @change="buscar">
@@ -32,68 +33,381 @@
       </div>
     </div>
 
-    <!-- Tabla -->
-    <div class="card">
+
+    <div class="card shadow-sm">
+
       <div class="card-body">
-        <div class="table-responsive">
-          <table class="table table-bordered table-hover">
-            <thead class="table-light">
-              <tr>
-                <th>ID</th>
-                <th>Nombre</th>
-                <th>Email</th>
-                <th>Teléfono</th>
-                <th>Tipo</th>
-                <th>RFC</th>
-                <th>Límite Crédito</th>
-                <th>Estado</th>
-                <th>Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="cliente in clientes" :key="cliente.id">
-                <td>{{ cliente.id }}</td>
-                <td><strong>{{ cliente.nombre }}</strong></td>
-                <td>{{ cliente.email || '-' }}</td>
-                <td>{{ cliente.telefono || '-' }}</td>
-                <td>
-                  <span class="badge" :class="cliente.tipo === 'empresa' ? 'bg-primary' : 'bg-info'">
-                    {{ cliente.tipo === 'empresa' ? 'Empresa' : 'Particular' }}
-                  </span>
-                </td>
-                <td>{{ cliente.rfc || '-' }}</td>
-                <td>${{ Number(cliente.limite_credito).toFixed(2) }}</td>
-                <td>
-                  <span class="badge" :class="cliente.activo ? 'bg-success' : 'bg-danger'">
-                    {{ cliente.activo ? 'Activo' : 'Inactivo' }}
-                  </span>
-                </td>
-                <td>
-                  <button class="btn btn-sm btn-info me-1" @click="verHistorial(cliente.id)" title="Historial de compras">📊</button>
-                  <button class="btn btn-sm btn-warning me-1" @click="editarCliente(cliente)">✏️</button>
-                  <button class="btn btn-sm btn-danger" @click="eliminarCliente(cliente.id)">🗑️</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+
+        
+        <!-- TABLA: desde md (768px) -->
+        <div class="d-none d-md-block">
+
+          <div class="table-responsive">
+            <table class="table table-bordered table-hover align-middle mb-0">
+
+              <thead class="table-light">
+                <tr>
+                  <th>ID</th>
+                  <th>Nombre</th>
+                  <th>Email</th>
+                  <th>Teléfono</th>
+                  <th>Tipo</th>
+                  <th>RFC</th>
+                  <th>Límite Crédito</th>
+                  <th>Estado</th>
+                  <th class="text-center">Acciones</th>
+                </tr>
+              </thead>
+
+              <tbody>
+
+                <!-- Cargando -->
+                <tr v-if="cargando">
+                  <td colspan="9" class="text-center py-4">
+                    <span class="spinner-border spinner-border-sm me-2"></span>
+                    Cargando...
+                  </td>
+                </tr>
+
+                <!-- Sin clientes -->
+                <tr v-else-if="clientes.length === 0">
+                  <td colspan="9" class="text-center py-4 text-muted">
+                    No hay clientes registrados
+                  </td>
+                </tr>
+
+                <!-- Clientes -->
+                <tr v-for="cliente in clientes" :key="cliente.id">
+
+                  <!-- ID -->
+                  <td class="text-nowrap">
+                    {{ cliente.id }}
+                  </td>
+
+                  <!-- Nombre -->
+                  <td>
+                    <strong>
+                      {{ cliente.nombre }}
+                    </strong>
+                  </td>
+
+                  <!-- Email -->
+                  <td class="text-break">
+                    {{ cliente.email || '-' }}
+                  </td>
+
+                  <!-- Teléfono -->
+                  <td class="text-nowrap">
+                    {{ cliente.telefono || '-' }}
+                  </td>
+
+                  <!-- Tipo -->
+                  <td class="text-nowrap">
+                    <span class="badge" :class="cliente.tipo === 'empresa'
+                        ? 'bg-primary'
+                        : 'bg-info'
+                      ">
+                      {{
+                        cliente.tipo === 'empresa'
+                          ? 'Empresa'
+                          : 'Particular'
+                      }}
+                    </span>
+                  </td>
+
+                  <!-- RFC -->
+                  <td class="text-nowrap">
+                    {{ cliente.rfc || '-' }}
+                  </td>
+
+                  <!-- Crédito -->
+                  <td class="text-nowrap">
+                    ${{ Number(cliente.limite_credito || 0).toFixed(2) }}
+                  </td>
+
+                  <!-- Estado -->
+                  <td class="text-nowrap">
+                    <span class="badge" :class="cliente.activo
+                        ? 'bg-success'
+                        : 'bg-danger'
+                      ">
+                      {{ cliente.activo ? 'Activo' : 'Inactivo' }}
+                    </span>
+                  </td>
+
+                  <!-- Acciones -->
+                  <td>
+                    <div class="d-flex justify-content-center gap-1">
+
+                      <button type="button" class="btn btn-sm btn-info" @click="verHistorial(cliente.id)"
+                        title="Historial de compras">
+                        📊
+                      </button>
+
+                      <button type="button" class="btn btn-sm btn-warning" @click="editarCliente(cliente)"
+                        title="Editar cliente">
+                        ✏️
+                      </button>
+
+                      <button type="button" class="btn btn-sm btn-danger" @click="eliminarCliente(cliente.id)"
+                        title="Eliminar cliente">
+                        🗑️
+                      </button>
+
+                    </div>
+                  </td>
+
+                </tr>
+
+              </tbody>
+
+            </table>
+          </div>
+
         </div>
 
-        <!-- Paginación -->
-        <nav v-if="pagination.last_page > 1">
-          <ul class="pagination">
-            <li class="page-item" :class="{ disabled: pagination.current_page === 1 }">
-              <a class="page-link" href="#" @click.prevent="cambiarPagina(pagination.current_page - 1)">Anterior</a>
+
+        <!-- ==========================================
+     CLIENTES - CARDS MÓVIL
+=========================================== -->
+        <div class="d-md-none">
+
+          <!-- Cargando -->
+          <div v-if="cargando" class="text-center py-5">
+            <span class="spinner-border spinner-border-sm me-2"></span>
+            Cargando...
+          </div>
+
+
+          <!-- Sin clientes -->
+          <div v-else-if="clientes.length === 0" class="text-center py-5 text-muted">
+            No hay clientes registrados
+          </div>
+
+
+          <!-- Cards -->
+          <div v-for="cliente in clientes" :key="cliente.id" class="card border shadow-sm mb-3">
+
+            <!-- HEADER -->
+            <div class="card-header bg-light">
+
+              <div class="d-flex justify-content-between align-items-start">
+
+                <div class="me-2" style="min-width: 0;">
+
+                  <div class="fw-bold text-dark text-break">
+                    {{ cliente.nombre }}
+                  </div>
+
+                  <small class="text-muted">
+                    ID: {{ cliente.id }}
+                  </small>
+
+                </div>
+
+
+                <!-- Estado -->
+                <span class="badge flex-shrink-0" :class="cliente.activo
+                    ? 'bg-success'
+                    : 'bg-danger'
+                  ">
+                  {{ cliente.activo ? 'Activo' : 'Inactivo' }}
+                </span>
+
+              </div>
+
+            </div>
+
+
+            <!-- INFORMACIÓN -->
+            <div class="card-body">
+
+              <!-- Email -->
+              <div class="mb-3">
+
+                <div class="small text-muted fw-semibold mb-1">
+                  Email
+                </div>
+
+                <div class="text-break">
+                  {{ cliente.email || '-' }}
+                </div>
+
+              </div>
+
+
+              <!-- Teléfono -->
+              <div class="mb-3">
+
+                <div class="small text-muted fw-semibold mb-1">
+                  Teléfono
+                </div>
+
+                <div>
+                  {{ cliente.telefono || '-' }}
+                </div>
+
+              </div>
+
+
+              <!-- Tipo -->
+              <div class="mb-3">
+
+                <div class="small text-muted fw-semibold mb-1">
+                  Tipo
+                </div>
+
+                <span class="badge" :class="cliente.tipo === 'empresa'
+                    ? 'bg-primary'
+                    : 'bg-info'
+                  ">
+                  {{
+                    cliente.tipo === 'empresa'
+                      ? 'Empresa'
+                      : 'Particular'
+                  }}
+                </span>
+
+              </div>
+
+
+              <!-- RFC -->
+              <div class="mb-3">
+
+                <div class="small text-muted fw-semibold mb-1">
+                  RFC
+                </div>
+
+                <div class="text-break">
+                  {{ cliente.rfc || '-' }}
+                </div>
+
+              </div>
+
+
+              <!-- Límite de crédito -->
+              <div>
+
+                <div class="small text-muted fw-semibold mb-1">
+                  Límite de Crédito
+                </div>
+
+                <div class="fw-bold">
+                  ${{ Number(cliente.limite_credito || 0).toFixed(2) }}
+                </div>
+
+              </div>
+
+            </div>
+
+
+            <!-- ACCIONES -->
+            <div class="card-footer bg-white">
+
+              <div class="row g-2">
+
+                <div class="col-4">
+                  <button type="button" class="btn btn-info btn-sm w-100" @click="verHistorial(cliente.id)"
+                    title="Historial de compras">
+                    📊
+                    <span class="d-none d-sm-inline">
+                      Historial
+                    </span>
+                  </button>
+                </div>
+
+
+                <div class="col-4">
+                  <button type="button" class="btn btn-warning btn-sm w-100" @click="editarCliente(cliente)"
+                    title="Editar cliente">
+                    ✏️
+                    <span class="d-none d-sm-inline">
+                      Editar
+                    </span>
+                  </button>
+                </div>
+
+
+                <div class="col-4">
+                  <button type="button" class="btn btn-danger btn-sm w-100" @click="eliminarCliente(cliente.id)"
+                    title="Eliminar cliente">
+                    🗑️
+                    <span class="d-none d-sm-inline">
+                      Eliminar
+                    </span>
+                  </button>
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <nav v-if="pagination.last_page > 1" class="mt-4" aria-label="Paginación de clientes">
+
+          <ul class="pagination flex-wrap mb-0">
+
+            <!-- Anterior -->
+            <li class="page-item" :class="{
+              disabled: pagination.current_page === 1
+            }">
+
+              <a class="page-link" href="#" @click.prevent="
+                pagination.current_page > 1 &&
+                cambiarPagina(
+                  pagination.current_page - 1
+                )
+                ">
+                Anterior
+              </a>
+
             </li>
-            <li class="page-item" v-for="page in pagination.last_page" :key="page" :class="{ active: page === pagination.current_page }">
-              <a class="page-link" href="#" @click.prevent="cambiarPagina(page)">{{ page }}</a>
+
+
+            <!-- Páginas -->
+            <li v-for="page in pagination.last_page" :key="page" class="page-item" :class="{
+              active:
+                page === pagination.current_page
+            }">
+
+              <a class="page-link" href="#" @click.prevent="cambiarPagina(page)">
+                {{ page }}
+              </a>
+
             </li>
-            <li class="page-item" :class="{ disabled: pagination.current_page === pagination.last_page }">
-              <a class="page-link" href="#" @click.prevent="cambiarPagina(pagination.current_page + 1)">Siguiente</a>
+
+
+            <!-- Siguiente -->
+            <li class="page-item" :class="{
+              disabled:
+                pagination.current_page ===
+                pagination.last_page
+            }">
+
+              <a class="page-link" href="#" @click.prevent="
+                pagination.current_page <
+                pagination.last_page &&
+                cambiarPagina(
+                  pagination.current_page + 1
+                )
+                ">
+                Siguiente
+              </a>
+
             </li>
+
           </ul>
+
         </nav>
+
       </div>
+
     </div>
+
 
     <!-- Modal para crear/editar cliente -->
     <div v-if="mostrarModal" class="modal-backdrop" @click.self="cerrarModal">
@@ -115,7 +429,7 @@
               </div>
               <div class="col-md-6">
                 <label class="form-label">Teléfono</label>
-                <input v-model="form.telefono" class="form-control" />
+                <input v-model="form.telefono" class="form-control" maxlength="10" placeholder="10 dígitos" />
               </div>
               <div class="col-md-12">
                 <label class="form-label">Dirección</label>
@@ -151,7 +465,9 @@
         </div>
         <div class="modal-footer-custom">
           <button class="btn btn-secondary" @click="cerrarModal">Cancelar</button>
-          <button class="btn" :style="{ backgroundColor: primaryColor, color: '#fff' }" @click="guardarCliente">
+          <button class="btn" :style="{ backgroundColor: primaryColor, color: '#fff' }" @click="guardarCliente"
+            :disabled="guardando">
+            <span v-if="guardando" class="spinner-border spinner-border-sm me-1"></span>
             {{ clienteEditando ? 'Actualizar' : 'Crear' }}
           </button>
         </div>
@@ -166,7 +482,10 @@
           <button class="btn-close" @click="cerrarHistorial"></button>
         </div>
         <div class="modal-body-custom">
-          <div v-if="historialVentas.length === 0" class="text-center py-4">
+          <div v-if="historialCargando" class="text-center py-4">
+            <span class="spinner-border spinner-border-sm me-2"></span> Cargando historial...
+          </div>
+          <div v-else-if="historialVentas.length === 0" class="text-center py-4">
             <p class="text-muted">Este cliente no tiene compras registradas.</p>
           </div>
           <div v-else>
@@ -199,13 +518,17 @@
             <nav v-if="historialPagination.last_page > 1">
               <ul class="pagination">
                 <li class="page-item" :class="{ disabled: historialPagination.current_page === 1 }">
-                  <a class="page-link" href="#" @click.prevent="cambiarPaginaHistorial(historialPagination.current_page - 1)">Anterior</a>
+                  <a class="page-link" href="#"
+                    @click.prevent="cambiarPaginaHistorial(historialPagination.current_page - 1)">Anterior</a>
                 </li>
-                <li class="page-item" v-for="page in historialPagination.last_page" :key="page" :class="{ active: page === historialPagination.current_page }">
+                <li class="page-item" v-for="page in historialPagination.last_page" :key="page"
+                  :class="{ active: page === historialPagination.current_page }">
                   <a class="page-link" href="#" @click.prevent="cambiarPaginaHistorial(page)">{{ page }}</a>
                 </li>
-                <li class="page-item" :class="{ disabled: historialPagination.current_page === historialPagination.last_page }">
-                  <a class="page-link" href="#" @click.prevent="cambiarPaginaHistorial(historialPagination.current_page + 1)">Siguiente</a>
+                <li class="page-item"
+                  :class="{ disabled: historialPagination.current_page === historialPagination.last_page }">
+                  <a class="page-link" href="#"
+                    @click.prevent="cambiarPaginaHistorial(historialPagination.current_page + 1)">Siguiente</a>
                 </li>
               </ul>
             </nav>
@@ -222,9 +545,13 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue';
 import axios from 'axios';
+import Swal from 'sweetalert2';
 
 const clientes = ref([]);
 const pagination = ref({ current_page: 1, last_page: 1, total: 0 });
+const cargando = ref(false);
+const guardando = ref(false);
+const historialCargando = ref(false);
 
 const mostrarModal = ref(false);
 const mostrarHistorial = ref(false);
@@ -239,6 +566,9 @@ const filtros = ref({
   activo: '',
 });
 
+// ✅ Guardar copia original para comparar cambios
+const clienteOriginal = ref(null);
+
 const form = ref({
   nombre: '',
   email: '',
@@ -252,17 +582,15 @@ const form = ref({
 });
 
 const primaryColor = computed(() => {
-  const stored = localStorage.getItem('empresa_colores');
+  const stored = localStorage.getItem('colorPrincipal') || localStorage.getItem('color_menu');
   if (stored) {
-    try {
-      const parsed = JSON.parse(stored);
-      return parsed.primary || '#1E293B';
-    } catch (e) {}
+    return stored;
   }
   return '#1E293B';
 });
 
 async function cargarClientes(page = 1) {
+  cargando.value = true;
   try {
     const params = { page, ...filtros.value };
     if (filtros.value.search) params.search = filtros.value.search;
@@ -279,6 +607,13 @@ async function cargarClientes(page = 1) {
     };
   } catch (error) {
     console.error('Error al cargar clientes:', error);
+    await Swal.fire({
+      icon: 'error',
+      title: 'Error',
+      text: 'Error al cargar clientes'
+    });
+  } finally {
+    cargando.value = false;
   }
 }
 
@@ -294,6 +629,7 @@ function cambiarPagina(page) {
 
 function abrirModalCrear() {
   clienteEditando.value = null;
+  clienteOriginal.value = null;
   form.value = {
     nombre: '',
     email: '',
@@ -310,6 +646,7 @@ function abrirModalCrear() {
 
 function editarCliente(cliente) {
   clienteEditando.value = cliente;
+  clienteOriginal.value = { ...cliente }; // ✅ Guardar copia original
   form.value = { ...cliente };
   mostrarModal.value = true;
 }
@@ -317,44 +654,171 @@ function editarCliente(cliente) {
 function cerrarModal() {
   mostrarModal.value = false;
   clienteEditando.value = null;
+  clienteOriginal.value = null;
+}
+
+// ✅ Función para comparar cambios
+function getCamposActualizados() {
+  if (!clienteOriginal.value) return null;
+
+  const campos = [];
+  const original = clienteOriginal.value;
+  const actual = form.value;
+
+  const camposComparar = {
+    nombre: 'Nombre',
+    email: 'Email',
+    telefono: 'Teléfono',
+    direccion: 'Dirección',
+    rfc: 'RFC',
+    tipo: 'Tipo',
+    limite_credito: 'Límite de Crédito',
+    notas: 'Notas',
+    activo: 'Estado'
+  };
+
+  for (const [key, label] of Object.entries(camposComparar)) {
+    const valorOriginal = original[key] ?? '';
+    const valorActual = actual[key] ?? '';
+
+    // Para booleanos, comparar como booleanos
+    if (typeof valorOriginal === 'boolean' || typeof valorActual === 'boolean') {
+      if (Boolean(valorOriginal) !== Boolean(valorActual)) {
+        campos.push({
+          label: label,
+          antes: valorOriginal ? 'Activo' : 'Inactivo',
+          despues: valorActual ? 'Activo' : 'Inactivo'
+        });
+      }
+    } else if (String(valorOriginal).trim() !== String(valorActual).trim()) {
+      campos.push({
+        label: label,
+        antes: valorOriginal || '(vacío)',
+        despues: valorActual || '(vacío)'
+      });
+    }
+  }
+
+  return campos;
+}
+
+// ✅ Función para mostrar mensaje con campos actualizados
+function mostrarMensajeActualizacion(campos) {
+  if (!campos || campos.length === 0) {
+    return Swal.fire({
+      icon: 'info',
+      title: 'Sin cambios',
+      text: 'No se detectaron cambios en el cliente.',
+      timer: 2000,
+      showConfirmButton: false
+    });
+  }
+
+  let html = '<div style="text-align: left;">';
+  html += '<p><strong>Campos actualizados:</strong></p>';
+  html += '<ul style="list-style: none; padding: 0;">';
+  for (const campo of campos) {
+    html += `<li style="padding: 4px 0; border-bottom: 1px solid #eee;">
+      <strong>${campo.label}:</strong><br>
+      <span style="color: #dc3545;">⬅ ${campo.antes}</span>
+      <span style="color: #28a745;"> ➡ ${campo.despues}</span>
+    </li>`;
+  }
+  html += '</ul></div>';
+
+  return Swal.fire({
+    icon: 'success',
+    title: 'Cliente actualizado',
+    html: html,
+    timer: 4000,
+    showConfirmButton: true,
+    confirmButtonText: 'Aceptar'
+  });
 }
 
 async function guardarCliente() {
+  guardando.value = true;
   try {
     const url = clienteEditando.value
       ? `/api/v1/clientes/${clienteEditando.value.id}`
       : '/api/v1/clientes';
     const method = clienteEditando.value ? 'put' : 'post';
 
-    await axios[method](url, form.value, {
+    const response = await axios[method](url, form.value, {
       headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
     });
 
+    const esEdicion = !!clienteEditando.value;
+    const campos = esEdicion ? getCamposActualizados() : null;
+
     cerrarModal();
-    cargarClientes();
-    alert(clienteEditando.value ? 'Cliente actualizado correctamente' : 'Cliente creado correctamente');
+    await cargarClientes();
+
+    if (esEdicion) {
+      // ✅ Mostrar mensaje con campos actualizados
+      await mostrarMensajeActualizacion(campos);
+    } else {
+      await Swal.fire({
+        icon: 'success',
+        title: 'Cliente creado',
+        text: 'Cliente creado correctamente',
+        timer: 2000,
+        showConfirmButton: false
+      });
+    }
   } catch (error) {
     console.error(error);
-    alert(error.response?.data?.message || 'Error al guardar cliente');
+    await Swal.fire({
+      icon: 'error',
+      title: 'Error',
+      text: error.response?.data?.message || 'Error al guardar cliente'
+    });
+  } finally {
+    guardando.value = false;
   }
 }
 
 async function eliminarCliente(id) {
-  if (confirm('¿Eliminar este cliente?')) {
+  const result = await Swal.fire({
+    title: '¿Estás seguro?',
+    text: 'Esta acción no se puede deshacer',
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonColor: '#d33',
+    cancelButtonColor: '#3085d6',
+    confirmButtonText: 'Sí, eliminar',
+    cancelButtonText: 'Cancelar'
+  });
+
+  if (result.isConfirmed) {
     try {
       await axios.delete(`/api/v1/clientes/${id}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
       });
-      cargarClientes();
+      await cargarClientes();
+
+      await Swal.fire({
+        icon: 'success',
+        title: 'Eliminado',
+        text: 'Cliente eliminado correctamente',
+        timer: 2000,
+        showConfirmButton: false
+      });
     } catch (error) {
-      alert('Error al eliminar cliente');
+      await Swal.fire({
+        icon: 'error',
+        title: 'Error',
+        text: error.response?.data?.message || 'Error al eliminar cliente'
+      });
     }
   }
 }
 
-async function verHistorial(id) {
+async function verHistorial(id, page = 1) {
+  historialCargando.value = true;
   try {
     const res = await axios.get(`/api/v1/clientes/${id}/historial`, {
+      params: { page },
       headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
     });
     clienteHistorial.value = clientes.value.find(c => c.id === id);
@@ -365,7 +829,14 @@ async function verHistorial(id) {
     };
     mostrarHistorial.value = true;
   } catch (error) {
-    alert('Error al cargar historial');
+    console.error('Error cargando historial:', error);
+    await Swal.fire({
+      icon: 'error',
+      title: 'Error',
+      text: 'Error al cargar historial de compras'
+    });
+  } finally {
+    historialCargando.value = false;
   }
 }
 
@@ -389,13 +860,17 @@ onMounted(() => {
 <style scoped>
 .modal-backdrop {
   position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.5);
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1050;
 }
+
 .modal-content-custom {
   background: white;
   border-radius: 12px;
@@ -404,9 +879,11 @@ onMounted(() => {
   max-height: 90vh;
   overflow-y: auto;
 }
+
 .modal-lg {
   max-width: 800px;
 }
+
 .modal-header-custom {
   padding: 16px 20px;
   border-bottom: 1px solid #e5e7eb;
@@ -414,9 +891,11 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
 }
+
 .modal-body-custom {
   padding: 20px;
 }
+
 .modal-footer-custom {
   padding: 12px 20px;
   border-top: 1px solid #e5e7eb;

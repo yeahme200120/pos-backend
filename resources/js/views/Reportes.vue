@@ -11,7 +11,7 @@
                     <input 
                         type="date" 
                         v-model="filtros.fecha_desde"
-                        class="w-full px-3 py-2 border rounded-lg"
+                        class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                 </div>
                 <div>
@@ -19,19 +19,21 @@
                     <input 
                         type="date" 
                         v-model="filtros.fecha_hasta"
-                        class="w-full px-3 py-2 border rounded-lg"
+                        class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                 </div>
                 <div class="flex items-end">
                     <button 
                         @click="cargarReportes"
-                        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                        :disabled="cargando"
+                        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
                     >
-                        Buscar
+                        <span v-if="cargando" class="inline-block animate-spin mr-2">⟳</span>
+                        {{ cargando ? 'Cargando...' : 'Buscar' }}
                     </button>
                     <button 
                         @click="exportarReportes"
-                        class="ml-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                        class="ml-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
                     >
                         Exportar
                     </button>
@@ -39,12 +41,13 @@
             </div>
         </div>
 
-        <!-- Resumen -->
+        <!-- Loading -->
         <div v-if="cargando" class="text-center py-8">
             <span class="inline-block animate-spin mr-2">⟳</span>
             Cargando reportes...
         </div>
 
+        <!-- Error -->
         <div v-else-if="error" class="bg-red-100 text-red-700 p-4 rounded-lg">
             {{ error }}
         </div>
@@ -58,7 +61,7 @@
             <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
                 <div class="bg-white p-6 rounded-lg shadow">
                     <p class="text-sm text-gray-500">Total Ventas</p>
-                    <h3 class="text-2xl font-bold">{{ formatearNumero(resumen.total_ventas || 0) }}</h3>
+                    <h3 class="text-2xl font-bold">${{ formatearNumero(resumen.total_ventas || 0) }}</h3>
                 </div>
                 <div class="bg-white p-6 rounded-lg shadow">
                     <p class="text-sm text-gray-500">Número de Tickets</p>
@@ -76,39 +79,46 @@
 
             <!-- Tabla de reportes -->
             <div class="bg-white rounded-lg shadow overflow-hidden">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Folio</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Fecha</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cliente</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Vendedor</th>
-                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
-                            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Estado</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        <tr v-for="venta in reportes" :key="venta.id">
-                            <td class="px-6 py-4">{{ venta.folio }}</td>
-                            <td class="px-6 py-4">{{ formatearFecha(venta.fecha) }}</td>
-                            <td class="px-6 py-4">{{ venta.cliente?.nombre || 'Cliente genérico' }}</td>
-                            <td class="px-6 py-4">{{ venta.usuario?.name || '-' }}</td>
-                            <td class="px-6 py-4 text-right font-semibold">
-                                ${{ formatearNumero(venta.total) }}
-                            </td>
-                            <td class="px-6 py-4 text-center">
-                                <span class="px-2 py-1 text-xs rounded-full" 
-                                      :class="venta.estado === 'pagado' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'">
-                                    {{ venta.estado }}
-                                </span>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Folio</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Fecha</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cliente</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Vendedor</th>
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Estado</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr v-if="reportes.length === 0">
+                                <td colspan="6" class="px-6 py-8 text-center text-sm text-gray-500">
+                                    No hay reportes para mostrar
+                                </td>
+                            </tr>
+                            <tr v-for="venta in reportes" :key="venta.id" class="hover:bg-gray-50 transition-colors">
+                                <td class="px-6 py-4 text-sm font-medium">{{ venta.folio }}</td>
+                                <td class="px-6 py-4 text-sm">{{ formatearFecha(venta.fecha) }}</td>
+                                <td class="px-6 py-4 text-sm">{{ venta.cliente?.nombre || 'Cliente genérico' }}</td>
+                                <td class="px-6 py-4 text-sm">{{ venta.usuario?.name || '-' }}</td>
+                                <td class="px-6 py-4 text-sm text-right font-semibold">
+                                    ${{ formatearNumero(venta.total) }}
+                                </td>
+                                <td class="px-6 py-4 text-sm text-center">
+                                    <span class="px-2 py-1 text-xs rounded-full" 
+                                          :class="venta.estado === 'pagado' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'">
+                                        {{ venta.estado }}
+                                    </span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <!-- Paginación -->
-            <div v-if="paginacion" class="flex justify-between items-center mt-4">
+            <div v-if="paginacion && paginacion.last_page > 1" class="flex justify-between items-center mt-4">
                 <span class="text-sm text-gray-600">
                     Mostrando {{ reportes.length }} de {{ paginacion.total || reportes.length }}
                 </span>
@@ -116,17 +126,17 @@
                     <button 
                         v-if="paginacion.current_page > 1"
                         @click="cargarPagina(paginacion.current_page - 1)"
-                        class="px-3 py-1 border rounded hover:bg-gray-100"
+                        class="px-3 py-1 border rounded hover:bg-gray-100 transition text-sm"
                     >
                         Anterior
                     </button>
-                    <span class="px-3 py-1 bg-blue-600 text-white rounded">
+                    <span class="px-3 py-1 bg-blue-600 text-white rounded text-sm">
                         {{ paginacion.current_page || 1 }}
                     </span>
                     <button 
                         v-if="paginacion.current_page < paginacion.last_page"
                         @click="cargarPagina(paginacion.current_page + 1)"
-                        class="px-3 py-1 border rounded hover:bg-gray-100"
+                        class="px-3 py-1 border rounded hover:bg-gray-100 transition text-sm"
                     >
                         Siguiente
                     </button>
@@ -138,6 +148,7 @@
 
 <script>
 import api from '../axios';
+import Swal from 'sweetalert2';
 
 export default {
     name: 'Reportes',
@@ -235,6 +246,12 @@ export default {
             } catch (error) {
                 console.error('Error cargando reportes:', error);
                 this.error = error.response?.data?.message || 'Error al cargar los reportes';
+                
+                await Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: this.error
+                });
             } finally {
                 this.cargando = false;
             }
@@ -252,6 +269,11 @@ export default {
                 };
             } catch (error) {
                 console.error('Error cargando página:', error);
+                await Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Error al cargar la página'
+                });
             } finally {
                 this.cargando = false;
             }
@@ -279,9 +301,21 @@ export default {
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
+
+                await Swal.fire({
+                    icon: 'success',
+                    title: 'Exportación exitosa',
+                    text: 'El reporte se ha exportado correctamente',
+                    timer: 2000,
+                    showConfirmButton: false
+                });
             } catch (error) {
                 console.error('Error exportando:', error);
-                alert('Error al exportar reportes');
+                await Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: error.response?.data?.message || 'Error al exportar reportes'
+                });
             }
         }
     }
@@ -297,5 +331,4 @@ export default {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
 }
-
 </style>

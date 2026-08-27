@@ -186,6 +186,8 @@
 </template>
 
 <script>
+import Swal from 'sweetalert2';
+
 export default {
     name: 'Configuracion',
     data() {
@@ -216,7 +218,9 @@ export default {
             const keys = ['colorPrincipal', 'colorSecundario', 'fondo', 'colorTexto'];
             keys.forEach(key => {
                 const value = localStorage.getItem(key);
-                if (value) this.config[key] = value;
+                if (value) {
+                    this.config[key] = value;
+                }
             });
         },
         cargarTicketConfig() {
@@ -231,23 +235,36 @@ export default {
         },
         guardarConfiguracion() {
             try {
+                // Guardar en localStorage
                 Object.keys(this.config).forEach(key => {
                     localStorage.setItem(key, this.config[key]);
                 });
 
-                // Disparar evento para actualizar App.vue SIN recargar
+                // Disparar evento para actualizar App.vue
+                window.dispatchEvent(new CustomEvent('recargar-colores', {
+                    detail: this.config
+                }));
+
+                // También disparar evento storage para otras pestañas
                 window.dispatchEvent(new Event('storage'));
-                window.dispatchEvent(new CustomEvent('recargar-colores'));
 
                 this.mensaje = '✅ Configuración guardada correctamente';
                 this.mensajeClase = 'bg-green-100 text-green-700';
                 
+                // Recargar la página para aplicar cambios
                 setTimeout(() => {
-                    this.mensaje = '';
-                }, 3000);
+                    window.location.reload();
+                }, 1000);
+
             } catch (error) {
                 this.mensaje = '❌ Error al guardar configuración';
                 this.mensajeClase = 'bg-red-100 text-red-700';
+                
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Error al guardar configuración'
+                });
             }
         },
         restablecerConfiguracion() {
@@ -263,15 +280,17 @@ export default {
                 localStorage.setItem(key, defaults[key]);
             });
 
+            window.dispatchEvent(new CustomEvent('recargar-colores', {
+                detail: defaults
+            }));
             window.dispatchEvent(new Event('storage'));
-            window.dispatchEvent(new CustomEvent('recargar-colores'));
 
             this.mensaje = '🔄 Configuración restablecida';
             this.mensajeClase = 'bg-yellow-100 text-yellow-700';
             
             setTimeout(() => {
-                this.mensaje = '';
-            }, 3000);
+                window.location.reload();
+            }, 1000);
         },
         guardarTicketConfig() {
             try {
@@ -283,9 +302,23 @@ export default {
                 setTimeout(() => {
                     this.mensaje = '';
                 }, 3000);
+
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Configuración guardada',
+                    text: 'Configuración del ticket guardada correctamente',
+                    timer: 2000,
+                    showConfirmButton: false
+                });
             } catch (error) {
                 this.mensaje = '❌ Error al guardar configuración del ticket';
                 this.mensajeClase = 'bg-red-100 text-red-700';
+                
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Error al guardar configuración del ticket'
+                });
             }
         }
     }

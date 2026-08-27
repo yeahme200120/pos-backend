@@ -8,10 +8,10 @@
         
         <!-- Páginas con menú -->
         <div v-else class="flex h-screen" :style="{ backgroundColor: fondo }">
-            <!-- Sidebar con color principal -->
+            <!-- Sidebar con colores dinámicos -->
             <aside class="w-64 text-white flex-shrink-0" :style="{ backgroundColor: colorPrincipal }">
                 <div class="p-4 border-b" :style="{ borderColor: colorSecundario || '#374151' }">
-                    <h1 class="text-xl font-bold">POS Admin</h1>
+                    <img :src="logoUrl" alt="Logo" class="h-10 w-auto" />
                 </div>
 
                 <nav class="mt-4">
@@ -104,7 +104,7 @@
 
             <!-- Contenido principal -->
             <div class="flex-1 flex flex-col overflow-hidden">
-                <!-- Header con el MISMO color que el sidebar -->
+                <!-- Header con color dinámico (mismo que sidebar) -->
                 <header class="shadow-sm px-6 py-4" :style="{ backgroundColor: colorPrincipal }">
                     <div class="flex justify-between items-center">
                         <h2 class="text-lg font-semibold" :style="{ color: colorTexto }">
@@ -132,47 +132,50 @@
 </template>
 
 <script>
-import { computed, ref, onMounted } from 'vue';
+import { computed, ref, onMounted, onUnmounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 
 export default {
     name: 'App',
     setup() {
+        const logoUrl = '/img/logo.png'; // Ruta relativa al archivo App.vue
         const router = useRouter();
         const route = useRoute();
 
+        // Estado reactivo para colores
+        const colorPrincipal = ref(localStorage.getItem('colorPrincipal') || '#1E293B');
+        const colorSecundario = ref(localStorage.getItem('colorSecundario') || '#374151');
+        const fondo = ref(localStorage.getItem('fondo') || '#f3f4f6');
+        const colorTexto = ref(localStorage.getItem('colorTexto') || '#FFFFFF');
+
         // Función para cargar colores desde localStorage
         const cargarColores = () => {
-            return {
-                colorPrincipal: localStorage.getItem('colorPrincipal') || '#1E293B',
-                colorSecundario: localStorage.getItem('colorSecundario') || '#374151',
-                fondo: localStorage.getItem('fondo') || '#f3f4f6',
-                colorTexto: localStorage.getItem('colorTexto') || '#FFFFFF'
-            };
+            colorPrincipal.value = localStorage.getItem('colorPrincipal') || '#1E293B';
+            colorSecundario.value = localStorage.getItem('colorSecundario') || '#374151';
+            fondo.value = localStorage.getItem('fondo') || '#f3f4f6';
+            colorTexto.value = localStorage.getItem('colorTexto') || '#FFFFFF';
         };
 
-        // Estado reactivo con valores iniciales
-        const colores = ref(cargarColores());
-
-        // Computed para acceder fácilmente
-        const colorPrincipal = computed(() => colores.value.colorPrincipal);
-        const colorSecundario = computed(() => colores.value.colorSecundario);
-        const fondo = computed(() => colores.value.fondo);
-        const colorTexto = computed(() => colores.value.colorTexto);
-
-        // Escuchar cambios en localStorage
-        const handleStorageChange = () => {
-            colores.value = cargarColores();
+        // Escuchar evento de recarga de colores
+        const recargarColores = (event) => {
+            cargarColores();
         };
 
-        // Escuchar evento personalizado para recargar colores
-        const recargarColores = () => {
-            colores.value = cargarColores();
+        // Escuchar cambios en localStorage (otras pestañas)
+        const handleStorageChange = (e) => {
+            if (['colorPrincipal', 'colorSecundario', 'fondo', 'colorTexto'].includes(e.key)) {
+                cargarColores();
+            }
         };
 
         onMounted(() => {
-            window.addEventListener('storage', handleStorageChange);
             window.addEventListener('recargar-colores', recargarColores);
+            window.addEventListener('storage', handleStorageChange);
+        });
+
+        onUnmounted(() => {
+            window.removeEventListener('recargar-colores', recargarColores);
+            window.removeEventListener('storage', handleStorageChange);
         });
 
         const pageTitle = computed(() => {
@@ -215,7 +218,8 @@ export default {
             pageTitle,
             userName,
             userInitial,
-            logout
+            logout,
+            logoUrl
         };
     }
 };
