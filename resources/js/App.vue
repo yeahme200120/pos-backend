@@ -5,107 +5,107 @@
         <div v-if="$route.path === '/login'" class="min-h-screen" :style="{ backgroundColor: fondo }">
             <router-view />
         </div>
-        
+
         <!-- Páginas con menú -->
         <div v-else class="flex h-screen" :style="{ backgroundColor: fondo }">
-            <!-- Sidebar con colores dinámicos -->
-            <aside class="w-64 text-white flex-shrink-0" :style="{ backgroundColor: colorPrincipal }">
-                <div class="p-4 border-b" :style="{ borderColor: colorSecundario || '#374151' }">
+            <!-- Sidebar con colores dinámicos y scroll -->
+            <aside class="w-64 text-white flex-shrink-0 flex flex-col h-screen overflow-hidden"
+                :style="{ backgroundColor: colorPrincipal }">
+                <!-- Logo - Fijo -->
+                <div class="p-4 border-b flex-shrink-0" :style="{ borderColor: colorSecundario || '#374151' }">
                     <img :src="logoUrl" alt="Logo" class="h-10 w-auto" />
                 </div>
 
-                <nav class="mt-4">
-                    <router-link 
-                        to="/" 
-                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition"
-                        active-class="bg-opacity-30"
-                        :style="{ color: colorTexto }"
-                    >
+                <!-- Menú - Scrollable -->
+                <nav class="flex-1 overflow-y-auto p-2">
+                    <router-link to="/" class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
                         <span class="ml-2">Dashboard</span>
                     </router-link>
 
-                    <div class="px-4 py-2 text-xs uppercase mt-4" :style="{ color: colorTexto || '#9ca3af' }">
+                    <div class="px-4 py-2 text-xs uppercase mt-2" :style="{ color: colorTexto || '#9ca3af' }">
                         Gestión
                     </div>
 
-                    <router-link 
-                        to="/usuarios" 
-                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition"
-                        active-class="bg-opacity-30"
-                        :style="{ color: colorTexto }"
-                    >
+                    <router-link to="/usuarios"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
                         <span class="ml-2">Usuarios</span>
                     </router-link>
 
-                    <router-link 
-                        to="/productos" 
-                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition"
-                        active-class="bg-opacity-30"
-                        :style="{ color: colorTexto }"
-                    >
+                    <router-link to="/productos"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
                         <span class="ml-2">Productos</span>
                     </router-link>
 
-                    <router-link 
-                        to="/clientes" 
-                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition"
-                        active-class="bg-opacity-30"
-                        :style="{ color: colorTexto }"
-                    >
+                    <router-link to="/clientes"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
                         <span class="ml-2">Clientes</span>
                     </router-link>
 
-                    <router-link 
-                        to="/licencias" 
-                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition"
-                        active-class="bg-opacity-30"
-                        :style="{ color: colorTexto }"
-                    >
+                    <router-link to="/licencias"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
                         <span class="ml-2">Licencias</span>
                     </router-link>
 
-                    <div class="px-4 py-2 text-xs uppercase mt-4" :style="{ color: colorTexto || '#9ca3af' }">
+                    <div class="px-4 py-2 text-xs uppercase mt-2" :style="{ color: colorTexto || '#9ca3af' }">
                         Reportes
                     </div>
 
-                    <router-link 
-                        to="/reportes" 
-                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition"
-                        active-class="bg-opacity-30"
-                        :style="{ color: colorTexto }"
-                    >
+                    <router-link to="/reportes"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
                         <span class="ml-2">Reportes</span>
                     </router-link>
 
-                    <div class="px-4 py-2 text-xs uppercase mt-4" :style="{ color: colorTexto || '#9ca3af' }">
+                    <div class="px-4 py-2 text-xs uppercase mt-2" :style="{ color: colorTexto || '#9ca3af' }">
                         Configuración
                     </div>
 
-                    <router-link 
-                        to="/configuracion" 
-                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition"
-                        active-class="bg-opacity-30"
-                        :style="{ color: colorTexto }"
-                    >
+                    <router-link to="/configuracion"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
                         <span class="ml-2">Configuración</span>
                     </router-link>
 
-                    <div class="border-t mt-4 pt-4" :style="{ borderColor: colorSecundario || '#374151' }">
-                        <button 
-                            @click="logout" 
-                            class="flex items-center w-full px-4 py-2 transition text-red-400"
-                            :style="{ color: colorTexto }"
-                        >
-                            <span class="ml-2">Cerrar Sesión</span>
-                        </button>
+                    <!-- Agregar en el menú de App.vue -->
+                    <div class="px-4 py-2 text-xs uppercase mt-4" :style="{ color: colorTexto || '#9ca3af' }">
+                        Ventas
                     </div>
+
+                    <router-link to="/ventas"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">Historial Ventas</span>
+                    </router-link>
+
+                    <router-link to="/ventas/nueva"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">Nueva Venta</span>
+                    </router-link>
+
+                    <!-- Espacio para el botón de logout -->
+                    <div class="h-4"></div>
                 </nav>
+
+                <!-- Logout - Fijo abajo -->
+                <div class="p-4 border-t flex-shrink-0" :style="{ borderColor: colorSecundario || '#374151' }">
+                    <button @click="logout"
+                        class="flex items-center w-full px-4 py-2 hover:bg-opacity-20 transition rounded-lg text-red-400"
+                        :style="{ color: colorTexto }">
+                        <span class="ml-2">Cerrar Sesión</span>
+                    </button>
+                </div>
             </aside>
 
             <!-- Contenido principal -->
             <div class="flex-1 flex flex-col overflow-hidden">
                 <!-- Header con color dinámico (mismo que sidebar) -->
-                <header class="shadow-sm px-6 py-4" :style="{ backgroundColor: colorPrincipal }">
+                <header class="shadow-sm px-6 py-4 flex-shrink-0" :style="{ backgroundColor: colorPrincipal }">
                     <div class="flex justify-between items-center">
                         <h2 class="text-lg font-semibold" :style="{ color: colorTexto }">
                             {{ pageTitle }}
@@ -114,15 +114,15 @@
                             <span class="text-sm" :style="{ color: colorTexto }">
                                 {{ userName }}
                             </span>
-                            <div class="w-8 h-8 rounded-full bg-opacity-20 flex items-center justify-center" 
-                                 :style="{ backgroundColor: colorTexto, color: colorPrincipal }">
+                            <div class="w-8 h-8 rounded-full bg-opacity-20 flex items-center justify-center"
+                                :style="{ backgroundColor: colorTexto, color: colorPrincipal }">
                                 <span>{{ userInitial }}</span>
                             </div>
                         </div>
                     </div>
                 </header>
 
-                <!-- Contenido -->
+                <!-- Contenido - Scrollable -->
                 <main class="flex-1 overflow-y-auto p-6" :style="{ backgroundColor: fondo }">
                     <router-view />
                 </main>
@@ -138,17 +138,15 @@ import { useRouter, useRoute } from 'vue-router';
 export default {
     name: 'App',
     setup() {
-        const logoUrl = '/img/logo.png'; // Ruta relativa al archivo App.vue
+        const logoUrl = '/img/logo.png';
         const router = useRouter();
         const route = useRoute();
 
-        // Estado reactivo para colores
         const colorPrincipal = ref(localStorage.getItem('colorPrincipal') || '#1E293B');
         const colorSecundario = ref(localStorage.getItem('colorSecundario') || '#374151');
         const fondo = ref(localStorage.getItem('fondo') || '#f3f4f6');
         const colorTexto = ref(localStorage.getItem('colorTexto') || '#FFFFFF');
 
-        // Función para cargar colores desde localStorage
         const cargarColores = () => {
             colorPrincipal.value = localStorage.getItem('colorPrincipal') || '#1E293B';
             colorSecundario.value = localStorage.getItem('colorSecundario') || '#374151';
@@ -156,12 +154,10 @@ export default {
             colorTexto.value = localStorage.getItem('colorTexto') || '#FFFFFF';
         };
 
-        // Escuchar evento de recarga de colores
-        const recargarColores = (event) => {
+        const recargarColores = () => {
             cargarColores();
         };
 
-        // Escuchar cambios en localStorage (otras pestañas)
         const handleStorageChange = (e) => {
             if (['colorPrincipal', 'colorSecundario', 'fondo', 'colorTexto'].includes(e.key)) {
                 cargarColores();
@@ -186,7 +182,8 @@ export default {
                 '/clientes': 'Clientes',
                 '/licencias': 'Licencias',
                 '/reportes': 'Reportes',
-                '/configuracion': 'Configuración'
+                '/configuracion': 'Configuración',
+                '/ventas': 'Ventas'
             };
             return titles[route.path] || 'POS Admin';
         });
@@ -240,5 +237,23 @@ export default {
 
 .hover\:bg-opacity-20:hover {
     background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Scrollbar personalizada para el sidebar */
+.overflow-y-auto::-webkit-scrollbar {
+    width: 4px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 4px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.5);
 }
 </style>

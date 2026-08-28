@@ -173,6 +173,50 @@
                         />
                     </div>
 
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                            Alineación
+                        </label>
+                        <select 
+                            v-model="ticketConfig.alineacion"
+                            class="w-full px-3 py-2 border rounded-lg"
+                        >
+                            <option value="izquierda">Izquierda</option>
+                            <option value="centro">Centro</option>
+                            <option value="derecha">Derecha</option>
+                        </select>
+                    </div>
+
+                    <div class="flex items-center space-x-2">
+                        <input 
+                            type="checkbox" 
+                            v-model="ticketConfig.mostrar_logo"
+                            class="w-4 h-4 rounded border-gray-300"
+                        />
+                        <label class="text-sm font-medium text-gray-700">Mostrar Logo</label>
+                    </div>
+
+                    <div class="flex items-center space-x-2">
+                        <input 
+                            type="checkbox" 
+                            v-model="ticketConfig.mostrar_qr"
+                            class="w-4 h-4 rounded border-gray-300"
+                        />
+                        <label class="text-sm font-medium text-gray-700">Mostrar QR</label>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                            Contenido QR
+                        </label>
+                        <input 
+                            type="text" 
+                            v-model="ticketConfig.qr_contenido"
+                            class="w-full px-3 py-2 border rounded-lg"
+                            placeholder="https://miempresa.com"
+                        />
+                    </div>
+
                     <button 
                         @click="guardarTicketConfig" 
                         class="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
@@ -186,6 +230,7 @@
 </template>
 
 <script>
+import api from '../axios';
 import Swal from 'sweetalert2';
 
 export default {
@@ -202,6 +247,10 @@ export default {
                 papel: '58mm',
                 fuente: 'Arial',
                 tamano_fuente: 12,
+                alineacion: 'izquierda',
+                mostrar_logo: true,
+                mostrar_qr: true,
+                qr_contenido: 'https://miempresa.com',
                 cabecera: '¡Gracias por su compra!',
                 pie_pagina: 'Visítenos en www.miempresa.com'
             },
@@ -223,35 +272,51 @@ export default {
                 }
             });
         },
-        cargarTicketConfig() {
+        async cargarTicketConfig() {
             try {
-                const saved = localStorage.getItem('ticket_config');
-                if (saved) {
-                    this.ticketConfig = JSON.parse(saved);
+                // ✅ Cargar configuración desde el servidor
+                const response = await api.get('/ticket/config');
+                if (response.data) {
+                    this.ticketConfig = {
+                        papel: response.data.papel || '58mm',
+                        fuente: response.data.fuente || 'Arial',
+                        tamano_fuente: response.data.tamano_fuente || 12,
+                        alineacion: response.data.alineacion || 'izquierda',
+                        mostrar_logo: response.data.mostrar_logo !== undefined ? response.data.mostrar_logo : true,
+                        mostrar_qr: response.data.mostrar_qr !== undefined ? response.data.mostrar_qr : true,
+                        qr_contenido: response.data.qr_contenido || 'https://miempresa.com',
+                        cabecera: response.data.cabecera || '¡Gracias por su compra!',
+                        pie_pagina: response.data.pie_pagina || 'Visítenos en www.miempresa.com'
+                    };
                 }
-            } catch (e) {
-                console.error('Error cargando ticket config:', e);
+            } catch (error) {
+                console.error('Error cargando configuración del ticket:', error);
+                // Si hay error, intentar cargar desde localStorage
+                try {
+                    const saved = localStorage.getItem('ticket_config');
+                    if (saved) {
+                        const parsed = JSON.parse(saved);
+                        this.ticketConfig = { ...this.ticketConfig, ...parsed };
+                    }
+                } catch (e) {
+                    console.error('Error cargando ticket config local:', e);
+                }
             }
         },
         guardarConfiguracion() {
             try {
-                // Guardar en localStorage
                 Object.keys(this.config).forEach(key => {
                     localStorage.setItem(key, this.config[key]);
                 });
 
-                // Disparar evento para actualizar App.vue
                 window.dispatchEvent(new CustomEvent('recargar-colores', {
                     detail: this.config
                 }));
-
-                // También disparar evento storage para otras pestañas
                 window.dispatchEvent(new Event('storage'));
 
                 this.mensaje = '✅ Configuración guardada correctamente';
                 this.mensajeClase = 'bg-green-100 text-green-700';
                 
-                // Recargar la página para aplicar cambios
                 setTimeout(() => {
                     window.location.reload();
                 }, 1000);
@@ -292,16 +357,16 @@ export default {
                 window.location.reload();
             }, 1000);
         },
-        guardarTicketConfig() {
+        async guardarTicketConfig() {
             try {
+                // ✅ Guardar en el servidor
+                const response = await api.put('/ticket/config', this.ticketConfig);
+                
+                // ✅ Guardar localmente también
                 localStorage.setItem('ticket_config', JSON.stringify(this.ticketConfig));
                 
                 this.mensaje = '✅ Configuración del ticket guardada';
                 this.mensajeClase = 'bg-green-100 text-green-700';
-                
-                setTimeout(() => {
-                    this.mensaje = '';
-                }, 3000);
 
                 Swal.fire({
                     icon: 'success',
@@ -310,14 +375,19 @@ export default {
                     timer: 2000,
                     showConfirmButton: false
                 });
+                
+                setTimeout(() => {
+                    this.mensaje = '';
+                }, 3000);
             } catch (error) {
+                console.error('Error guardando ticket config:', error);
                 this.mensaje = '❌ Error al guardar configuración del ticket';
                 this.mensajeClase = 'bg-red-100 text-red-700';
                 
                 Swal.fire({
                     icon: 'error',
                     title: 'Error',
-                    text: 'Error al guardar configuración del ticket'
+                    text: error.response?.data?.message || 'Error al guardar configuración del ticket'
                 });
             }
         }

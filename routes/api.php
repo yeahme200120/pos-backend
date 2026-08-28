@@ -40,19 +40,33 @@ Route::prefix('v1')->group(function () {
         Route::post('/sync', [SyncController::class, 'sync']);
         Route::post('/sync/offline', [SyncController::class, 'syncOffline']);
 
-        // Ventas
-        // routes/api.php - Dentro del grupo protegido
-
-        // Ventas - Funcionalidades completas
+        // ==========================================
+        // 🟢 VENTAS - RUTAS ESPECÍFICAS (PRIMERO)
+        // ==========================================
+        
+        // ✅ Rutas sin parámetros o con parámetros fijos
+        Route::get('/ventas/pendiente/actual', [VentaController::class, 'pendienteActual']);
+        Route::post('/ventas/pendiente/guardar', [VentaController::class, 'guardarPendiente']);
+        Route::delete('/ventas/pendiente/eliminar', [VentaController::class, 'eliminarPendiente']);
+        Route::get('/ventas/exportar', [VentaController::class, 'exportar']);
+        Route::get('/ventas/pendientes', [VentaController::class, 'pendientes']);
+        Route::get('/estadisticas/dia', [VentaController::class, 'estadisticasDia']);
+        
+        // ✅ Ruta del ticket - DEBE IR ANTES de /ventas/{id}
+        Route::get('/ventas/{id}/ticket', [VentaController::class, 'ticket']);
+        
+        // ✅ Ruta de anular - DEBE IR ANTES de /ventas/{id}
+        Route::post('/ventas/{id}/anular', [VentaController::class, 'anular']);
+        
+        // ✅ Ruta de devolver - DEBE IR ANTES de /ventas/{id}
+        Route::post('/ventas/{id}/devolver', [VentaController::class, 'devolver']);
+        
+        // ✅ Ruta show - DEBE IR AL FINAL
+        Route::get('/ventas/{id}', [VentaController::class, 'show']);
+        
+        // ✅ Ruta store (POST) - Puede ir después
         Route::post('/ventas', [VentaController::class, 'store']);
         Route::get('/ventas', [VentaController::class, 'index']);
-        Route::get('/ventas/{id}', [VentaController::class, 'show']);
-        Route::post('/ventas/{id}/anular', [VentaController::class, 'anular']);
-        Route::post('/ventas/{id}/devolver', [VentaController::class, 'devolver']);
-        Route::get('/ventas/pendientes', [VentaController::class, 'pendientes']);
-        Route::get('/ventas/exportar', [VentaController::class, 'exportar']);
-        Route::get('/ventas/{id}/ticket', [VentaController::class, 'ticket']);
-        Route::get('/estadisticas/dia', [VentaController::class, 'estadisticasDia']);
 
         // Licencia
         Route::get('/licencia/estado', [LicenseController::class, 'status']);

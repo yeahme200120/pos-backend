@@ -1,5 +1,4 @@
 <?php
-// app/Http/Controllers/Api/V1/VentaController.php
 
 namespace App\Http\Controllers\Api\V1;
 
@@ -9,6 +8,7 @@ use App\Models\Venta;
 use App\Models\DetalleVenta;
 use App\Models\Pago;
 use App\Models\Cliente;
+use App\Models\ConfiguracionTicket;
 use App\Models\LogAuditoria;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,6 +17,7 @@ use Illuminate\Support\Str;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Storage;
 use Barryvdh\DomPDF\Facade\Pdf;
+use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 class VentaController extends Controller
 {
@@ -590,35 +591,136 @@ class VentaController extends Controller
         ]);
     }
 
-    /**
-     * Generar ticket de venta (PDF)
-     */
     public function ticket($id, Request $request)
     {
-        $user = $request->user();
-        $empresaId = $user->empresa_id;
+        try {
+            $user = $request->user();
+            if (!$user) {
+                return response()->json(['error' => 'No autenticado'], 401);
+            }
 
-        $venta = Venta::where('empresa_id', $empresaId)
-            ->with(['cliente', 'usuario', 'detalles.producto', 'pagos'])
-            ->findOrFail($id);
+            $empresaId = $user->empresa_id;
 
-        $empresa = $user->empresa;
+            $venta = Venta::where('empresa_id', $empresaId)
+                ->with(['cliente', 'usuario', 'detalles.producto', 'pagos'])
+                ->find($id);
 
-        // Configuración de ticket
-        $config = \App\Models\ConfiguracionTicket::where('empresa_id', $empresaId)->first();
+            if (!$venta) {
+                return response()->json(['error' => 'Venta no encontrada'], 404);
+            }
 
-        $data = [
-            'venta' => $venta,
-            'empresa' => $empresa,
-            'config' => $config,
-            'fecha' => now()->format('d/m/Y H:i:s'),
-        ];
+            $empresa = $user->empresa;
 
-        // Generar PDF
-        $pdf = Pdf::loadView('tickets.venta', $data);
-        $pdf->setPaper([0, 0, 283.46, 0], 'portrait'); // 80mm de ancho
+            // ✅ LOGO - Buscar en múltiples ubicaciones
+            $logoPath = null;
+            if ($empresa->logo) {
+                // Intentar en public/img/
+                $paths = [
+                    public_path($empresa->logo),
+                    public_path('img/' . basename($empresa->logo)),
+                    storage_path('app/public/' . $empresa->logo),
+                    public_path('storage/' . $empresa->logo),
+                ];
 
-        return $pdf->download('ticket_' . $venta->folio . '.pdf');
+                foreach ($paths as $path) {
+                    if (file_exists($path)) {
+                        $logoPath = $path;
+                        break;
+                    }
+                }
+            }
+
+            $config = ConfiguracionTicket::where('empresa_id', $empresaId)
+                ->where('activo', true)
+                ->first();
+
+            if (!$config) {
+                $config = new ConfiguracionTicket([
+                    'papel' => '58mm',
+                    'fuente' => 'Arial',
+                    'tamano_fuente' => 10,
+                    'alineacion' => 'izquierda',
+                    'mostrar_logo' => true,
+                    'mostrar_qr' => true,
+                    'qr_contenido' => $venta->uuid,
+                    'cabecera' => '¡Gracias por su compra!',
+                    'pie_pagina' => '',
+                    'campos' => []
+                ]);
+            }
+
+            // ✅ PAPEL - Definir ancho exacto en puntos
+            $papel = $config->papel ?: '58mm';
+
+            // 58mm = 164.41 puntos (aproximadamente)
+            // 80mm = 226.77 puntos (aproximadamente)
+            $anchoPapel = $papel === '80mm' ? 226.77 : 164.41;
+
+            // ✅ Altura automática
+            $altoPapel = 1000;
+
+            // ✅ CAMPOS
+            $campos = $config->campos;
+            if (is_string($campos)) {
+                $campos = json_decode($campos, true);
+            }
+            if (!is_array($campos)) {
+                $campos = [];
+            }
+
+            $camposVisibles = [];
+            foreach ($campos as $campo) {
+                if (isset($campo['nombre'])) {
+                    $camposVisibles[$campo['nombre']] = $campo['visible'] ?? true;
+                }
+            }
+
+            // ✅ DATOS
+            $data = [
+                'venta' => $venta,
+                'empresa' => $empresa,
+                'config' => $config,
+                'camposVisibles' => $camposVisibles,
+                'fecha' => now()->format('d/m/Y H:i:s'),
+                'papel' => $papel,
+                'anchoPapel' => $anchoPapel,
+                'logoPath' => $logoPath,
+            ];
+
+            if (!view()->exists('tickets.venta')) {
+                return response()->json(['error' => 'Vista tickets.venta no encontrada'], 500);
+            }
+
+            // ✅ GENERAR PDF
+            $pdf = Pdf::loadView('tickets.venta', $data);
+            $pdf->setPaper([0, 0, $anchoPapel, $altoPapel], 'portrait');
+
+            // ✅ Agregar opciones de renderizado
+            $pdf->setOptions([
+                'defaultFont' => 'Courier',
+                'isHtml5ParserEnabled' => true,
+                'isRemoteEnabled' => true,
+            ]);
+
+            $filename = 'ticket_' . $venta->folio . '.pdf';
+
+            if ($request->boolean('download')) {
+                return $pdf->download($filename);
+            }
+
+            return $pdf->stream($filename);
+        } catch (\Throwable $e) {
+            Log::error('Error generando ticket', [
+                'venta_id' => $id,
+                'error' => $e->getMessage(),
+                'linea' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al generar el ticket: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     /**
@@ -711,5 +813,175 @@ class VentaController extends Controller
                 'user_agent' => request()->userAgent(),
             ]);
         }
+    }
+    /**
+     * Obtener venta pendiente del usuario
+     */
+    public function pendienteActual(Request $request)
+    {
+        $user = $request->user();
+        $empresaId = $user->empresa_id;
+
+        $venta = Venta::where('empresa_id', $empresaId)
+            ->where('usuario_id', $user->id)
+            ->where('estado', 'pendiente')
+            ->with(['detalles.producto', 'pagos', 'cliente'])
+            ->first();
+
+        if (!$venta) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No hay venta pendiente'
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $venta
+        ]);
+    }
+
+    /**
+     * Guardar venta como pendiente
+     */
+    public function guardarPendiente(Request $request)
+    {
+        $user = $request->user();
+        $empresaId = $user->empresa_id;
+
+        $request->validate([
+            'cliente_id' => 'nullable|exists:clientes,id',
+            'productos' => 'required|array|min:1',
+            'productos.*.producto_id' => 'required|exists:productos,id',
+            'productos.*.cantidad' => 'required|numeric|min:0.01',
+            'productos.*.precio' => 'required|numeric|min:0',
+            'pagos' => 'nullable|array',
+            'pagos.*.forma_pago' => 'required|in:Efectivo,Tarjeta Crédito,Tarjeta Débito,Transferencia,Crédito,Otro',
+            'pagos.*.monto' => 'required|numeric|min:0.01',
+            'descuento_global' => 'nullable|numeric|min:0',
+            'impuesto_global' => 'nullable|numeric|min:0|max:100',
+            'notas' => 'nullable|string|max:500',
+        ]);
+
+        DB::beginTransaction();
+        try {
+            // Buscar si ya existe una venta pendiente
+            $venta = Venta::where('empresa_id', $empresaId)
+                ->where('usuario_id', $user->id)
+                ->where('estado', 'pendiente')
+                ->first();
+
+            if (!$venta) {
+                // Crear nueva venta pendiente
+                $folio = $this->generarFolio($empresaId);
+                $venta = Venta::create([
+                    'uuid' => Str::uuid(),
+                    'folio' => $folio,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'cliente_id' => $request->cliente_id,
+                    'fecha' => now(),
+                    'subtotal' => 0,
+                    'descuento' => $request->descuento_global ?? 0,
+                    'impuesto' => $request->impuesto_global ?? 0,
+                    'total' => 0,
+                    'estado' => 'pendiente',
+                    'notas' => $request->notas,
+                    'sincronizado' => true,
+                ]);
+            }
+
+            // Eliminar detalles y pagos anteriores
+            $venta->detalles()->delete();
+            $venta->pagos()->delete();
+
+            // Crear nuevos detalles
+            $total = 0;
+            foreach ($request->productos as $item) {
+                $producto = Producto::find($item['producto_id']);
+                $subtotal = $item['precio'] * $item['cantidad'];
+                $total += $subtotal;
+
+                $venta->detalles()->create([
+                    'producto_id' => $item['producto_id'],
+                    'cantidad' => $item['cantidad'],
+                    'precio_unitario' => $item['precio'],
+                    'descuento' => $item['descuento'] ?? 0,
+                    'subtotal' => $subtotal,
+                ]);
+            }
+
+            // Crear pagos
+            if ($request->pagos) {
+                foreach ($request->pagos as $pago) {
+                    if ($pago['monto'] > 0) {
+                        $venta->pagos()->create([
+                            'forma_pago' => $pago['forma_pago'],
+                            'monto' => $pago['monto'],
+                            'cambio' => $pago['cambio'] ?? 0,
+                        ]);
+                    }
+                }
+            }
+
+            // Actualizar totales
+            $descuentoGlobal = $request->descuento_global ?? 0;
+            $impuestoGlobal = $request->impuesto_global ?? 0;
+            $totalConDescuento = $total - $descuentoGlobal;
+            $totalFinal = $totalConDescuento + ($totalConDescuento * ($impuestoGlobal / 100));
+
+            $venta->subtotal = $total;
+            $venta->descuento = $descuentoGlobal;
+            $venta->impuesto = $impuestoGlobal;
+            $venta->total = $totalFinal;
+            $venta->cliente_id = $request->cliente_id;
+            $venta->notas = $request->notas;
+            $venta->save();
+
+            DB::commit();
+
+            $venta->load(['detalles.producto', 'pagos', 'cliente']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Venta guardada como pendiente',
+                'data' => $venta
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error al guardar venta pendiente: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 422);
+        }
+    }
+
+    /**
+     * Eliminar venta pendiente
+     */
+    public function eliminarPendiente(Request $request)
+    {
+        $user = $request->user();
+        $empresaId = $user->empresa_id;
+
+        $venta = Venta::where('empresa_id', $empresaId)
+            ->where('usuario_id', $user->id)
+            ->where('estado', 'pendiente')
+            ->first();
+
+        if (!$venta) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No hay venta pendiente'
+            ], 404);
+        }
+
+        $venta->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Venta pendiente eliminada'
+        ]);
     }
 }
