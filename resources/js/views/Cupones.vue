@@ -1,0 +1,389 @@
+<!-- resources/js/views/Cupones.vue -->
+<template>
+    <div>
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-3">
+            <h1 class="text-2xl font-bold">Cupones</h1>
+            <button 
+                @click="abrirModal()"
+                class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm"
+            >
+                + Nuevo Cupón
+            </button>
+        </div>
+
+        <!-- Filtros -->
+        <div class="bg-white p-4 rounded-lg shadow mb-6">
+            <div class="flex flex-wrap gap-3">
+                <div class="flex-1 min-w-[200px]">
+                    <input 
+                        v-model="filtros.search"
+                        type="text"
+                        class="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Buscar cupón..."
+                        @input="cargarCupones"
+                    />
+                </div>
+                <div class="flex gap-2">
+                    <button 
+                        @click="cargarCupones"
+                        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                    >
+                        Buscar
+                    </button>
+                    <button 
+                        @click="limpiarFiltros"
+                        class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
+                    >
+                        Limpiar
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading -->
+        <div v-if="cargando" class="text-center py-8">
+            <span class="inline-block animate-spin mr-2">⟳</span>
+            Cargando cupones...
+        </div>
+
+        <!-- Tabla -->
+        <div v-else-if="cupones.length === 0" class="bg-white rounded-lg shadow p-8 text-center text-gray-500">
+            No hay cupones registrados
+        </div>
+
+        <div v-else class="bg-white rounded-lg shadow overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Código</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nombre</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tipo</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Valor</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Monto Mínimo</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Usos</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Estado</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        <tr v-for="cupon in cupones" :key="cupon.id" class="hover:bg-gray-50">
+                            <td class="px-4 py-3 text-sm font-mono font-bold text-blue-600">{{ cupon.codigo }}</td>
+                            <td class="px-4 py-3 text-sm font-medium">{{ cupon.nombre }}</td>
+                            <td class="px-4 py-3 text-sm">
+                                <span class="px-2 py-1 text-xs rounded-full" 
+                                      :class="cupon.tipo === 'porcentaje' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'">
+                                    {{ cupon.tipo === 'porcentaje' ? '% Descuento' : 'Monto Fijo' }}
+                                </span>
+                            </td>
+                            <td class="px-4 py-3 text-sm text-center">
+                                {{ cupon.tipo === 'porcentaje' ? cupon.valor + '%' : '$' + formatearNumero(cupon.valor) }}
+                            </td>
+                            <td class="px-4 py-3 text-sm text-center">
+                                {{ cupon.monto_minimo > 0 ? '$' + formatearNumero(cupon.monto_minimo) : 'Sin mínimo' }}
+                            </td>
+                            <td class="px-4 py-3 text-sm text-center">
+                                {{ cupon.usos_actuales || 0 }}
+                                <span v-if="cupon.uso_maximo" class="text-gray-400 text-xs">
+                                    / {{ cupon.uso_maximo }}
+                                </span>
+                            </td>
+                            <td class="px-4 py-3 text-sm text-center">
+                                <span class="px-2 py-1 text-xs rounded-full" 
+                                      :class="cupon.activo && cupon.esta_activo ? 'bg-green-100 text-green-800' :
+                                             cupon.activo && !cupon.esta_activo ? 'bg-yellow-100 text-yellow-800' :
+                                             'bg-red-100 text-red-800'">
+                                    {{ cupon.activo && cupon.esta_activo ? 'Activo' :
+                                       cupon.activo && !cupon.esta_activo ? 'Programado' :
+                                       'Inactivo' }}
+                                </span>
+                            </td>
+                            <td class="px-4 py-3 text-sm text-center">
+                                <button @click="abrirModal(cupon)" class="text-blue-600 hover:text-blue-800 mr-2">
+                                    ✏️
+                                </button>
+                                <button @click="eliminarCupon(cupon.id)" class="text-red-600 hover:text-red-800">
+                                    🗑️
+                                </button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Paginación -->
+            <div v-if="paginacion && paginacion.last_page > 1" class="px-4 py-3 border-t flex flex-col sm:flex-row justify-between items-center gap-2">
+                <span class="text-sm text-gray-600">
+                    Mostrando {{ cupones.length }} de {{ paginacion.total || cupones.length }}
+                </span>
+                <div class="flex gap-1">
+                    <button 
+                        v-if="paginacion.current_page > 1"
+                        @click="cambiarPagina(paginacion.current_page - 1)"
+                        class="px-3 py-1 border rounded hover:bg-gray-100 text-sm"
+                    >
+                        Anterior
+                    </button>
+                    <span class="px-3 py-1 bg-blue-600 text-white rounded text-sm">
+                        {{ paginacion.current_page || 1 }}
+                    </span>
+                    <button 
+                        v-if="paginacion.current_page < paginacion.last_page"
+                        @click="cambiarPagina(paginacion.current_page + 1)"
+                        class="px-3 py-1 border rounded hover:bg-gray-100 text-sm"
+                    >
+                        Siguiente
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal Crear/Editar -->
+        <div v-if="modalVisible" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div class="bg-white rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+                <h2 class="text-xl font-bold mb-4">{{ editando ? 'Editar' : 'Nuevo' }} Cupón</h2>
+                
+                <form @submit.prevent="guardarCupon">
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Código *</label>
+                            <input v-model="form.codigo" type="text" class="w-full px-3 py-2 border rounded-lg uppercase" required />
+                            <p class="text-xs text-gray-400 mt-1">Código único para el cupón</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Nombre *</label>
+                            <input v-model="form.nombre" type="text" class="w-full px-3 py-2 border rounded-lg" required />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Tipo *</label>
+                            <select v-model="form.tipo" class="w-full px-3 py-2 border rounded-lg">
+                                <option value="porcentaje">Porcentaje</option>
+                                <option value="monto_fijo">Monto Fijo</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Valor *</label>
+                            <input v-model="form.valor" type="number" step="0.01" class="w-full px-3 py-2 border rounded-lg" required />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Monto Mínimo</label>
+                            <input v-model="form.monto_minimo" type="number" step="0.01" class="w-full px-3 py-2 border rounded-lg" />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Usos Máximos</label>
+                            <input v-model="form.uso_maximo" type="number" class="w-full px-3 py-2 border rounded-lg" />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Fecha Inicio</label>
+                            <input v-model="form.fecha_inicio" type="date" class="w-full px-3 py-2 border rounded-lg" />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Fecha Fin</label>
+                            <input v-model="form.fecha_fin" type="date" class="w-full px-3 py-2 border rounded-lg" />
+                        </div>
+                        <div class="flex items-center">
+                            <input v-model="form.activo" type="checkbox" class="mr-2" />
+                            <label class="text-sm font-medium text-gray-700">Activo</label>
+                        </div>
+                    </div>
+
+                    <div v-if="error" class="mt-3 p-2 bg-red-100 text-red-700 rounded text-sm">{{ error }}</div>
+
+                    <div class="flex justify-end gap-2 mt-4">
+                        <button type="button" @click="cerrarModal" class="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">
+                            Cancelar
+                        </button>
+                        <button type="submit" :disabled="guardando" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                            {{ guardando ? 'Guardando...' : 'Guardar' }}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</template>
+
+<script>
+import api from '../axios';
+import Swal from 'sweetalert2';
+
+export default {
+    name: 'Cupones',
+    data() {
+        return {
+            cupones: [],
+            paginacion: null,
+            cargando: false,
+            guardando: false,
+            error: null,
+            modalVisible: false,
+            editando: false,
+            filtros: { search: '' },
+            form: {
+                id: null,
+                codigo: '',
+                nombre: '',
+                tipo: 'porcentaje',
+                valor: 0,
+                monto_minimo: 0,
+                uso_maximo: null,
+                fecha_inicio: null,
+                fecha_fin: null,
+                activo: true
+            }
+        };
+    },
+    mounted() {
+        this.cargarCupones();
+    },
+    methods: {
+        formatearNumero(valor) {
+            if (valor === undefined || valor === null) return '0.00';
+            const num = typeof valor === 'string' ? parseFloat(valor) : valor;
+            if (isNaN(num)) return '0.00';
+            return num.toFixed(2);
+        },
+        formatearFecha(fecha) {
+            if (!fecha) return '-';
+            try {
+                const d = new Date(fecha);
+                return d.toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
+            } catch {
+                return fecha;
+            }
+        },
+        async cargarCupones() {
+            this.cargando = true;
+            try {
+                const params = {};
+                if (this.filtros.search) params.search = this.filtros.search;
+                
+                const res = await api.get('/cupones', { params });
+                this.cupones = res.data.data || [];
+                
+                this.cupones.forEach(c => {
+                    c.esta_activo = true;
+                    if (c.fecha_inicio && new Date(c.fecha_inicio) > new Date()) c.esta_activo = false;
+                    if (c.fecha_fin && new Date(c.fecha_fin) < new Date()) c.esta_activo = false;
+                    if (c.uso_maximo && c.usos_actuales >= c.uso_maximo) c.esta_activo = false;
+                });
+                
+                this.paginacion = {
+                    current_page: res.data.current_page || 1,
+                    last_page: res.data.last_page || 1,
+                    total: res.data.total || this.cupones.length
+                };
+            } catch (error) {
+                console.error('Error cargando cupones:', error);
+            } finally {
+                this.cargando = false;
+            }
+        },
+        async cambiarPagina(page) {
+            this.cargando = true;
+            try {
+                const res = await api.get('/cupones', { params: { page, ...this.filtros } });
+                this.cupones = res.data.data || [];
+                this.paginacion.current_page = page;
+            } catch (error) {
+                console.error('Error cargando página:', error);
+            } finally {
+                this.cargando = false;
+            }
+        },
+        limpiarFiltros() {
+            this.filtros.search = '';
+            this.cargarCupones();
+        },
+        abrirModal(cupon = null) {
+            if (cupon) {
+                this.editando = true;
+                this.form = { ...cupon };
+            } else {
+                this.editando = false;
+                this.form = {
+                    id: null,
+                    codigo: '',
+                    nombre: '',
+                    tipo: 'porcentaje',
+                    valor: 0,
+                    monto_minimo: 0,
+                    uso_maximo: null,
+                    fecha_inicio: null,
+                    fecha_fin: null,
+                    activo: true
+                };
+            }
+            this.error = null;
+            this.modalVisible = true;
+        },
+        cerrarModal() {
+            this.modalVisible = false;
+            this.error = null;
+        },
+        async guardarCupon() {
+            this.guardando = true;
+            this.error = null;
+
+            try {
+                const data = { ...this.form };
+                data.valor = parseFloat(data.valor) || 0;
+                data.monto_minimo = parseFloat(data.monto_minimo) || 0;
+                data.uso_maximo = data.uso_maximo ? parseInt(data.uso_maximo) : null;
+
+                let response;
+                if (this.editando) {
+                    response = await api.put(`/cupones/${this.form.id}`, data);
+                } else {
+                    response = await api.post('/cupones', data);
+                }
+
+                this.cerrarModal();
+                await this.cargarCupones();
+
+                Swal.fire({
+                    icon: 'success',
+                    title: this.editando ? 'Cupón actualizado' : 'Cupón creado',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
+            } catch (error) {
+                this.error = error.response?.data?.message || 'Error al guardar';
+            } finally {
+                this.guardando = false;
+            }
+        },
+        async eliminarCupon(id) {
+            const result = await Swal.fire({
+                title: '¿Eliminar cupón?',
+                text: 'Esta acción no se puede deshacer',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                confirmButtonText: 'Sí, eliminar',
+                cancelButtonText: 'Cancelar'
+            });
+
+            if (result.isConfirmed) {
+                try {
+                    await api.delete(`/cupones/${id}`);
+                    await this.cargarCupones();
+                    Swal.fire({ icon: 'success', title: 'Eliminado', timer: 1500, showConfirmButton: false });
+                } catch (error) {
+                    Swal.fire({ icon: 'error', title: 'Error', text: error.response?.data?.message || 'Error al eliminar' });
+                }
+            }
+        }
+    }
+};
+</script>
+
+<style scoped>
+.animate-spin {
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+</style>

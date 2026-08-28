@@ -4,6 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class Empresa extends Model
 {
@@ -13,17 +15,24 @@ class Empresa extends Model
         'nombre',
         'logo',
         'colores',
+        'configuracion',
         'direccion',
         'telefono',
         'email_contacto',
         'rfc',
+        'razon_social',
+        'leyenda_ticket',
+        'whatsapp_numero',
         'activo'
     ];
 
     protected $casts = [
         'colores' => 'array',
+        'configuracion' => 'array',
         'activo' => 'boolean',
     ];
+
+    protected $appends = ['logo_url'];
 
     public function users()
     {
@@ -49,8 +58,59 @@ class Empresa extends Model
     {
         return $this->hasMany(Venta::class);
     }
+
+    /**
+     * Obtener URL completa del logo
+     */
     public function getLogoUrlAttribute()
     {
-        return $this->logo ? asset('storage/' . $this->logo) : null;
+        if (!$this->logo) {
+            return null;
+        }
+
+        // Si ya es una URL completa, devolverla directamente
+        if (filter_var($this->logo, FILTER_VALIDATE_URL)) {
+            return $this->logo;
+        }
+
+        // Construir URL usando la URL base de la aplicación
+        $baseUrl = config('app.url', 'http://localhost:8000');
+        
+        // Asegurar que la URL base no tenga slash al final
+        $baseUrl = rtrim($baseUrl, '/');
+        
+        // Construir la URL completa del logo
+        $logoUrl = $baseUrl . '/storage/' . ltrim($this->logo, '/');
+        
+        // Log para debugging
+        Log::info('Logo URL generada:', [
+            'logo' => $this->logo,
+            'url' => $logoUrl,
+            'app_url' => config('app.url')
+        ]);
+        
+        return $logoUrl;
+    }
+
+    /**
+     * Obtener colores como array
+     */
+    public function getColoresAttribute($value)
+    {
+        if (is_string($value)) {
+            return json_decode($value, true) ?? [];
+        }
+        return $value ?? [];
+    }
+
+    /**
+     * Obtener configuración como array
+     */
+    public function getConfiguracionAttribute($value)
+    {
+        if (is_string($value)) {
+            return json_decode($value, true) ?? [];
+        }
+        return $value ?? [];
     }
 }

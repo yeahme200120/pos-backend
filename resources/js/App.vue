@@ -8,12 +8,14 @@
 
         <!-- Páginas con menú -->
         <div v-else class="flex h-screen" :style="{ backgroundColor: fondo }">
-            <!-- Sidebar con colores dinámicos y scroll -->
+            <!-- Sidebar con colores dinámicos -->
             <aside class="w-64 text-white flex-shrink-0 flex flex-col h-screen overflow-hidden"
                 :style="{ backgroundColor: colorPrincipal }">
-                <!-- Logo - Fijo -->
-                <div class="p-4 border-b flex-shrink-0" :style="{ borderColor: colorSecundario || '#374151' }">
-                    <img :src="logoUrl" alt="Logo" class="h-10 w-auto" />
+
+                <!-- ✅ Logo - Dinámico -->
+                <div class="p-4 border-b flex-shrink-0 flex items-center justify-center"
+                    :style="{ borderColor: colorSecundario || '#374151' }">
+                    <img :src="logoUrl" alt="Logo" class="h-12 w-auto object-contain" @error="handleLogoError" />
                 </div>
 
                 <!-- Menú - Scrollable -->
@@ -33,10 +35,16 @@
                         <span class="ml-2">Usuarios</span>
                     </router-link>
 
-                    <router-link to="/productos"
+                    <router-link to="/empresas"
                         class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
                         active-class="bg-opacity-30" :style="{ color: colorTexto }">
-                        <span class="ml-2">Productos</span>
+                        <span class="ml-2">Empresas</span>
+                    </router-link>
+
+                    <router-link to="/catalogos"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">Catálogos</span>
                     </router-link>
 
                     <router-link to="/clientes"
@@ -45,10 +53,36 @@
                         <span class="ml-2">Clientes</span>
                     </router-link>
 
-                    <router-link to="/licencias"
+                    <div class="px-4 py-2 text-xs uppercase mt-2" :style="{ color: colorTexto || '#9ca3af' }">
+                        Ventas
+                    </div>
+
+                    <router-link to="/ventas/nueva"
                         class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
                         active-class="bg-opacity-30" :style="{ color: colorTexto }">
-                        <span class="ml-2">Licencias</span>
+                        <span class="ml-2">Nueva Venta</span>
+                    </router-link>
+
+                    <router-link to="/ventas"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">Historial Ventas</span>
+                    </router-link>
+
+                    <div class="px-4 py-2 text-xs uppercase mt-2" :style="{ color: colorTexto || '#9ca3af' }">
+                        Promociones
+                    </div>
+
+                    <router-link to="/promociones"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">Promociones</span>
+                    </router-link>
+
+                    <router-link to="/cupones"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">Cupones</span>
                     </router-link>
 
                     <div class="px-4 py-2 text-xs uppercase mt-2" :style="{ color: colorTexto || '#9ca3af' }">
@@ -71,24 +105,23 @@
                         <span class="ml-2">Configuración</span>
                     </router-link>
 
-                    <!-- Agregar en el menú de App.vue -->
-                    <div class="px-4 py-2 text-xs uppercase mt-4" :style="{ color: colorTexto || '#9ca3af' }">
-                        Ventas
+                    <div class="px-4 py-2 text-xs uppercase mt-2" :style="{ color: colorTexto || '#9ca3af' }">
+                        Sistema
                     </div>
 
-                    <router-link to="/ventas"
+                    <router-link to="/auditoria"
                         class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
                         active-class="bg-opacity-30" :style="{ color: colorTexto }">
-                        <span class="ml-2">Historial Ventas</span>
+                        <span class="ml-2">Auditoría</span>
                     </router-link>
 
-                    <router-link to="/ventas/nueva"
+                    <router-link to="/licencias"
                         class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
                         active-class="bg-opacity-30" :style="{ color: colorTexto }">
-                        <span class="ml-2">Nueva Venta</span>
+                        <span class="ml-2">Licencias</span>
                     </router-link>
 
-                    <!-- Espacio para el botón de logout -->
+                    <!-- Espacio -->
                     <div class="h-4"></div>
                 </nav>
 
@@ -104,7 +137,7 @@
 
             <!-- Contenido principal -->
             <div class="flex-1 flex flex-col overflow-hidden">
-                <!-- Header con color dinámico (mismo que sidebar) -->
+                <!-- Header -->
                 <header class="shadow-sm px-6 py-4 flex-shrink-0" :style="{ backgroundColor: colorPrincipal }">
                     <div class="flex justify-between items-center">
                         <h2 class="text-lg font-semibold" :style="{ color: colorTexto }">
@@ -122,7 +155,7 @@
                     </div>
                 </header>
 
-                <!-- Contenido - Scrollable -->
+                <!-- Contenido -->
                 <main class="flex-1 overflow-y-auto p-6" :style="{ backgroundColor: fondo }">
                     <router-view />
                 </main>
@@ -134,11 +167,12 @@
 <script>
 import { computed, ref, onMounted, onUnmounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
+import api from './axios';
 
 export default {
     name: 'App',
     setup() {
-        const logoUrl = '/img/logo.png';
+        const logoUrl = ref('/img/logo.png');
         const router = useRouter();
         const route = useRoute();
 
@@ -154,23 +188,72 @@ export default {
             colorTexto.value = localStorage.getItem('colorTexto') || '#FFFFFF';
         };
 
+        // resources/js/App.vue
+        const cargarLogo = async () => {
+            try {
+                const timestamp = Date.now();
+                const response = await api.get(`/empresa/logo?t=${timestamp}`);
+
+                if (response.data && response.data.logo_url) {
+                    let logoUrlStr = response.data.logo_url;
+
+                    // Corregir URL - asegurar que incluya el puerto correcto
+                    if (logoUrlStr.includes('localhost') && !logoUrlStr.includes('localhost:')) {
+                        logoUrlStr = logoUrlStr.replace('localhost', 'localhost:8000');
+                    }
+
+                    // Si es una URL relativa, hacerla absoluta
+                    if (logoUrlStr.startsWith('/')) {
+                        logoUrlStr = `${window.location.origin}${logoUrlStr}`;
+                    }
+
+                    // Forzar recarga con timestamp único
+                    const uniqueTimestamp = Date.now() + Math.random();
+                    logoUrl.value = `${logoUrlStr}?t=${uniqueTimestamp}`;
+
+                    console.log('✅ Logo actualizado:', logoUrl.value);
+                } else {
+                    logoUrl.value = '/img/logo.png';
+                }
+            } catch (error) {
+                console.error('Error cargando logo:', error);
+                logoUrl.value = '/img/logo.png';
+            }
+        };
+
+        const handleLogoError = () => {
+            logoUrl.value = '/img/logo.png';
+        };
+
         const recargarColores = () => {
             cargarColores();
         };
 
+        // ✅ Escuchar cambios en localStorage (otras pestañas)
         const handleStorageChange = (e) => {
             if (['colorPrincipal', 'colorSecundario', 'fondo', 'colorTexto'].includes(e.key)) {
                 cargarColores();
             }
+            if (e.key === 'logo_actualizado') {
+                cargarLogo();
+            }
         };
 
         onMounted(() => {
+            // ✅ Registrar eventos
             window.addEventListener('recargar-colores', recargarColores);
+            window.addEventListener('recargar-logo', cargarLogo);
             window.addEventListener('storage', handleStorageChange);
+
+            // ✅ Cargar logo al iniciar
+            cargarLogo();
+
+            console.log('📌 App montada - escuchando eventos');
         });
 
         onUnmounted(() => {
             window.removeEventListener('recargar-colores', recargarColores);
+            window.removeEventListener('recargar-logo', cargarLogo);
             window.removeEventListener('storage', handleStorageChange);
         });
 
@@ -178,12 +261,17 @@ export default {
             const titles = {
                 '/': 'Dashboard',
                 '/usuarios': 'Usuarios',
-                '/productos': 'Productos',
+                '/empresas': 'Empresas',
+                '/catalogos': 'Catálogos',
                 '/clientes': 'Clientes',
                 '/licencias': 'Licencias',
                 '/reportes': 'Reportes',
                 '/configuracion': 'Configuración',
-                '/ventas': 'Ventas'
+                '/ventas': 'Historial Ventas',
+                '/ventas/nueva': 'Nueva Venta',
+                '/promociones': 'Promociones',
+                '/cupones': 'Cupones',
+                '/auditoria': 'Auditoría'
             };
             return titles[route.path] || 'POS Admin';
         });
@@ -207,6 +295,7 @@ export default {
             router.push('/login');
         };
 
+
         return {
             colorPrincipal,
             colorSecundario,
@@ -216,7 +305,8 @@ export default {
             userName,
             userInitial,
             logout,
-            logoUrl
+            logoUrl,
+            handleLogoError
         };
     }
 };
@@ -239,7 +329,6 @@ export default {
     background-color: rgba(255, 255, 255, 0.2);
 }
 
-/* Scrollbar personalizada para el sidebar */
 .overflow-y-auto::-webkit-scrollbar {
     width: 4px;
 }

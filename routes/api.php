@@ -2,17 +2,23 @@
 // routes/api.php
 
 use App\Http\Controllers\Api\V1\AdminController;
+use App\Http\Controllers\Api\V1\AuditoriaController;
+use App\Http\Controllers\Api\V1\CategoriaController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\CatalogController;
 use App\Http\Controllers\Api\V1\ClienteController;
+use App\Http\Controllers\Api\V1\CuponController;
+use App\Http\Controllers\Api\V1\EmpresaController;
 use App\Http\Controllers\Api\V1\SyncController;
 use App\Http\Controllers\Api\V1\VentaController;
 use App\Http\Controllers\Api\V1\LicenseController;
 use App\Http\Controllers\Api\V1\EstadisticasController;
 use App\Http\Controllers\Api\V1\LogoController;
 use App\Http\Controllers\Api\V1\ProductoController;
+use App\Http\Controllers\Api\V1\PromocionController;
 use App\Http\Controllers\Api\V1\TicketConfigController;
+use App\Http\Controllers\Api\V1\UnidadMedidaController;
 
 /*
 |--------------------------------------------------------------------------
@@ -36,14 +42,45 @@ Route::prefix('v1')->group(function () {
         Route::get('/catalogos', [CatalogController::class, 'index']);
         Route::get('/catalogos/productos', [CatalogController::class, 'productos']);
 
+        // CATEGORÍAS
+        Route::get('/categorias', [CategoriaController::class, 'index']);
+        Route::post('/categorias', [CategoriaController::class, 'store']);
+        Route::put('/categorias/{id}', [CategoriaController::class, 'update']);
+        Route::delete('/categorias/{id}', [CategoriaController::class, 'destroy']);
+
+        // UNIDADES DE MEDIDA
+        Route::get('/unidades', [UnidadMedidaController::class, 'index']);
+        Route::post('/unidades', [UnidadMedidaController::class, 'store']);
+        Route::put('/unidades/{id}', [UnidadMedidaController::class, 'update']);
+        Route::delete('/unidades/{id}', [UnidadMedidaController::class, 'destroy']);
+
+        // PROMOCIONES
+        Route::get('/promociones', [PromocionController::class, 'index']);
+        Route::post('/promociones', [PromocionController::class, 'store']);
+        Route::put('/promociones/{id}', [PromocionController::class, 'update']);
+        Route::delete('/promociones/{id}', [PromocionController::class, 'destroy']);
+        Route::post('/promociones/aplicar', [PromocionController::class, 'aplicar']);
+
+        // CUPONES
+        Route::get('/cupones', [CuponController::class, 'index']);
+        Route::post('/cupones', [CuponController::class, 'store']);
+        Route::put('/cupones/{id}', [CuponController::class, 'update']);
+        Route::delete('/cupones/{id}', [CuponController::class, 'destroy']);
+        Route::post('/cupones/validar', [CuponController::class, 'validar']);
+
         // Sincronización
         Route::post('/sync', [SyncController::class, 'sync']);
         Route::post('/sync/offline', [SyncController::class, 'syncOffline']);
 
+        // AUDITORÍA
+        Route::get('/auditoria', [AuditoriaController::class, 'index']);
+        Route::get('/auditoria/{id}', [AuditoriaController::class, 'show']);
+        Route::get('/auditoria/exportar', [AuditoriaController::class, 'exportar']);
+
         // ==========================================
         // 🟢 VENTAS - RUTAS ESPECÍFICAS (PRIMERO)
         // ==========================================
-        
+
         // ✅ Rutas sin parámetros o con parámetros fijos
         Route::get('/ventas/pendiente/actual', [VentaController::class, 'pendienteActual']);
         Route::post('/ventas/pendiente/guardar', [VentaController::class, 'guardarPendiente']);
@@ -51,19 +88,19 @@ Route::prefix('v1')->group(function () {
         Route::get('/ventas/exportar', [VentaController::class, 'exportar']);
         Route::get('/ventas/pendientes', [VentaController::class, 'pendientes']);
         Route::get('/estadisticas/dia', [VentaController::class, 'estadisticasDia']);
-        
+
         // ✅ Ruta del ticket - DEBE IR ANTES de /ventas/{id}
         Route::get('/ventas/{id}/ticket', [VentaController::class, 'ticket']);
-        
+
         // ✅ Ruta de anular - DEBE IR ANTES de /ventas/{id}
         Route::post('/ventas/{id}/anular', [VentaController::class, 'anular']);
-        
+
         // ✅ Ruta de devolver - DEBE IR ANTES de /ventas/{id}
         Route::post('/ventas/{id}/devolver', [VentaController::class, 'devolver']);
-        
+
         // ✅ Ruta show - DEBE IR AL FINAL
         Route::get('/ventas/{id}', [VentaController::class, 'show']);
-        
+
         // ✅ Ruta store (POST) - Puede ir después
         Route::post('/ventas', [VentaController::class, 'store']);
         Route::get('/ventas', [VentaController::class, 'index']);
@@ -83,10 +120,19 @@ Route::prefix('v1')->group(function () {
         Route::get('/ticket/config', [TicketConfigController::class, 'index']);
         Route::put('/ticket/config', [TicketConfigController::class, 'update']);
 
-        // Logo de la empresa
-        Route::get('/logo', [LogoController::class, 'show']);
-        Route::post('/logo', [LogoController::class, 'upload']);
-        Route::delete('/logo', [LogoController::class, 'destroy']);
+        // Logo de la empresa (para el sidebar)
+        Route::prefix('empresa')->group(function () {
+            Route::get('/logo', [EmpresaController::class, 'logo']);
+            Route::post('/logo', [EmpresaController::class, 'uploadLogo']);
+            Route::delete('/logo', [EmpresaController::class, 'deleteLogo']);
+        });
+
+        // CRUD Empresas (solo superadmin)
+        Route::get('/empresas', [EmpresaController::class, 'index']);
+        Route::get('/empresas/{id}', [EmpresaController::class, 'show']);
+        Route::post('/empresas', [EmpresaController::class, 'store']);
+        Route::put('/empresas/{id}', [EmpresaController::class, 'update']);
+        Route::delete('/empresas/{id}', [EmpresaController::class, 'destroy']);
 
         // ==========================================
         // PANEL DE ADMINISTRACIÓN (Superadmin)
