@@ -1537,3 +1537,255 @@ Estado: En desarrollo activo
 **Documentación generada:** 2026-08-27  
 **Próxima revisión:** 2026-09-27  
 **Estado:** En desarrollo activo
+
+---
+
+# Complemento: estado real del proyecto y APIs (revisión 2026-08-28)
+
+Este complemento conserva todo el contenido anterior y agrega los resultados de contrastarlo con el código, rutas, migraciones y pruebas actuales.
+
+## API actual verificada
+
+La base es `/api/v1`. Solo `POST /login` es pública; las demás requieren Bearer token Sanctum y licencia activa.
+
+| Módulo | Endpoints implementados |
+|---|---|
+| Autenticación | `POST /login`, `POST /logout`, `GET /user`, `GET /licencia/estado` |
+| Ventas | `GET/POST /ventas`, `GET /ventas/{id}`, `POST /ventas/{id}/anular`, `POST /ventas/{id}/devolver`, `GET /ventas/{id}/ticket`, `GET /ventas/exportar`, y gestión de borrador pendiente |
+| Productos | CRUD `/productos`, restauración, stock bajo/agotado y ajuste de stock |
+| Clientes | CRUD `/clientes`, restauración e historial |
+| Catálogos | `/catalogos`, `/catalogos/productos`, CRUD de categorías y unidades |
+| Promociones | CRUD `/promociones` y `POST /promociones/aplicar` |
+| Cupones | CRUD `/cupones` y `POST /cupones/validar` |
+| Sync | `POST /sync` y `POST /sync/offline` |
+| Métricas | estadísticas por día, semana, mes, rango, top de productos y dashboard |
+| Empresa | CRUD `/empresas`, y `GET/POST/DELETE /empresa/logo` |
+| Administración | usuarios, empresas, reportes y configuración bajo `/admin` |
+| Auditoría | consulta y CSV bajo `/auditoria`; actualmente no funcional, ver CR-01 |
+
+Ejemplo mínimo de venta:
+
+```json
+{
+  "cliente_id": 1,
+  "productos": [{"producto_id": 1, "cantidad": 2, "precio": 45, "descuento": 0}],
+  "pagos": [{"forma_pago": "Efectivo", "monto": 90}],
+  "descuento_global": 0,
+  "impuesto_global": 0
+}
+```
+
+## Módulos añadidos respecto a la documentación anterior
+
+El repositorio sí contiene panel administrativo Vue/Vite, empresas, categorías, unidades, promociones, cupones, auditoría y logo bajo `/empresa/logo`. No tiene importación CSV expuesta ni Laravel Excel instalado. La exportación administrativa sigue respondiendo “Exportación en desarrollo”.
+
+## Validación ejecutada
+
+| Verificación | Resultado |
+|---|---|
+| Migraciones | Las 22 migraciones aparecen como `Ran`. |
+| Lint PHP | Sin errores de sintaxis en app, database, routes y tests. |
+| Rutas | `php artisan route:list --json` carga correctamente. |
+| Pruebas | 1 pasó y 1 falló: el test heredado espera 200 para `/`, pero la ruta redirige a `/login` con 302. |
+| Entorno | Local, MySQL, `APP_DEBUG=true`, zona horaria UTC. No apto para producción sin endurecimiento. |
+
+## Hallazgos detallados
+
+| ID | Severidad | Hallazgo e impacto | Corrección recomendada |
+|---|---|---|---|
+| CR-01 | Crítica | `AuditoriaController` filtra por `logs_auditoria.empresa_id`, columna que no existe. Las APIs de auditoría fallan con SQL y los logs no se aíslan por empresa. | Migración con `empresa_id` indexado, añadirlo a `$fillable` y asignarlo en cada log. |
+| CR-02 | Crítica | Sync offline y `sync:process` crean ventas sin `folio`, aunque es obligatorio y único. Las ventas offline terminan en error. | Servicio transaccional único que genere folio/UUID y calcule importes. |
+| CR-03 | Crítica | `DetalleVenta` no tiene SoftDeletes, pero devolución llama `trashed()`; la devolución falla y revierte. | Modelar devoluciones o añadir soft delete correctamente. |
+| AL-01 | Alta | `/sync` calcula cambios del servidor pero no los devuelve. | Incluir cambios remotos y cursor de sincronización en la respuesta. |
+| AL-02 | Alta | Sync update/delete usa `find(id)` sin scope de empresa; permite afectar datos ajenos con un ID conocido. | Filtrar siempre por `empresa_id`, validar tabla, operación y campos permitidos. |
+| AL-03 | Alta | Devolución parcial recalcula descuento con la cantidad ya reducida; descuadra totales y no ajusta pagos/crédito. | Persistir devoluciones y calcular descuento proporcional desde cantidades originales. |
+| AL-04 | Alta | Venta acepta precio del cliente, descuentos superiores al subtotal y pagos que no cuadran. | Validar montos y pagos; recalcular desde catálogo o autorizar override. |
+| AL-05 | Alta | Cliente, categoría y unidad se validan globalmente, sin scope de empresa. | Usar `Rule::exists(...)->where('empresa_id', $empresaId)`. |
+| AL-06 | Alta | Rutas `/admin/*` carecen de control de rol; un usuario autenticado podría gestionar usuarios. | Middleware/policy superadmin para todo el grupo. |
+| ME-01 | Media | Filtro `stock_minimo` compara contra literal, no columna. | Usar `whereColumn('stock', '<=', 'stock_minimo')`. |
+| ME-02 | Media | Ajuste de stock permite negativos y no deja movimiento/auditoría. | Transacción, bloqueo, validación y tabla de movimientos. |
+| ME-03 | Media | No hay llaves foráneas; existen riesgos de referencias huérfanas. | Añadir FKs y revisar dependencias antes de eliminar. |
+| ME-04 | Media | Folio/códigos son globalmente únicos, pero folio se genera por empresa/año: puede colisionar entre empresas. | Unicidad compuesta `empresa_id, folio`; aplicar criterio a códigos. |
+| ME-05 | Media | La cola no reintenta registros en `error` ni guarda estrategia de recuperación. | Estados atómicos, máximo de intentos y reencolado supervisado. |
+
+## Cambios técnicos del 2026-08-28
+
+### Contrato validado y ajustado para la app móvil
+
+La validación real del backend y la prueba contractualmente relevante confirmaron que la app móvil puede consumir este conjunto de endpoints sin simular lógica del cliente:
+
+- `POST /api/v1/sync/offline` es idempotente por `uuid_local` y responde `procesadas[]` con `uuid_local`, `venta_id`, `folio` e `idempotente`.
+- `GET /api/v1/sync/pull?cursor=` y `POST /api/v1/sync` devuelven `cambios`, `tombstones` y `cursor`.
+- `GET /api/v1/catalogos?desde=` expone tombstones para bajas de catálogo y mantiene compatibilidad con claves legacy como `*_eliminados`.
+- `PATCH /api/v1/user/profile`, `POST /api/v1/user/password`, `POST /api/v1/password/forgot`, `POST /api/v1/password/reset` y `GET /api/v1/me/permissions` ya existen y deben usarse como contrato de autenticación y permisos.
+- `POST /api/v1/reports/daily/share` existe para envío de PDF por correo para administradores.
+
+### Reglas de negocio que la app debe respetar
+
+- Si el backend responde `idempotente: true`, la app no debe descontar inventario ni recrear la venta.
+- El cursor solo debe persistirse cuando la respuesta de sincronización se aplicó completamente.
+- El total pagado debe coincidir exactamente con el total final de la venta.
+- En pagos múltiples, el cliente debe mostrar claramente `total_venta`, `total_pagado`, `faltante` o `cambio`.
+- La app debe ocultar opciones administrativas usando `GET /api/v1/me/permissions` y no duplicar permisos locales.
+
+### Matriz técnica endpoint → caso de uso → error → manejo de UI
+
+| Endpoint | Caso de uso | Respuesta esperada | Error esperado | Manejo de UI |
+|---|---|---|---|---|
+| `POST /api/v1/login` | Iniciar sesión con email o número de usuario | `access_token`, `user`, `empresa`, `licencia` | `422` si faltan campos, `403` usuario inactivo, `422` credenciales inválidas | Mostrar mensaje de error y bloquear acceso al dashboard |
+| `GET /api/v1/user` | Consultar perfil actual | Objeto del usuario autenticado | `401` token inválido o expirado | Redirigir a login y limpiar token |
+| `PATCH /api/v1/user/profile` | Actualizar nombre o teléfono | `message` + `user` actualizado | `422` validación, `401` no autenticado | Toast de éxito y refrescar perfil local |
+| `POST /api/v1/user/password` | Cambiar contraseña autenticado | `message` | `422` por contraseña actual incorrecta o formato inválido | Mostrar detalle específico y forzar re-login si cambia con éxito |
+| `POST /api/v1/password/forgot` | Solicitar reset | Mensaje genérico | `422` email inválido | Mostrar mensaje amigable, sin revelar si existe o no la cuenta |
+| `POST /api/v1/password/reset` | Restablecer contraseña con token | `message` | `422` token inválido, email no coincide o contraseña débil | Redirigir al login y mostrar confirmación |
+| `GET /api/v1/me/permissions` | Ocultar opciones por rol | `role` + `capabilities` | `401` | Mapear permisos a UI y ocultar secciones administrativas |
+| `GET /api/v1/catalogos?desde=` | Descargar catálogo diferencial | `productos`, `clientes`, `categorias`, `promociones`, `cupones`, `tombstones` | `401`, `422` si `desde` inválido | Guardar cambios solo si la respuesta termina sin errores |
+| `POST /api/v1/sync/offline` | Enviar ventas fuera de línea | `procesadas[]` con `uuid_local`, `venta_id`, `folio`, `idempotente` | `422` si faltan `productos`/`pagos`; `500` si falla servidor | No repetir si `idempotente = true`; marcar venta como sincronizada |
+| `GET /api/v1/sync/pull?cursor=` | Descargar cambios desde cursor | `cambios`, `tombstones`, `cursor` | `401`, `429` | Reintentar con backoff; no actualizar cursor si falla |
+| `POST /api/v1/sync` | Enviar cambios locales y recuperar cambios del servidor | `message`, `cambios`, `tombstones`, `cursor` | `401`, `422`, `500` | Persistir cursor solo si la operación completa fue exitosa |
+| `POST /api/v1/ventas` | Venta online | `success`, `message`, `data` | `422` si pagos no cuadran o faltan productos | Mostrar error exacto y no permitir cierre si el total no coincide |
+| `POST /api/v1/ventas/{id}/devolver` | Devolución | Respuesta de devolución | `422` si cantidad devuelta excede la vendida | Mostrar mensaje “La devolución supera la cantidad original” |
+| `POST /api/v1/reports/daily/share` | Compartir reporte del día | `message` + `fecha` | `403` si no autorizado; `422` email inválido; `500` si falla envío | Mostrar estado real del envío; nunca afirmar entrega si no hay confirmación |
+
+### Reglas de UX para pagos múltiples
+
+En la pantalla de cobro, la app debe calcular en tiempo real lo siguiente:
+
+- `total_venta`
+- `total_pagado_acumulado`
+- `restante` (faltante)
+- `cambio` (cuando el monto supera el total)
+- `excede_costo` (si aplica)
+
+Ejemplo:
+
+```json
+{
+  "total_venta": 1250.00,
+  "pagos": [
+    { "forma_pago": "Efectivo", "monto": 600 },
+    { "forma_pago": "Tarjeta", "monto": 700 }
+  ]
+}
+```
+
+Resultado esperado:
+
+- `total_pagado = 1300.00`
+- `cambio = 50.00`
+- `excede_costo = 50.00`
+
+Si el cliente paga menos que el total:
+
+- `faltante = 100.00`
+- mensaje: “Falta por pagar: $100.00”
+
+Si paga más:
+
+- cambiar texto a: “Recibiste $1300.00 y darás cambio de $50.00”
+
+### Mensajes estándar recomendados para la app
+
+| Situación | Mensaje recomendado |
+|---|---|
+| Suma de pagos insuficiente | “El total pagado no coincide con el costo final. Revisa los pagos.” |
+| Stock insuficiente | “No hay suficiente stock para X. Disponible: Y.” |
+| Devolución inválida | “La devolución supera la cantidad original.” |
+| Cliente no válido | “El cliente seleccionado no pertenece a esta empresa.” |
+| Contraseña actual inválida | “La contraseña actual no coincide.” |
+| Sync offline repetida | “La venta ya fue registrada; no se duplicará.” |
+
+## Acciones prioritarias
+
+1. Corregir CR-01, CR-02 y CR-03 antes de operar ventas offline.
+2. Aislar administración y sincronización por empresa y rol.
+3. Unificar creación de venta online/offline/devolución en un servicio transaccional.
+4. Agregar pruebas de autenticación, tenant isolation, ventas, devolución, auditoría y sync.
+5. Antes de producción: `APP_DEBUG=false`, HTTPS, zona horaria configurada y scheduler administrado.
+
+## Segunda revisión exhaustiva — cobertura adicional
+
+La segunda revisión recorrió todos los controladores API y web, modelos, migraciones, seeders, middleware, configuración, rutas y código del panel. La lista de rutas se resolvió con Laravel y la compilación de Vite también fue ejecutada.
+
+### Inventario que debe conservarse como referencia
+
+| Componente | Estado real |
+|---|---|
+| Panel | Vistas Vue para Dashboard, Ventas, HistorialVentas, Productos, Clientes, Catálogos, Promociones, Cupones, Usuarios, Empresas, Licencias, Reportes, Configuración y Auditoría. |
+| Build frontend | `npm run build` finaliza correctamente: 174 módulos transformados. Genera assets en `public/build`. |
+| Rendimiento frontend | Vite advierte un JavaScript de 735.20 kB (216.54 kB gzip), superior al umbral de 500 kB. |
+| Tickets | La vista existe en `resources/views/tickets/venta.blade.php`; usa DomPDF y QR. |
+| Comandos | Solo existe `sync:process {--limit=50} {--force}`. La opción `--force` se lee pero no modifica el comportamiento. |
+| Controladores sin ruta | Existen `Api/V1/LogoController` y `App/Http/Controllers/Admin/AdminController`, pero `routes/api.php` usa `EmpresaController` y el `Api/V1/AdminController`. Son código duplicado/no enrutable. |
+| Catálogos sync | El diferencial incluye productos, clientes, impuestos, formas de pago y unidades; no incluye categorías, promociones ni cupones. |
+| Seeders | Crean una empresa, usuarios, unidades, categorías, productos, clientes, formas de pago, impuestos y configuración de ticket. Las credenciales sembradas deben cambiarse inmediatamente fuera de desarrollo. |
+
+### Hallazgos adicionales
+
+| ID | Severidad | Hallazgo e impacto | Corrección recomendada |
+|---|---|---|---|
+| AL-07 | Alta | `Empresa` no usa `SoftDeletes` aunque su migración contiene `deleted_at`. `EmpresaController::destroy` ejecuta borrado físico, por lo que puede dejar usuarios, ventas y catálogos huérfanos. | Agregar el trait al modelo y definir política de baja; bloquear la eliminación de empresas con datos o usar archivado. |
+| AL-08 | Alta | El reporte de `Api/V1/AdminController` consulta ventas de todas las empresas y no aplica scope de empresa. Sumado a la falta de middleware de rol, expone información entre tenants. | Exigir superadmin explícito; para admin normal limitar a `empresa_id`; documentar el alcance permitido. |
+| AL-09 | Alta | Promociones permite `aplica_a=categoria`, pero el esquema/modelo no tiene `categoria_id` ni tabla pivote para categorías, y `aplicaAProducto()` solo resuelve todos o producto. La funcionalidad de categoría no existe de forma efectiva. | Agregar relación de categoría o eliminar ese valor del contrato hasta implementarlo. |
+| AL-10 | Alta | Promociones y cupones se pueden validar/calcular, pero el flujo de venta no recibe ni consume cupón/promoción, no incrementa usos y no vincula el descuento a la venta. `uso_por_usuario` siempre permite usarlo porque no existe tabla de usos. | Modelar `venta_cupones`/usos, aplicar descuento en la transacción de venta y actualizar límites de forma atómica. |
+| ME-06 | Media | `promociones?activa=1` exige fechas no nulas; contradice el modelo, que permite promociones sin fecha. | Usar condiciones con `whereNull ... orWhere` o el scope `activas/vigentes`. |
+| ME-07 | Media | La relación `Venta::auditorias()` es `morphMany`, pero `logs_auditoria` no tiene columnas polimórficas (`registro_type`/equivalente). No puede funcionar como está definida. | Eliminarla o migrar la auditoría a un polimorfismo real; mantener consistencia con `tabla` y `registro_id`. |
+| ME-08 | Media | `productos`, `clientes` y `unidades_medida` usan soft-delete, pero las consultas de sync y catálogo no entregan las bajas de impuestos, formas de pago, categorías, promociones o cupones. El cliente offline conservará datos eliminados. | Definir un protocolo de tombstones para todas las entidades sincronizables. |
+| ME-09 | Media | El comando de sincronización declara `--force` pero no lo utiliza y deja elementos fallidos fuera del procesamiento normal. | Implementar su semántica o retirar la opción; registrar error y política de retry. |
+| ME-10 | Media | Generación de `numero_usuario` usa `max(id)+1`; dos altas concurrentes pueden producir el mismo número y violar la restricción única. | Usar secuencia/columna derivada tras inserción, bloqueo o reintento ante conflicto. |
+| BA-04 | Baja | El build del panel es válido, pero existe una advertencia de bundle grande. | Usar importaciones dinámicas por vista y `manualChunks`; medir antes/después. |
+| BA-05 | Baja | `.env.example` propone SQLite, mientras la instalación real y el entorno actual usan MySQL. | Actualizar ejemplo y guía para que describan una sola ruta de instalación o ambos perfiles claramente. |
+
+### Pruebas y operación pendientes de documentar
+
+- No hay pruebas Feature para las APIs de negocio; los únicos tests son los ejemplos de Laravel.
+- No se encontró una ruta API para ejecutar manualmente `procesarVentasPendientes()`; el procesamiento se realiza por comando/scheduler.
+- La tarea programada efectiva es horaria con límite 100, aunque comentarios conservados mencionan cinco minutos y límite 50.
+- El scheduler requiere una ejecución externa de `php artisan schedule:run`; no se aprecia configuración de cron, Supervisor o servicio equivalente dentro del repositorio.
+- Los endpoints de listado aceptan `per_page` sin límite máximo en varios controladores: añadir validación y un tope para evitar respuestas excesivas.
+
+## Opciones de resolución para las incidencias detectadas
+
+Esta sección es una guía de decisión; no implica que se haya aplicado ninguna corrección. Las alternativas marcadas como recomendadas priorizan integridad transaccional, aislamiento multiempresa y trazabilidad.
+
+| Incidencia | Opción A | Opción B | Recomendación |
+|---|---|---|---|
+| CR-01: auditoría sin empresa | Agregar `empresa_id` nullable/indexado a `logs_auditoria`; poblar datos antiguos con el usuario y asignarlo en cada creación. | No cambiar esquema y filtrar mediante join con `users.empresa_id`. | **A**. Conserva la empresa original aunque el usuario cambie de empresa o se elimine. |
+| CR-02: ventas offline sin folio | Extraer un `VentaService` único para online, offline y comando; generar folio/UUID y validar stock/pagos dentro de una transacción. | Duplicar la generación de folio/cálculos en ambos procesadores offline. | **A**. Elimina divergencias futuras. Añadir índice compuesto de folio por empresa. |
+| CR-03: devolución usa `trashed()` inexistente | Añadir `deleted_at` y `SoftDeletes` a detalle de venta. | Crear `devoluciones` y `detalle_devoluciones` inmutables sin modificar/eliminar el detalle de la venta. | **B**. Conserva evidencia fiscal/operativa y admite devoluciones parciales repetidas. |
+| AL-01: sync no devuelve cambios | Devolver `cambios_servidor` y cursor `server_time` en la respuesta actual. | Implementar endpoint pull separado con token de cursor/versiones. | **B** si habrá alto volumen; **A** es suficiente para una primera versión pequeña. |
+| AL-02 y AL-05: fuga entre empresas | Aplicar scopes explícitos `where('empresa_id', ...)` y `Rule::exists()->where()` en cada acción. | Implementar un trait/global scope de tenant más policies y Form Requests. | Empezar con **A** y consolidar en **B** cuando todos los modelos tengan `empresa_id`. |
+| AL-03: devolución descuadrada | Corregir el cálculo actual conservando descuento unitario original y actualizando detalle. | Registrar notas de crédito/devoluciones en tablas nuevas y recalcular saldo/pagos con eventos. | **B** para producción; **A** solo como parche de emergencia. |
+| AL-04: totales y precios manipulables | Recalcular precio desde producto y exigir suma de pagos igual a total, salvo crédito controlado. | Permitir precios manuales con permiso específico, motivo y auditoría; servidor sigue validando todos los totales. | **B**. Es compatible con POS y evita que el cliente sea fuente de verdad. |
+| AL-06 y AL-08: administración sin rol/tenant | Middleware de rol `superadmin` en grupo `/admin`. | Policies/Gates por recurso que distingan superadmin, admin y vendedor. | **B**; aplicar **A** inmediatamente como contención. |
+| AL-07: borrado físico de empresa | Añadir trait `SoftDeletes` al modelo y bloquear borrado con dependencias. | Reemplazar delete por campo `activo=false` y mantener empresa histórica. | **B** para SaaS/POS: desactivar es más seguro que eliminar. |
+| AL-09: promoción por categoría incompleta | Retirar `categoria` del enum/API temporalmente. | Añadir `categoria_id` o pivote `promocion_categorias` y resolver aplicación por categoría. | **B** si es requisito comercial; de lo contrario **A** reduce contrato falso. |
+| AL-10: cupones/promociones no consumidos | Deshabilitar en UI/API de venta hasta completar integración. | Agregar tablas de uso por venta/usuario y aplicar/incrementar límites dentro de la transacción de venta. | **B**. Debe incluir índice único para impedir doble uso en reintentos. |
+| ME-01: filtro de stock | Cambiar a `whereColumn`. | Mover lógica a scope `stockBajo()` reutilizable. | **B**, con pruebas; es una corrección pequeña. |
+| ME-02: stock negativo sin movimiento | Bloqueo de fila y validación de resultado no negativo. | Además crear `movimientos_stock` inmutable para ventas, devoluciones, compras y ajustes. | **B**. La auditoría de inventario es esencial en POS. |
+| ME-03: sin llaves foráneas | Añadir FKs restrictivas a relaciones históricas y de catálogos. | Mantener sin FKs pero implementar verificaciones en servicios y auditoría de integridad periódica. | **A** cuando el motor/datos lo permitan; combinar con validación de aplicación. |
+| ME-04: unicidad global de folio/códigos | Mantener globales e incluir prefijo de empresa en valor. | Cambiar índices a `unique(empresa_id, folio)`, `unique(empresa_id, codigo)` y cupón según regla comercial. | **B** para multiempresa; migrar revisando duplicados existentes. |
+| ME-05 y ME-09: cola sin recuperación | Permitir que `--force` reprocesse errores y registre causa. | Usar Jobs/queue de Laravel con `tries`, `backoff`, `failed_jobs`, reserva atómica y dashboard. | **B** si habrá operación offline real; **A** como mínimo inmediato. |
+| ME-06: promociones sin fecha | Exigir siempre inicio/fin. | Soportar vigencia indefinida usando scopes que contemplen `NULL`. | **B**, consistente con el modelo actual. |
+| ME-07: auditoría polimórfica inválida | Eliminar relación `Venta::auditorias()` y consultar por `tabla/registro_id`. | Migrar a `auditable_type/auditable_id` y relation morph real. | **B** si la auditoría será transversal; **A** reduce error de inmediato. |
+| ME-08: bajas no sincronizadas | Enviar listas de eliminados para cada catálogo. | Crear tabla global de tombstones/eventos de sincronización con versión. | **B** para sincronización robusta y escalable. |
+| ME-10: número de usuario concurrente | Capturar conflicto unique y reintentar generación. | Generar número tras insert con secuencia/autoincrement o tabla de contadores bloqueada. | **B**; evita carrera y conserva formato. |
+| BA-01: pruebas insuficientes | Corregir `ExampleTest` para esperar redirección. | Sustituirlo por suite Feature/Unit de negocio con factories y base aislada. | **B**. El test de ejemplo no aporta cobertura funcional. |
+| BA-04: bundle grande | Aumentar `chunkSizeWarningLimit`. | Lazy loading por ruta, `manualChunks` y separar bibliotecas pesadas. | **B**; no ocultar la advertencia sin medir. |
+| BA-05: configuración inconsistente | Documentar SQLite y MySQL como perfiles explícitos. | Elegir MySQL como estándar, actualizar `.env.example` y añadir `.env.testing` SQLite. | **B** si MySQL es la base de producción. |
+
+### Plan sugerido por fases
+
+1. **Contención (antes de producción):** CR-01, CR-02, CR-03, AL-02, AL-05, AL-06, AL-08 y desactivar operaciones de cupón/promoción que no se registran.
+2. **Integridad del negocio:** servicio único de ventas, devoluciones inmutables, movimientos de stock, validación de pagos y políticas de precio.
+3. **Confiabilidad offline:** protocolo de tombstones, cursor de sincronización, jobs con reintentos y pruebas de reintento/idempotencia.
+4. **Datos y rendimiento:** migrar índices multiempresa/FKs de manera controlada, limitar paginación y dividir bundle frontend.
+5. **Calidad continua:** pruebas Feature de todas las rutas críticas, pruebas de concurrencia para stock/número de usuario y pipeline CI.
+
+### Criterios de aceptación mínimos
+
+- Una venta online y offline generan el mismo resultado contable, folio, auditoría y movimiento de stock.
+- Ningún usuario puede leer o modificar datos de otra empresa, incluyendo por sync, reportes y endpoints administrativos.
+- Una devolución parcial conserva el total histórico, registra la devolución y no permite devolver más de lo vendido.
+- Un cupón/promoción no puede exceder límites ni reutilizarse por reintento de red.
+- Auditoría y sincronización funcionan con pruebas automatizadas y sin errores SQL.

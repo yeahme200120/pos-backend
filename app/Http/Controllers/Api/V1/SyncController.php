@@ -13,6 +13,9 @@ use App\Models\SyncMetadata;
 use App\Models\SyncQueue;
 use App\Models\Venta;
 use App\Models\LogAuditoria;
+use App\Models\Categoria;
+use App\Models\Promocion;
+use App\Models\Cupon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -31,7 +34,8 @@ class SyncController extends Controller
         $this->procesarCambiosCliente($cambiosCliente, $empresaId, $user->id);
 
         // 2. Obtener cambios del servidor desde la última sincronización
-        $fechaSync = $request->input('ultima_sync', '1970-01-01 00:00:00');
+        $fechaSync = $request->input('cursor', $request->input('ultima_sync', '1970-01-01 00:00:00'));
+        $cursorFinal = now()->toIso8601String();
         $cambiosServidor = $this->obtenerCambiosServidor($empresaId, $fechaSync);
 
         // 3. Actualizar metadatos de sincronización
@@ -42,7 +46,21 @@ class SyncController extends Controller
 
         return response()->json([
             'message' => 'Sincronización completada',
-            'ventas_procesadas' => true,
+            'cambios' => $cambiosServidor,
+            'tombstones' => $this->obtenerTombstones($empresaId, $fechaSync),
+            'cursor' => $cursorFinal,
+        ]);
+    }
+
+    public function pull(Request $request)
+    {
+        $cursor = $request->input('cursor', '1970-01-01 00:00:00');
+        $empresaId = $request->user()->empresa_id;
+        $cursorFinal = now()->toIso8601String();
+        return response()->json([
+            'cambios' => $this->obtenerCambiosServidor($empresaId, $cursor),
+            'tombstones' => $this->obtenerTombstones($empresaId, $cursor),
+            'cursor' => $cursorFinal,
         ]);
     }
 
@@ -70,7 +88,7 @@ class SyncController extends Controller
                         break;
                     case 'update':
                         $id = $registro['id'];
-                        $existe = $modelo::find($id);
+                        $existe = $modelo::where('empresa_id', $empresaId)->find($id);
                         if (!$existe) break;
                         $datosAntes = $existe->toArray();
                         $existe->update($registro['datos']);
@@ -79,7 +97,7 @@ class SyncController extends Controller
                         break;
                     case 'delete':
                         $id = $registro['id'];
-                        $existe = $modelo::find($id);
+                        $existe = $modelo::where('empresa_id', $empresaId)->find($id);
                         if (!$existe) break;
                         $datosAntes = $existe->toArray();
                         $existe->delete();
@@ -115,6 +133,9 @@ class SyncController extends Controller
             'impuestos' => Impuesto::class,
             'formas_pago' => FormaPago::class,
             'unidades_medida' => UnidadMedida::class,
+            'categorias' => Categoria::class,
+            'promociones' => Promocion::class,
+            'cupones' => Cupon::class,
         ];
 
         $cambios = [];
@@ -128,6 +149,38 @@ class SyncController extends Controller
         return $cambios;
     }
 
+    private function obtenerTombstones($empresaId, $fechaSync): array
+    {
+        $tablas = [
+            'productos' => Producto::class,
+            'clientes' => Cliente::class,
+            'impuestos' => Impuesto::class,
+            'formas_pago' => FormaPago::class,
+            'unidades_medida' => UnidadMedida::class,
+            'categorias' => Categoria::class,
+            'promociones' => Promocion::class,
+            'cupones' => Cupon::class,
+        ];
+
+        $resultado = [];
+        foreach ($tablas as $nombre => $clase) {
+            if (!in_array(\Illuminate\Database\Eloquent\SoftDeletes::class, class_uses_recursive($clase), true)) {
+                $resultado[$nombre] = [];
+                continue;
+            }
+
+            $resultado[$nombre] = $clase::withTrashed()
+                ->where('empresa_id', $empresaId)
+                ->where('deleted_at', '>', $fechaSync)
+                ->get(['id', 'deleted_at'])
+                ->map(fn ($item) => ['id' => $item->id, 'deleted_at' => $item->deleted_at])
+                ->values()
+                ->all();
+        }
+
+        return $resultado;
+    }
+
     /**
      * Obtener el modelo correspondiente a una tabla.
      */
@@ -139,6 +192,9 @@ class SyncController extends Controller
             'impuestos' => Impuesto::class,
             'formas_pago' => FormaPago::class,
             'unidades_medida' => UnidadMedida::class,
+            'categorias' => Categoria::class,
+            'promociones' => Promocion::class,
+            'cupones' => Cupon::class,
         ];
         return $mapa[$tabla] ?? null;
     }
@@ -153,11 +209,17 @@ class SyncController extends Controller
 
         $request->validate([
             'ventas' => 'required|array',
-            'ventas.*.uuid_local' => 'required|string|unique:sync_queue,uuid_local',
-            'ventas.*.cliente_id' => 'nullable|exists:clientes,id',
+            'ventas.*.uuid_local' => 'required|string|max:100',
+            'ventas.*.cliente_id' => 'nullable|integer',
             'ventas.*.productos' => 'required|array|min:1',
-            'ventas.*.forma_pago' => 'required|string',
-            'ventas.*.monto_pagado' => 'required|numeric|min:0',
+            'ventas.*.productos.*.producto_id' => 'required|integer',
+            'ventas.*.productos.*.cantidad' => 'required|numeric|min:0.01',
+            'ventas.*.productos.*.precio_unitario' => 'required|numeric|min:0',
+            'ventas.*.pagos' => 'nullable|array|min:1',
+            'ventas.*.pagos.*.forma_pago' => 'required|string|max:100',
+            'ventas.*.pagos.*.monto' => 'required|numeric|min:0.01',
+            'ventas.*.forma_pago' => 'required_without:ventas.*.pagos|string',
+            'ventas.*.monto_pagado' => 'required_without:ventas.*.pagos|numeric|min:0.01',
             'ventas.*.fecha_venta' => 'required|date',
         ]);
 
@@ -168,12 +230,18 @@ class SyncController extends Controller
 
             foreach ($request->ventas as $ventaData) {
                 try {
+                    if (!empty($ventaData['cliente_id']) && !Cliente::where('id', $ventaData['cliente_id'])->where('empresa_id', $empresaId)->exists()) {
+                        throw new \Exception('Cliente no encontrado para esta empresa.');
+                    }
                     // Validar que exista en la cola para evitar duplicados
                     $existe = SyncQueue::where('uuid_local', $ventaData['uuid_local'])->exists();
                     if ($existe) {
-                        $errores[] = [
+                        $ventaExistente = Venta::where('empresa_id', $empresaId)->where('uuid', $ventaData['uuid_local'])->first();
+                        $ventasProcesadas[] = [
                             'uuid_local' => $ventaData['uuid_local'],
-                            'error' => 'Esta venta ya fue procesada anteriormente.'
+                            'venta_id' => $ventaExistente?->id,
+                            'folio' => $ventaExistente?->folio,
+                            'idempotente' => true,
                         ];
                         continue;
                     }
@@ -223,6 +291,8 @@ class SyncController extends Controller
                     $ventasProcesadas[] = [
                         'uuid_local' => $ventaData['uuid_local'],
                         'venta_id' => $venta->id,
+                        'folio' => $venta->folio,
+                        'idempotente' => false,
                     ];
                 } catch (\Exception $e) {
                     // Registrar el error en la cola
@@ -294,7 +364,7 @@ class SyncController extends Controller
                     $producto->save();
                 }
 
-                $subtotal = $item['cantidad'] * $item['precio_unitario'];
+                $subtotal = ($item['cantidad'] * $item['precio_unitario']) - ($item['descuento'] ?? 0);
                 $total += $subtotal;
 
                 $detalles[] = [
@@ -306,26 +376,49 @@ class SyncController extends Controller
                 ];
             }
 
+            $descuentoGlobal = (float) ($data['descuento_global'] ?? 0);
+            $impuestoGlobal = (float) ($data['impuesto_global'] ?? 0);
+            $totalConDescuento = $total - $descuentoGlobal;
+            $totalFinal = round($totalConDescuento + ($totalConDescuento * ($impuestoGlobal / 100)), 2);
+            $pagos = $data['pagos'] ?? [[
+                'forma_pago' => $data['forma_pago'],
+                'monto' => $data['monto_pagado'],
+                'referencia' => $data['referencia'] ?? null,
+            ]];
+            $totalPagos = round(collect($pagos)->sum(fn ($pago) => (float) $pago['monto']), 2);
+            if (abs($totalPagos - $totalFinal) > 0.009) {
+                throw new \Exception('La suma de los pagos debe coincidir exactamente con el total de la venta.');
+            }
+
             $venta = Venta::create([
+                'uuid' => $data['uuid_local'],
+                'folio' => $this->generarFolio($empresaId),
                 'empresa_id' => $empresaId,
                 'usuario_id' => $user->id,
                 'cliente_id' => $data['cliente_id'] ?? null,
                 'fecha' => $data['fecha_venta'],
-                'total' => $total,
-                'descuento' => $data['descuento_global'] ?? 0,
-                'impuesto' => $data['impuesto_global'] ?? 0,
+                'subtotal' => $total,
+                'total' => $totalFinal,
+                'descuento' => $descuentoGlobal,
+                'impuesto' => $impuestoGlobal,
                 'estado' => 'pagado',
+                'dispositivo_id' => $data['dispositivo_id'] ?? null,
+                'sincronizado' => true,
+                'fecha_sincronizacion' => now(),
             ]);
 
             foreach ($detalles as $detalle) {
                 $venta->detalles()->create($detalle);
             }
 
-            $venta->pagos()->create([
-                'forma_pago' => $data['forma_pago'],
-                'monto' => $data['monto_pagado'],
-                'referencia' => $data['referencia'] ?? null,
-            ]);
+            foreach ($pagos as $pago) {
+                $venta->pagos()->create([
+                    'forma_pago' => $pago['forma_pago'],
+                    'monto' => $pago['monto'],
+                    'referencia' => $pago['referencia'] ?? null,
+                    'cambio' => $pago['cambio'] ?? 0,
+                ]);
+            }
 
             DB::commit();
             return $venta;
@@ -414,5 +507,19 @@ class SyncController extends Controller
         return response()->json([
             'procesadas' => $pendientes->count(),
         ]);
+    }
+
+    public function archive(Request $request)
+    {
+        $request->validate(['ventas' => 'required_without:archived_sales|array', 'archived_sales' => 'required_without:ventas|array']);
+        $request->merge(['ventas' => $request->input('ventas', $request->input('archived_sales', []))]);
+        return $this->syncOffline($request);
+    }
+
+    private function generarFolio($empresaId): string
+    {
+        $ultimaVenta = Venta::where('empresa_id', $empresaId)->whereYear('created_at', now()->year)->orderByDesc('id')->lockForUpdate()->first();
+        $numero = $ultimaVenta ? ((int) substr($ultimaVenta->folio, -6)) + 1 : 1;
+        return 'V-' . now()->format('y') . '-' . str_pad((string) $numero, 6, '0', STR_PAD_LEFT);
     }
 }

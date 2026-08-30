@@ -36,6 +36,7 @@ class EstadisticasController extends Controller
             ->where('ventas.empresa_id', $empresaId)
             ->whereDate('ventas.fecha', $hoy)
             ->where('ventas.estado', 'pagado')
+            ->where('pagos.activo', true)
             ->select(
                 'productos.id',
                 'productos.nombre',

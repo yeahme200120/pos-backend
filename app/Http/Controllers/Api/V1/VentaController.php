@@ -40,6 +40,7 @@ class VentaController extends Controller
             'pagos.*.forma_pago' => 'required|in:Efectivo,Tarjeta Crédito,Tarjeta Débito,Transferencia,Crédito,Otro',
             'pagos.*.monto' => 'required|numeric|min:0.01',
             'pagos.*.referencia' => 'nullable|string|max:100',
+            'pagos.*.cambio' => 'nullable|numeric|min:0',
             'descuento_global' => 'nullable|numeric|min:0',
             'impuesto_global' => 'nullable|numeric|min:0|max:100',
             'notas' => 'nullable|string|max:500',
@@ -91,6 +92,11 @@ class VentaController extends Controller
 
             $totalConDescuento = $total - $descuentoGlobal;
             $totalFinal = $totalConDescuento + ($totalConDescuento * ($impuestoGlobal / 100));
+
+            $totalPagos = round(collect($request->pagos)->sum(fn ($pago) => (float) $pago['monto']), 2);
+            if (abs($totalPagos - round($totalFinal, 2)) > 0.009) {
+                throw new \Exception('La suma de los pagos debe coincidir exactamente con el total de la venta.');
+            }
 
             // Generar folio
             $folio = $this->generarFolio($empresaId);
@@ -761,6 +767,7 @@ class VentaController extends Controller
 
         // Formas de pago
         $formasPago = Pago::whereIn('venta_id', $ventasHoy->pluck('id'))
+            ->where('activo', true)
             ->select('forma_pago', DB::raw('COUNT(*) as total'), DB::raw('SUM(monto) as monto_total'))
             ->groupBy('forma_pago')
             ->get();

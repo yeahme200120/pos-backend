@@ -19,6 +19,7 @@ use App\Http\Controllers\Api\V1\ProductoController;
 use App\Http\Controllers\Api\V1\PromocionController;
 use App\Http\Controllers\Api\V1\TicketConfigController;
 use App\Http\Controllers\Api\V1\UnidadMedidaController;
+use App\Http\Controllers\Api\V1\ReportShareController;
 
 /*
 |--------------------------------------------------------------------------
@@ -30,6 +31,8 @@ Route::prefix('v1')->group(function () {
 
     // --- RUTAS PÚBLICAS (NO requieren autenticación) ---
     Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/password/forgot', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
+    Route::post('/password/reset', [AuthController::class, 'resetPassword'])->middleware('throttle:5,1');
 
     // --- RUTAS PROTEGIDAS (requieren autenticación y licencia) ---
     Route::middleware(['auth:sanctum', 'check.license'])->group(function () {
@@ -37,6 +40,9 @@ Route::prefix('v1')->group(function () {
         // Autenticación
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::get('/user', [AuthController::class, 'user']);
+        Route::patch('/user/profile', [AuthController::class, 'updateProfile']);
+        Route::post('/user/password', [AuthController::class, 'changePassword'])->middleware('throttle:5,1');
+        Route::get('/me/permissions', [AuthController::class, 'permissions']);
 
         // Catálogos
         Route::get('/catalogos', [CatalogController::class, 'index']);
@@ -71,6 +77,10 @@ Route::prefix('v1')->group(function () {
         // Sincronización
         Route::post('/sync', [SyncController::class, 'sync']);
         Route::post('/sync/offline', [SyncController::class, 'syncOffline']);
+        Route::get('/sync/pull', [SyncController::class, 'pull']);
+        Route::post('/sync/archive', [SyncController::class, 'archive']);
+
+        Route::post('/reports/daily/share', [ReportShareController::class, 'dailyShare'])->middleware('throttle:10,1');
 
         // AUDITORÍA
         Route::get('/auditoria', [AuditoriaController::class, 'index']);
@@ -153,6 +163,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/reportes/exportar', [AdminController::class, 'exportarReportes']);
 
             // Configuración de empresa
+            Route::get('/empresa/config', [AdminController::class, 'configuracion']);
             Route::put('/empresa/config', [AdminController::class, 'actualizarConfiguracion']);
         });
 

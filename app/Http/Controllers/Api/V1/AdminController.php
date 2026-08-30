@@ -275,6 +275,21 @@ class AdminController extends Controller
     /**
      * Actualizar configuración de la empresa.
      */
+    public function configuracion(Request $request)
+    {
+        $empresa = $request->user()->empresa;
+        if (!$empresa) {
+            return response()->json(['error' => 'Empresa no encontrada'], 404);
+        }
+
+        return response()->json([
+            'nombre' => $empresa->nombre,
+            'colores' => is_string($empresa->colores)
+                ? json_decode($empresa->colores, true)
+                : $empresa->colores,
+        ]);
+    }
+
     public function actualizarConfiguracion(Request $request)
     {
         $empresa = $request->user()->empresa;
