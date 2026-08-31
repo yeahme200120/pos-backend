@@ -26,7 +26,12 @@ use App\Http\Controllers\Api\V1\ReportShareController;
 | API Routes - Laravel 12
 |--------------------------------------------------------------------------
 */
-
+ // Logo de la empresa (para el sidebar)
+        Route::prefix('empresa')->group(function () {
+            Route::get('/logo', [EmpresaController::class, 'logo']);
+            Route::post('/logo', [EmpresaController::class, 'uploadLogo']);
+            Route::delete('/logo', [EmpresaController::class, 'deleteLogo']);
+        });
 Route::prefix('v1')->group(function () {
 
     // --- RUTAS PÚBLICAS (NO requieren autenticación) ---
@@ -97,7 +102,6 @@ Route::prefix('v1')->group(function () {
         Route::delete('/ventas/pendiente/eliminar', [VentaController::class, 'eliminarPendiente']);
         Route::get('/ventas/exportar', [VentaController::class, 'exportar']);
         Route::get('/ventas/pendientes', [VentaController::class, 'pendientes']);
-        Route::get('/estadisticas/dia', [VentaController::class, 'estadisticasDia']);
 
         // ✅ Ruta del ticket - DEBE IR ANTES de /ventas/{id}
         Route::get('/ventas/{id}/ticket', [VentaController::class, 'ticket']);
@@ -130,12 +134,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/ticket/config', [TicketConfigController::class, 'index']);
         Route::put('/ticket/config', [TicketConfigController::class, 'update']);
 
-        // Logo de la empresa (para el sidebar)
-        Route::prefix('empresa')->group(function () {
-            Route::get('/logo', [EmpresaController::class, 'logo']);
-            Route::post('/logo', [EmpresaController::class, 'uploadLogo']);
-            Route::delete('/logo', [EmpresaController::class, 'deleteLogo']);
-        });
+       
 
         // CRUD Empresas (solo superadmin)
         Route::get('/empresas', [EmpresaController::class, 'index']);

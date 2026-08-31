@@ -1,42 +1,51 @@
 <?php
-// routes/web.php
 
 use Illuminate\Support\Facades\Route;
 
+/*
+|--------------------------------------------------------------------------
+| RUTAS WEB
+|--------------------------------------------------------------------------
+| Estas rutas sirven la aplicación Vue.
+| La autenticación real del panel se realiza mediante
+| Sanctum en routes/api.php.
+|--------------------------------------------------------------------------
+*/
+
 // ============================================
-// RUTAS PÚBLICAS
+// LOGIN / APLICACIÓN SPA
 // ============================================
 
-// Redirección raíz a login
+// Entrada principal
 Route::get('/', function () {
-    return redirect('/login');
+    return view('admin.app');
 });
 
-// Página de login
+// Login
 Route::get('/login', function () {
     return view('admin.app');
 })->name('login');
 
-// Logout
-Route::post('/logout', function () {
-    auth()->logout();
-    return redirect('/login');
-})->name('logout');
-
 // ============================================
-// RUTAS DEL ADMIN (requieren autenticación)
+// TODAS LAS RUTAS DEL PANEL VUE
 // ============================================
+//
+// IMPORTANTE:
+// NO usar middleware 'auth' aquí.
+//
+// Vue Router controla:
+//   - requiresAuth
+//   - guest
+//
+// Laravel protege los datos mediante:
+//   auth:sanctum
+//
+// en routes/api.php
+//
 
-Route::middleware(['auth', 'check.license'])->group(function () {
-    // Captura TODAS las rutas del admin, EXCEPTO:
-    // - Las que empiezan con 'api' (rutas API)
-    // - Las que empiezan con 'storage' (archivos)
-    // - Las que empiezan con 'css', 'js', 'fonts', 'images'
-    // - Las que empiezan con '_debugbar', 'telescope', 'horizon', 'vendor'
-    Route::get('/{any}', function () {
-        return view('admin.app');
-    })->where('any', '^(?!api|storage|css|js|fonts|images|_debugbar|telescope|horizon|vendor).*');
-});
-
-// 🔴 IMPORTANTE: Las rutas API están en routes/api.php
-// No agregues rutas API aquí
+Route::get('/{any}', function () {
+    return view('admin.app');
+})->where(
+    'any',
+    '^(?!api(?:/|$)|storage(?:/|$)|css(?:/|$)|js(?:/|$)|fonts(?:/|$)|images(?:/|$)|_debugbar(?:/|$)|telescope(?:/|$)|horizon(?:/|$)|vendor(?:/|$)).*'
+);
