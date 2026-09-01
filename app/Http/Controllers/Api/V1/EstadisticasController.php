@@ -4,14 +4,21 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Cliente;
-use Illuminate\Http\Request;
-use App\Models\Venta;
 use App\Models\DetalleVenta;
 use App\Models\Producto;
+use App\Models\Venta;
+use App\Services\AuditoriaService;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class EstadisticasController extends Controller
 {
+    public function __construct(
+        private readonly AuditoriaService $auditoriaService
+    ) {
+    }
+
     /**
      * Obtener estadísticas del día actual.
      */
@@ -20,35 +27,64 @@ class EstadisticasController extends Controller
         $empresaId = $request->user()->empresa_id;
         $hoy = now()->toDateString();
 
-        // 1. Ventas del día
+        // ============================================================
+        // 1. VENTAS DEL DÍA
+        // ============================================================
+
         $ventasDelDia = Venta::where('empresa_id', $empresaId)
             ->whereDate('fecha', $hoy)
             ->where('estado', 'pagado')
             ->get();
 
-        $totalVentas = $ventasDelDia->sum('total');
+        $totalVentas = (float) $ventasDelDia->sum('total');
         $numeroTickets = $ventasDelDia->count();
-        $ticketPromedio = $numeroTickets > 0 ? round($totalVentas / $numeroTickets, 2) : 0;
 
-        // 2. Productos más vendidos (top 5 por cantidad)
-        $productosMasVendidos = DetalleVenta::join('ventas', 'detalle_ventas.venta_id', '=', 'ventas.id')
-            ->join('productos', 'detalle_ventas.producto_id', '=', 'productos.id')
+        $ticketPromedio = $numeroTickets > 0
+            ? round($totalVentas / $numeroTickets, 2)
+            : 0;
+
+        // ============================================================
+        // 2. PRODUCTOS MÁS VENDIDOS
+        // ============================================================
+        //
+        // No se utiliza pagos.activo aquí porque esta consulta no hace
+        // JOIN con pagos y además ventas.estado = pagado ya filtra
+        // las ventas válidas.
+        //
+
+        $productosMasVendidos = DetalleVenta::join(
+                'ventas',
+                'detalle_ventas.venta_id',
+                '=',
+                'ventas.id'
+            )
+            ->join(
+                'productos',
+                'detalle_ventas.producto_id',
+                '=',
+                'productos.id'
+            )
             ->where('ventas.empresa_id', $empresaId)
             ->whereDate('ventas.fecha', $hoy)
             ->where('ventas.estado', 'pagado')
-            ->where('pagos.activo', true)
             ->select(
                 'productos.id',
                 'productos.nombre',
                 DB::raw('SUM(detalle_ventas.cantidad) as total_cantidad'),
                 DB::raw('SUM(detalle_ventas.subtotal) as total_monto')
             )
-            ->groupBy('productos.id', 'productos.nombre')
-            ->orderBy('total_cantidad', 'desc')
+            ->groupBy(
+                'productos.id',
+                'productos.nombre'
+            )
+            ->orderByDesc('total_cantidad')
             ->limit(5)
             ->get();
 
-        // 3. Ventas por hora (últimas 24 horas)
+        // ============================================================
+        // 3. VENTAS POR HORA
+        // ============================================================
+
         $ventasPorHora = Venta::where('empresa_id', $empresaId)
             ->whereDate('fecha', $hoy)
             ->where('estado', 'pagado')
@@ -62,19 +98,34 @@ class EstadisticasController extends Controller
             ->get()
             ->keyBy('hora');
 
-        // Crear array de 24 horas con valores por defecto
+        // Crear las 24 horas del día, incluyendo horas sin ventas.
         $horas = [];
+
         for ($i = 0; $i < 24; $i++) {
+            $registroHora = $ventasPorHora->get($i);
+
             $horas[] = [
                 'hora' => $i,
-                'cantidad' => $ventasPorHora->has($i) ? $ventasPorHora[$i]->cantidad : 0,
-                'total' => $ventasPorHora->has($i) ? (float) $ventasPorHora[$i]->total : 0,
+                'cantidad' => $registroHora
+                    ? (int) $registroHora->cantidad
+                    : 0,
+                'total' => $registroHora
+                    ? (float) $registroHora->total
+                    : 0,
             ];
         }
 
-        // 4. Formas de pago más usadas
+        // ============================================================
+        // 4. FORMAS DE PAGO MÁS USADAS
+        // ============================================================
+
         $formasPago = DB::table('pagos')
-            ->join('ventas', 'pagos.venta_id', '=', 'ventas.id')
+            ->join(
+                'ventas',
+                'pagos.venta_id',
+                '=',
+                'ventas.id'
+            )
             ->where('ventas.empresa_id', $empresaId)
             ->whereDate('ventas.fecha', $hoy)
             ->where('ventas.estado', 'pagado')
@@ -84,51 +135,124 @@ class EstadisticasController extends Controller
                 DB::raw('SUM(pagos.monto) as total')
             )
             ->groupBy('pagos.forma_pago')
-            ->orderBy('cantidad', 'desc')
-            ->get();
+            ->orderByDesc('cantidad')
+            ->get()
+            ->map(function ($formaPago) {
+                return [
+                    'forma_pago' => $formaPago->forma_pago,
+                    'cantidad' => (int) $formaPago->cantidad,
+                    'total' => (float) $formaPago->total,
+                ];
+            });
 
-        // 5. Impuestos recaudados (opcional)
-        $totalImpuestos = $ventasDelDia->sum('impuesto');
+        // ============================================================
+        // 5. IMPUESTOS RECAUDADOS
+        // ============================================================
+
+        $totalImpuestos = (float) $ventasDelDia->sum('impuesto');
+
+        // ============================================================
+        // AUDITORÍA
+        // ============================================================
+
+        $this->auditoriaService->registrar(
+            $request,
+            'estadisticas.dia.consultadas',
+            'ventas',
+            null,
+            null,
+            [
+                'fecha' => $hoy,
+                'total_ventas' => $totalVentas,
+                'numero_tickets' => $numeroTickets,
+                'ticket_promedio' => $ticketPromedio,
+                'total_impuestos' => $totalImpuestos,
+            ]
+        );
+
+        // ============================================================
+        // RESPUESTA
+        // ============================================================
 
         return response()->json([
-            'fecha' => $hoy,
-            'total_ventas' => (float) $totalVentas,
-            'numero_tickets' => $numeroTickets,
-            'ticket_promedio' => $ticketPromedio,
-            'total_impuestos' => (float) $totalImpuestos,
-            'productos_mas_vendidos' => $productosMasVendidos,
-            'ventas_por_hora' => $horas,
-            'formas_pago' => $formasPago,
+            'success' => true,
+            'data' => [
+                'fecha' => $hoy,
+                'total_ventas' => $totalVentas,
+                'numero_tickets' => $numeroTickets,
+                'ticket_promedio' => $ticketPromedio,
+                'total_impuestos' => $totalImpuestos,
+                'productos_mas_vendidos' => $productosMasVendidos,
+                'ventas_por_hora' => $horas,
+                'formas_pago' => $formasPago,
+            ],
         ]);
     }
 
     /**
-     * Obtener estadísticas de un rango de fechas (para reportes).
+     * Obtener estadísticas de un rango de fechas.
      */
     public function rango(Request $request)
     {
         $empresaId = $request->user()->empresa_id;
 
         $request->validate([
-            'fecha_desde' => 'required|date',
-            'fecha_hasta' => 'required|date|after_or_equal:fecha_desde',
+            'fecha_desde' => [
+                'required',
+                'date',
+            ],
+            'fecha_hasta' => [
+                'required',
+                'date',
+                'after_or_equal:fecha_desde',
+            ],
         ]);
 
-        $desde = $request->fecha_desde;
-        $hasta = $request->fecha_hasta;
+        /*
+         * Se utiliza inicio y fin del día para evitar que una fecha
+         * final como 2026-09-01 excluya las ventas posteriores a
+         * 00:00:00 de ese mismo día.
+         */
+        $desde = Carbon::parse(
+            $request->input('fecha_desde')
+        )->startOfDay();
+
+        $hasta = Carbon::parse(
+            $request->input('fecha_hasta')
+        )->endOfDay();
+
+        // ============================================================
+        // VENTAS
+        // ============================================================
 
         $ventas = Venta::where('empresa_id', $empresaId)
             ->whereBetween('fecha', [$desde, $hasta])
             ->where('estado', 'pagado')
             ->get();
 
-        $totalVentas = $ventas->sum('total');
+        $totalVentas = (float) $ventas->sum('total');
         $numeroTickets = $ventas->count();
-        $ticketPromedio = $numeroTickets > 0 ? round($totalVentas / $numeroTickets, 2) : 0;
 
-        // Productos más vendidos en el rango
-        $productosTop = DetalleVenta::join('ventas', 'detalle_ventas.venta_id', '=', 'ventas.id')
-            ->join('productos', 'detalle_ventas.producto_id', '=', 'productos.id')
+        $ticketPromedio = $numeroTickets > 0
+            ? round($totalVentas / $numeroTickets, 2)
+            : 0;
+
+        // ============================================================
+        // PRODUCTOS MÁS VENDIDOS
+        // ============================================================
+
+        $productosTop = DetalleVenta::join(
+                'ventas',
+                'detalle_ventas.venta_id',
+                '=',
+                'ventas.id'
+            )
+            ->join(
+                'productos',
+                'detalle_ventas.producto_id',
+                '=',
+                'productos.id'
+            )
             ->where('ventas.empresa_id', $empresaId)
             ->whereBetween('ventas.fecha', [$desde, $hasta])
             ->where('ventas.estado', 'pagado')
@@ -138,102 +262,251 @@ class EstadisticasController extends Controller
                 DB::raw('SUM(detalle_ventas.cantidad) as total_cantidad'),
                 DB::raw('SUM(detalle_ventas.subtotal) as total_monto')
             )
-            ->groupBy('productos.id', 'productos.nombre')
-            ->orderBy('total_cantidad', 'desc')
+            ->groupBy(
+                'productos.id',
+                'productos.nombre'
+            )
+            ->orderByDesc('total_cantidad')
             ->limit(10)
             ->get();
 
+        // ============================================================
+        // AUDITORÍA
+        // ============================================================
+
+        $this->auditoriaService->registrar(
+            $request,
+            'estadisticas.rango.consultadas',
+            'ventas',
+            null,
+            null,
+            [
+                'fecha_desde' => $desde->toDateString(),
+                'fecha_hasta' => $hasta->toDateString(),
+                'total_ventas' => $totalVentas,
+                'numero_tickets' => $numeroTickets,
+                'ticket_promedio' => $ticketPromedio,
+            ]
+        );
+
+        // ============================================================
+        // RESPUESTA
+        // ============================================================
+
         return response()->json([
-            'fecha_desde' => $desde,
-            'fecha_hasta' => $hasta,
-            'total_ventas' => (float) $totalVentas,
-            'numero_tickets' => $numeroTickets,
-            'ticket_promedio' => $ticketPromedio,
-            'productos_mas_vendidos' => $productosTop,
+            'success' => true,
+            'data' => [
+                'fecha_desde' => $desde->toDateString(),
+                'fecha_hasta' => $hasta->toDateString(),
+                'total_ventas' => $totalVentas,
+                'numero_tickets' => $numeroTickets,
+                'ticket_promedio' => $ticketPromedio,
+                'productos_mas_vendidos' => $productosTop,
+            ],
         ]);
     }
+
+    /**
+     * Estadísticas de la semana actual.
+     */
     public function semana(Request $request)
     {
         $empresaId = $request->user()->empresa_id;
+
         $inicioSemana = now()->startOfWeek();
         $finSemana = now()->endOfWeek();
+
+        // ============================================================
+        // VENTAS
+        // ============================================================
 
         $ventas = Venta::where('empresa_id', $empresaId)
             ->whereBetween('fecha', [$inicioSemana, $finSemana])
             ->where('estado', 'pagado')
             ->get();
 
-        $ventasPorDia = $ventas->groupBy(function ($venta) {
-            return $venta->fecha->format('Y-m-d');
-        })->map(function ($group) {
-            return [
-                'cantidad' => $group->count(),
-                'total' => $group->sum('total'),
-            ];
-        });
+        $totalMonto = (float) $ventas->sum('total');
+        $totalVentas = $ventas->count();
+
+        $promedioDiario = $totalVentas > 0
+            ? round($totalMonto / $totalVentas, 2)
+            : 0;
+
+        // ============================================================
+        // VENTAS POR DÍA
+        // ============================================================
+
+        $ventasPorDia = $ventas
+            ->groupBy(function ($venta) {
+                return $venta->fecha->format('Y-m-d');
+            })
+            ->map(function ($group) {
+                return [
+                    'cantidad' => $group->count(),
+                    'total' => (float) $group->sum('total'),
+                ];
+            });
+
+        // ============================================================
+        // AUDITORÍA
+        // ============================================================
+
+        $this->auditoriaService->registrar(
+            $request,
+            'estadisticas.semana.consultadas',
+            'ventas',
+            null,
+            null,
+            [
+                'inicio_semana' => $inicioSemana->toDateString(),
+                'fin_semana' => $finSemana->toDateString(),
+                'total_ventas' => $totalVentas,
+                'total_monto' => $totalMonto,
+            ]
+        );
+
+        // ============================================================
+        // RESPUESTA
+        // ============================================================
 
         return response()->json([
             'success' => true,
             'data' => [
                 'inicio_semana' => $inicioSemana->toDateString(),
                 'fin_semana' => $finSemana->toDateString(),
-                'total_ventas' => $ventas->count(),
-                'total_monto' => $ventas->sum('total'),
-                'promedio_diario' => $ventas->count() > 0 ? round($ventas->sum('total') / $ventas->count(), 2) : 0,
+                'total_ventas' => $totalVentas,
+                'total_monto' => $totalMonto,
+                'promedio_diario' => $promedioDiario,
                 'ventas_por_dia' => $ventasPorDia,
             ],
         ]);
     }
 
     /**
-     * Estadísticas del mes actual
+     * Estadísticas del mes actual.
      */
     public function mes(Request $request)
     {
         $empresaId = $request->user()->empresa_id;
+
         $inicioMes = now()->startOfMonth();
         $finMes = now()->endOfMonth();
+
+        // ============================================================
+        // VENTAS
+        // ============================================================
 
         $ventas = Venta::where('empresa_id', $empresaId)
             ->whereBetween('fecha', [$inicioMes, $finMes])
             ->where('estado', 'pagado')
             ->get();
 
-        $ventasPorDia = $ventas->groupBy(function ($venta) {
-            return $venta->fecha->format('Y-m-d');
-        })->map(function ($group) {
-            return [
-                'cantidad' => $group->count(),
-                'total' => $group->sum('total'),
-            ];
-        });
+        $totalMonto = (float) $ventas->sum('total');
+        $totalVentas = $ventas->count();
+
+        $promedioDiario = $totalVentas > 0
+            ? round($totalMonto / $totalVentas, 2)
+            : 0;
+
+        // ============================================================
+        // VENTAS POR DÍA
+        // ============================================================
+
+        $ventasPorDia = $ventas
+            ->groupBy(function ($venta) {
+                return $venta->fecha->format('Y-m-d');
+            })
+            ->map(function ($group) {
+                return [
+                    'cantidad' => $group->count(),
+                    'total' => (float) $group->sum('total'),
+                ];
+            });
+
+        // ============================================================
+        // AUDITORÍA
+        // ============================================================
+
+        $this->auditoriaService->registrar(
+            $request,
+            'estadisticas.mes.consultadas',
+            'ventas',
+            null,
+            null,
+            [
+                'inicio_mes' => $inicioMes->toDateString(),
+                'fin_mes' => $finMes->toDateString(),
+                'total_ventas' => $totalVentas,
+                'total_monto' => $totalMonto,
+            ]
+        );
+
+        // ============================================================
+        // RESPUESTA
+        // ============================================================
 
         return response()->json([
             'success' => true,
             'data' => [
                 'inicio_mes' => $inicioMes->toDateString(),
                 'fin_mes' => $finMes->toDateString(),
-                'total_ventas' => $ventas->count(),
-                'total_monto' => $ventas->sum('total'),
-                'promedio_diario' => $ventas->count() > 0 ? round($ventas->sum('total') / $ventas->count(), 2) : 0,
+                'total_ventas' => $totalVentas,
+                'total_monto' => $totalMonto,
+                'promedio_diario' => $promedioDiario,
                 'ventas_por_dia' => $ventasPorDia,
             ],
         ]);
     }
 
     /**
-     * Top productos más vendidos
+     * Obtener los productos más vendidos.
      */
     public function productosTop(Request $request)
     {
         $empresaId = $request->user()->empresa_id;
-        $limite = $request->limite ?? 10;
-        $dias = $request->dias ?? 30;
 
-        $fechaDesde = now()->subDays($dias);
+        // ============================================================
+        // VALIDACIÓN
+        // ============================================================
 
-        $productos = DetalleVenta::join('ventas', 'detalle_ventas.venta_id', '=', 'ventas.id')
-            ->join('productos', 'detalle_ventas.producto_id', '=', 'productos.id')
+        $request->validate([
+            'limite' => [
+                'nullable',
+                'integer',
+                'min:1',
+                'max:100',
+            ],
+            'dias' => [
+                'nullable',
+                'integer',
+                'min:1',
+                'max:365',
+            ],
+        ]);
+
+        $limite = (int) $request->input('limite', 10);
+        $dias = (int) $request->input('dias', 30);
+
+        $fechaDesde = now()
+            ->subDays($dias)
+            ->startOfDay();
+
+        // ============================================================
+        // PRODUCTOS
+        // ============================================================
+
+        $productos = DetalleVenta::join(
+                'ventas',
+                'detalle_ventas.venta_id',
+                '=',
+                'ventas.id'
+            )
+            ->join(
+                'productos',
+                'detalle_ventas.producto_id',
+                '=',
+                'productos.id'
+            )
             ->where('ventas.empresa_id', $empresaId)
             ->where('ventas.estado', 'pagado')
             ->where('ventas.fecha', '>=', $fechaDesde)
@@ -245,10 +518,37 @@ class EstadisticasController extends Controller
                 DB::raw('SUM(detalle_ventas.cantidad) as total_vendido'),
                 DB::raw('SUM(detalle_ventas.subtotal) as total_monto')
             )
-            ->groupBy('productos.id', 'productos.nombre', 'productos.codigo', 'productos.precio')
-            ->orderBy('total_vendido', 'desc')
+            ->groupBy(
+                'productos.id',
+                'productos.nombre',
+                'productos.codigo',
+                'productos.precio'
+            )
+            ->orderByDesc('total_vendido')
             ->limit($limite)
             ->get();
+
+        // ============================================================
+        // AUDITORÍA
+        // ============================================================
+
+        $this->auditoriaService->registrar(
+            $request,
+            'estadisticas.productos_top.consultadas',
+            'productos',
+            null,
+            null,
+            [
+                'limite' => $limite,
+                'dias' => $dias,
+                'fecha_desde' => $fechaDesde->toDateString(),
+                'total_resultados' => $productos->count(),
+            ]
+        );
+
+        // ============================================================
+        // RESPUESTA
+        // ============================================================
 
         return response()->json([
             'success' => true,
@@ -257,76 +557,155 @@ class EstadisticasController extends Controller
     }
 
     /**
-     * Dashboard completo
+     * Obtener dashboard completo.
      */
     public function dashboard(Request $request)
     {
         $empresaId = $request->user()->empresa_id;
-        $hoy = now()->toDateString();
+        $ahora = now();
 
-        // Ventas de hoy
+        $hoy = $ahora->toDateString();
+
+        // ============================================================
+        // VENTAS DE HOY
+        // ============================================================
+
         $ventasHoy = Venta::where('empresa_id', $empresaId)
             ->whereDate('fecha', $hoy)
             ->where('estado', 'pagado')
             ->get();
 
-        // Ventas de ayer
+        // ============================================================
+        // VENTAS DE AYER
+        // ============================================================
+
+        $ayer = $ahora->copy()->subDay();
+
         $ventasAyer = Venta::where('empresa_id', $empresaId)
-            ->whereDate('fecha', now()->subDay()->toDateString())
+            ->whereDate('fecha', $ayer->toDateString())
             ->where('estado', 'pagado')
             ->get();
 
-        // Ventas de la semana
+        // ============================================================
+        // VENTAS DE LA SEMANA
+        // ============================================================
+
+        $inicioSemana = $ahora->copy()->startOfWeek();
+        $finSemana = $ahora->copy()->endOfWeek();
+
         $ventasSemana = Venta::where('empresa_id', $empresaId)
-            ->whereBetween('fecha', [now()->startOfWeek(), now()->endOfWeek()])
+            ->whereBetween('fecha', [$inicioSemana, $finSemana])
             ->where('estado', 'pagado')
             ->get();
 
-        // Ventas del mes
+        // ============================================================
+        // VENTAS DEL MES
+        // ============================================================
+
+        $inicioMes = $ahora->copy()->startOfMonth();
+        $finMes = $ahora->copy()->endOfMonth();
+
         $ventasMes = Venta::where('empresa_id', $empresaId)
-            ->whereBetween('fecha', [now()->startOfMonth(), now()->endOfMonth()])
+            ->whereBetween('fecha', [$inicioMes, $finMes])
             ->where('estado', 'pagado')
             ->get();
 
-        // Productos con stock bajo
+        // ============================================================
+        // INVENTARIO
+        // ============================================================
+
         $stockBajo = Producto::where('empresa_id', $empresaId)
             ->whereColumn('stock', '<=', 'stock_minimo')
             ->where('stock', '>', 0)
             ->count();
 
-        // Productos agotados
         $agotados = Producto::where('empresa_id', $empresaId)
             ->where('stock', 0)
             ->count();
 
-        // Clientes totales
-        $totalClientes = Cliente::where('empresa_id', $empresaId)->count();
+        $totalProductos = Producto::where('empresa_id', $empresaId)
+            ->count();
+
+        // ============================================================
+        // CLIENTES
+        // ============================================================
+
+        $totalClientes = Cliente::where('empresa_id', $empresaId)
+            ->count();
+
+        // ============================================================
+        // TOTALES
+        // ============================================================
+
+        $totalHoy = (float) $ventasHoy->sum('total');
+        $totalAyer = (float) $ventasAyer->sum('total');
+        $totalSemana = (float) $ventasSemana->sum('total');
+        $totalMes = (float) $ventasMes->sum('total');
+
+        $cantidadHoy = $ventasHoy->count();
+        $cantidadAyer = $ventasAyer->count();
+        $cantidadSemana = $ventasSemana->count();
+        $cantidadMes = $ventasMes->count();
+
+        // ============================================================
+        // AUDITORÍA
+        // ============================================================
+
+        $this->auditoriaService->registrar(
+            $request,
+            'dashboard.consultado',
+            'ventas',
+            null,
+            null,
+            [
+                'fecha' => $hoy,
+                'ventas_hoy' => $cantidadHoy,
+                'ventas_ayer' => $cantidadAyer,
+                'ventas_semana' => $cantidadSemana,
+                'ventas_mes' => $cantidadMes,
+                'stock_bajo' => $stockBajo,
+                'agotados' => $agotados,
+                'total_productos' => $totalProductos,
+                'total_clientes' => $totalClientes,
+            ]
+        );
+
+        // ============================================================
+        // RESPUESTA
+        // ============================================================
 
         return response()->json([
             'success' => true,
             'data' => [
                 'hoy' => [
-                    'ventas' => $ventasHoy->count(),
-                    'total' => $ventasHoy->sum('total'),
-                    'promedio' => $ventasHoy->count() > 0 ? round($ventasHoy->sum('total') / $ventasHoy->count(), 2) : 0,
+                    'ventas' => $cantidadHoy,
+                    'total' => $totalHoy,
+                    'promedio' => $cantidadHoy > 0
+                        ? round($totalHoy / $cantidadHoy, 2)
+                        : 0,
                 ],
+
                 'ayer' => [
-                    'ventas' => $ventasAyer->count(),
-                    'total' => $ventasAyer->sum('total'),
+                    'ventas' => $cantidadAyer,
+                    'total' => $totalAyer,
                 ],
+
                 'semana' => [
-                    'ventas' => $ventasSemana->count(),
-                    'total' => $ventasSemana->sum('total'),
+                    'ventas' => $cantidadSemana,
+                    'total' => $totalSemana,
                 ],
+
                 'mes' => [
-                    'ventas' => $ventasMes->count(),
-                    'total' => $ventasMes->sum('total'),
+                    'ventas' => $cantidadMes,
+                    'total' => $totalMes,
                 ],
+
                 'inventario' => [
                     'stock_bajo' => $stockBajo,
                     'agotados' => $agotados,
-                    'total_productos' => Producto::where('empresa_id', $empresaId)->count(),
+                    'total_productos' => $totalProductos,
                 ],
+
                 'clientes' => [
                     'total' => $totalClientes,
                 ],

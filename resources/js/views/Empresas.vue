@@ -1,4 +1,3 @@
-<!-- resources/js/views/Empresas.vue -->
 <template>
     <div>
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-3">
@@ -209,7 +208,7 @@
                                     </div>
                                     <p class="text-xs text-gray-400 mt-1">Texto en sidebar y menú</p>
                                 </div>
-                                <div>
+                                <!-- <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Color Texto
                                         Navbar</label>
                                     <div class="flex items-center gap-2">
@@ -228,7 +227,7 @@
                                         <input type="text" v-model="form.colores.menu_hover"
                                             class="flex-1 px-3 py-2 border rounded-lg font-mono text-sm" />
                                     </div>
-                                </div>
+                                </div> -->
                             </div>
                         </div>
 
@@ -421,32 +420,19 @@ export default {
                 // Corregir URLs de logos
                 this.empresas = this.empresas.map(emp => {
                     if (emp.logo_url) {
-                        // Corregir URL - asegurar que incluya el puerto
                         if (emp.logo_url.includes('localhost') && !emp.logo_url.includes('localhost:')) {
                             emp.logo_url = emp.logo_url.replace('localhost', 'localhost:8000');
                         }
-
-                        // Si es una URL relativa, hacerla absoluta
                         if (emp.logo_url.startsWith('/')) {
                             emp.logo_url = `${window.location.origin}${emp.logo_url}`;
                         }
-
-                        // Agregar timestamp para evitar caché
                         const timestamp = Date.now();
                         emp.logo_url = `${emp.logo_url}${emp.logo_url.includes('?') ? '&' : '?'}t=${timestamp}`;
                     } else if (emp.logo) {
-                        // Construir URL desde la ruta del logo
                         const baseUrl = window.location.origin;
                         const timestamp = Date.now();
                         emp.logo_url = `${baseUrl}/storage/${emp.logo}?t=${timestamp}`;
                     }
-
-                    console.log('Empresa procesada:', {
-                        nombre: emp.nombre,
-                        logo: emp.logo,
-                        logo_url: emp.logo_url
-                    });
-
                     return emp;
                 });
             } catch (error) {
@@ -489,7 +475,6 @@ export default {
                     this.offsetX = 0;
                     this.offsetY = 0;
                     this.imagenInfo = { ancho: 0, alto: 0 };
-
                     this.$nextTick(() => {
                         this.dibujarImagen();
                     });
@@ -514,32 +499,24 @@ export default {
             const ctx = canvas.getContext('2d');
             const img = new Image();
             img.onload = () => {
-                // Calcular dimensiones del canvas
                 const containerWidth = canvas.parentElement.clientWidth || 400;
                 const containerHeight = canvas.parentElement.clientHeight || 200;
 
                 canvas.width = containerWidth;
                 canvas.height = containerHeight;
 
-                // Calcular tamaño de la imagen con zoom
                 let ancho = img.width * this.zoom;
                 let alto = img.height * this.zoom;
 
-                // Aplicar offset (arrastre)
                 const offsetX = this.offsetX || 0;
                 const offsetY = this.offsetY || 0;
 
-                // Guardar info
                 this.imagenInfo = { ancho, alto };
 
-                // Limpiar canvas
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-                // Dibujar fondo
                 ctx.fillStyle = '#e5e7eb';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-                // Dibujar cuadrícula de guía
                 ctx.strokeStyle = 'rgba(0,0,0,0.1)';
                 ctx.lineWidth = 1;
                 for (let i = 0; i < canvas.width; i += 30) {
@@ -555,18 +532,15 @@ export default {
                     ctx.stroke();
                 }
 
-                // Calcular posición centrada + offset
                 const x = (canvas.width - ancho) / 2 + offsetX;
                 const y = (canvas.height - alto) / 2 + offsetY;
 
-                // Dibujar imagen con rotación
                 ctx.save();
                 ctx.translate(canvas.width / 2 + offsetX, canvas.height / 2 + offsetY);
                 ctx.rotate((this.rotacion || 0) * Math.PI / 180);
                 ctx.drawImage(img, -ancho / 2, -alto / 2, ancho, alto);
                 ctx.restore();
 
-                // Dibujar recuadro de recorte (círculo)
                 ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
                 ctx.lineWidth = 2;
                 ctx.setLineDash([5, 5]);
@@ -576,7 +550,6 @@ export default {
                 ctx.stroke();
                 ctx.setLineDash([]);
 
-                // Dibujar texto "Recorte cuadrado"
                 ctx.fillStyle = 'rgba(59, 130, 246, 0.6)';
                 ctx.font = '12px Arial';
                 ctx.textAlign = 'center';
@@ -625,11 +598,9 @@ export default {
             const canvas = this.$refs.canvasEditor;
             if (!canvas) return null;
 
-            // Crear un canvas temporal para el recorte
             const tempCanvas = document.createElement('canvas');
             const ctx = tempCanvas.getContext('2d');
 
-            // Tamaño del recorte (cuadrado)
             const size = Math.min(canvas.width, canvas.height) * 0.8;
             const x = (canvas.width - size) / 2;
             const y = (canvas.height - size) / 2;
@@ -637,7 +608,6 @@ export default {
             tempCanvas.width = size;
             tempCanvas.height = size;
 
-            // Recortar el área circular
             ctx.beginPath();
             ctx.arc(size / 2, size / 2, size / 2, 0, 2 * Math.PI);
             ctx.clip();
@@ -648,8 +618,6 @@ export default {
         abrirModal(empresa = null) {
             if (empresa) {
                 this.editando = true;
-
-                // ✅ Parsear colores si viene como string JSON
                 let coloresEmpresa = empresa.colores;
                 if (typeof coloresEmpresa === 'string') {
                     try {
@@ -659,8 +627,6 @@ export default {
                         coloresEmpresa = {};
                     }
                 }
-
-                // ✅ Mapear colores del backend al frontend
                 const coloresForm = {
                     primary: coloresEmpresa?.primary || '#1E293B',
                     secondary: coloresEmpresa?.secondary || '#108981',
@@ -669,7 +635,6 @@ export default {
                     text_navbar: coloresEmpresa?.text_navbar || '#FFFFFF',
                     menu_hover: coloresEmpresa?.menu_hover || '#2d3748'
                 };
-
                 this.form = {
                     ...empresa,
                     colores: coloresForm
@@ -709,7 +674,6 @@ export default {
             this.logoFile = null;
             this.error = null;
         },
-        // En el método guardarEmpresa
 
         async guardarEmpresa() {
             this.guardando = true;
@@ -718,33 +682,36 @@ export default {
             try {
                 const formData = new FormData();
 
-                // Convertir activo a boolean correctamente
+                // 🔹 Construir datos SIN incluir 'logo' como campo (solo usamos archivo)
                 const datos = {
-                    ...this.form,
-                    activo: this.form.activo === true || this.form.activo === '1' || this.form.activo === 1
+                    nombre: this.form.nombre || '',
+                    rfc: this.form.rfc || '',
+                    razon_social: this.form.razon_social || '',
+                    telefono: this.form.telefono || '',
+                    email_contacto: this.form.email_contacto || '',
+                    direccion: this.form.direccion || '',
+                    leyenda_ticket: this.form.leyenda_ticket || '',
+                    whatsapp_numero: this.form.whatsapp_numero || '',
+                    activo: this.form.activo === true || this.form.activo === '1' || this.form.activo === 1,
+                    // No incluimos 'logo' aquí
                 };
 
-                // ✅ Corregir mapeo de colores antes de enviar
+                // Colores
                 const coloresMapeados = {
-                    primary: this.form.colores.primary || this.form.colores.colorPrincipal || '#1E293B',
-                    secondary: this.form.colores.secondary || this.form.colores.colorSecundario || '#108981',
-                    background: this.form.colores.background || this.form.colores.fondo || '#f3f4f6',
-                    text: this.form.colores.text || this.form.colores.colorTexto || '#FFFFFF',
-                    text_navbar: this.form.colores.text_navbar || this.form.colores.colorTextoNavbar || '#FFFFFF',
-                    menu_hover: this.form.colores.menu_hover || this.form.colores.colorMenu || '#2d3748'
+                    primary: this.form.colores.primary || '#1E293B',
+                    secondary: this.form.colores.secondary || '#108981',
+                    background: this.form.colores.background || '#f3f4f6',
+                    text: this.form.colores.text || '#FFFFFF',
+                    text_navbar: this.form.colores.text_navbar || '#FFFFFF',
+                    menu_hover: this.form.colores.menu_hover || '#2d3748'
                 };
+                formData.append('colores', JSON.stringify(coloresMapeados));
 
-                console.log('Colores mapeados para enviar:', coloresMapeados);
-
-                // Agregar datos al FormData
+                // Agregar el resto de campos (excepto id y logo)
                 Object.keys(datos).forEach(key => {
-                    if (key === 'colores') {
-                        // Enviar colores mapeados como JSON string
-                        formData.append('colores', JSON.stringify(coloresMapeados));
-                    } else if (key === 'id' && !this.editando) {
-                        // No enviar id si es nuevo
-                        return;
-                    } else if (datos[key] !== null && datos[key] !== undefined) {
+                    if (key === 'id' && !this.editando) return;
+                    if (datos[key] !== null && datos[key] !== undefined) {
+                        // Para 'activo' enviamos '1' o '0' como string
                         if (key === 'activo') {
                             formData.append(key, datos[key] ? '1' : '0');
                         } else {
@@ -753,7 +720,7 @@ export default {
                     }
                 });
 
-                // Usar la imagen recortada
+                // ✅ Logo: solo si se seleccionó un archivo nuevo
                 if (this.logoFile && this.$refs.canvasEditor) {
                     const croppedImage = this.obtenerImagenRecortada();
                     if (croppedImage) {
@@ -775,20 +742,13 @@ export default {
                 }
 
                 console.log('Respuesta del servidor:', response.data);
-
                 this.cerrarModal();
 
-                // Esperar un momento
                 await new Promise(resolve => setTimeout(resolve, 500));
-
-                // Recargar lista
                 await this.cargarEmpresas();
 
-                // ✅ Aplicar colores desde la respuesta
                 if (response.data && response.data.data && response.data.data.colores) {
                     let coloresGuardados = response.data.data.colores;
-
-                    // Si es string JSON, parsear
                     if (typeof coloresGuardados === 'string') {
                         try {
                             coloresGuardados = JSON.parse(coloresGuardados);
@@ -796,12 +756,10 @@ export default {
                             console.error('Error parseando colores:', e);
                         }
                     }
-
                     console.log('Colores guardados:', coloresGuardados);
                     this.aplicarColores(coloresGuardados);
                 }
 
-                // Disparar eventos
                 window.dispatchEvent(new CustomEvent('recargar-colores'));
                 window.dispatchEvent(new CustomEvent('recargar-logo'));
 
@@ -819,6 +777,7 @@ export default {
                 this.guardando = false;
             }
         },
+
         async eliminarEmpresa(id) {
             const result = await Swal.fire({
                 title: '¿Eliminar empresa?',
@@ -840,48 +799,44 @@ export default {
                 }
             }
         },
+
         handleImageError(empresa) {
             console.log('Error cargando imagen para:', empresa.nombre, 'URL:', empresa.logo_url);
-            // Usar imagen por defecto
             empresa.logo_url = null;
-            // Forzar actualización
             this.$forceUpdate();
         },
 
         getLogoUrl(empresa) {
-            if (!empresa.logo_url) {
-                return '/img/logo.png';
-            }
-            return empresa.logo_url;
+            return empresa.logo_url || '/img/logo.png';
         },
+
         aplicarColores(colores) {
             if (!colores) return;
 
-            console.log('Aplicando colores:', colores);
-
-            // ✅ Mapear claves del backend al frontend
+            // Mapeo de claves del backend → claves que usa App.vue
             const mapeo = {
                 primary: 'colorPrincipal',
                 secondary: 'colorSecundario',
                 background: 'fondo',
                 text: 'colorTexto',
-                text_navbar: 'colorTextoNavbar',
-                menu_hover: 'colorMenu'
+                text_navbar: 'colorTextoNavbar',   // si lo usas
+                menu_hover: 'colorMenu'            // si lo usas
             };
 
+            // Guardar cada clave en localStorage con el nombre correcto
             Object.keys(mapeo).forEach(keyBackend => {
-                const keyFrontend = mapeo[keyBackend];
+                const keyLocal = mapeo[keyBackend];
                 if (colores[keyBackend]) {
-                    localStorage.setItem(keyFrontend, colores[keyBackend]);
-                    console.log(`Guardando ${keyFrontend}: ${colores[keyBackend]}`);
+                    localStorage.setItem(keyLocal, colores[keyBackend]);
+                    console.log(`✅ Guardado ${keyLocal}: ${colores[keyBackend]}`);
                 }
             });
 
-            // Disparar evento para actualizar UI
-            window.dispatchEvent(new CustomEvent('recargar-colores'));
+            // Guardar también el objeto completo (por si acaso)
+            localStorage.setItem('colores_empresa', JSON.stringify(colores));
 
-            // También actualizar localStorage para que otras pestañas se enteren
-            localStorage.setItem('colores_actualizados', Date.now().toString());
+            // Disparar evento para que App.vue actualice sus refs
+            window.dispatchEvent(new CustomEvent('recargar-colores'));
         }
     }
 };

@@ -1,142 +1,579 @@
 <?php
-// app/Http/Controllers/Api/V1/UnidadMedidaController.php
 
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\UnidadMedida;
+use App\Services\AuditoriaService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
+use Throwable;
 
 class UnidadMedidaController extends Controller
 {
+    public function __construct(
+        private AuditoriaService $auditoria
+    ) {
+    }
+
     /**
-     * Listar unidades de medida
+     * Listar unidades de medida.
      */
     public function index(Request $request)
     {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'Usuario no autenticado.',
+            ], 401);
+        }
+
+        if (!$user->empresa_id || !$user->empresa) {
+            return response()->json([
+                'message' => 'El usuario no tiene una empresa asociada.',
+            ], 403);
+        }
+
+        /*
+         * Validación fuera del try/catch para conservar HTTP 422.
+         */
+        $validated = $request->validate([
+            'search' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'activo' => [
+                'nullable',
+                'boolean',
+            ],
+        ]);
+
+        $empresaId = (int) $user->empresa_id;
+
         try {
-            $empresaId = $request->user()->empresa_id;
+            $query = UnidadMedida::where(
+                'empresa_id',
+                $empresaId
+            );
 
-            $query = UnidadMedida::where('empresa_id', $empresaId);
+            if (
+                isset($validated['search'])
+                && trim($validated['search']) !== ''
+            ) {
+                $search = trim($validated['search']);
 
-            if ($request->search) {
-                $query->where('nombre', 'LIKE', "%{$request->search}%");
+                $query->where(
+                    'nombre',
+                    'LIKE',
+                    '%' . $search . '%'
+                );
             }
 
-            if ($request->activo !== null) {
-                $query->where('activo', $request->activo);
+            if (
+                array_key_exists('activo', $validated)
+                && $validated['activo'] !== null
+            ) {
+                $query->where(
+                    'activo',
+                    $validated['activo']
+                );
             }
 
-            $unidades = $query->orderBy('nombre', 'asc')->get();
+            $unidades = $query
+                ->orderBy('nombre', 'asc')
+                ->get();
 
             return response()->json($unidades);
-        } catch (\Exception $e) {
-            Log::error('Error al listar unidades: ' . $e->getMessage());
+        } catch (Throwable $e) {
+            Log::error(
+                'Error al listar unidades',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
             return response()->json([
-                'message' => 'Error al cargar unidades'
+                'message' => 'Error al cargar unidades',
             ], 500);
         }
     }
 
     /**
-     * Crear una unidad de medida
+     * Crear una unidad de medida.
      */
     public function store(Request $request)
     {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'Usuario no autenticado.',
+            ], 401);
+        }
+
+        if (!$user->empresa_id || !$user->empresa) {
+            return response()->json([
+                'message' => 'El usuario no tiene una empresa asociada.',
+            ], 403);
+        }
+
+        /*
+         * Validación fuera del try/catch.
+         */
+        $validated = $request->validate([
+            'nombre' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+
+            'abreviatura' => [
+                'nullable',
+                'string',
+                'max:50',
+            ],
+
+            'tipo' => [
+                'required',
+                Rule::in([
+                    'unidad',
+                    'peso',
+                    'volumen',
+                    'longitud',
+                    'servicio',
+                ]),
+            ],
+
+            'fraccionable' => [
+                'nullable',
+                'boolean',
+            ],
+
+            'factor_conversion' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'activo' => [
+                'nullable',
+                'boolean',
+            ],
+        ]);
+
+        $empresaId = (int) $user->empresa_id;
+        $usuarioId = (int) $user->id;
+
+        $validated['nombre'] = trim($validated['nombre']);
+
+        if (
+            isset($validated['abreviatura'])
+            && $validated['abreviatura'] !== null
+        ) {
+            $validated['abreviatura'] = trim(
+                $validated['abreviatura']
+            );
+        }
+
         try {
-            $empresaId = $request->user()->empresa_id;
-
-            $request->validate([
-                'nombre' => 'required|string|max:255',
-                'abreviatura' => 'nullable|string|max:50',
-                'tipo' => 'required|in:unidad,peso,volumen,longitud,servicio',
-                'fraccionable' => 'nullable|boolean',
-                'factor_conversion' => 'nullable|numeric|min:0',
-                'activo' => 'nullable|boolean',
-            ]);
-
             $unidad = UnidadMedida::create([
                 'empresa_id' => $empresaId,
-                'nombre' => $request->nombre,
-                'abreviatura' => $request->abreviatura,
-                'tipo' => $request->tipo,
-                'fraccionable' => $request->fraccionable ?? false,
-                'factor_conversion' => $request->factor_conversion ?? 1,
-                'activo' => $request->activo ?? true,
+                'nombre' => $validated['nombre'],
+                'abreviatura' => $validated['abreviatura'] ?? null,
+                'tipo' => $validated['tipo'],
+                'fraccionable' => array_key_exists(
+                    'fraccionable',
+                    $validated
+                )
+                    ? $validated['fraccionable']
+                    : false,
+                'factor_conversion' => $validated['factor_conversion'] ?? 1,
+                'activo' => array_key_exists(
+                    'activo',
+                    $validated
+                )
+                    ? $validated['activo']
+                    : true,
             ]);
+
+            $this->registrarAuditoria(
+                $request,
+                'crear',
+                'unidades_medida',
+                $unidad->id,
+                null,
+                $unidad->toArray(),
+                $empresaId,
+                $usuarioId
+            );
 
             return response()->json([
                 'message' => 'Unidad creada correctamente',
-                'data' => $unidad
+                'data' => $unidad,
             ], 201);
-        } catch (\Exception $e) {
-            Log::error('Error al crear unidad: ' . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->registrarAuditoria(
+                $request,
+                'crear_error',
+                'unidades_medida',
+                null,
+                null,
+                [
+                    'datos' => $this->datosAuditoria(
+                        $validated
+                    ),
+                    'error_tipo' => get_class($e),
+                ],
+                $empresaId,
+                $usuarioId
+            );
+
+            Log::error(
+                'Error al crear unidad',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $usuarioId,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
             return response()->json([
-                'message' => 'Error al crear unidad: ' . $e->getMessage()
+                'message' => 'Error al crear unidad',
             ], 500);
         }
     }
 
     /**
-     * Actualizar una unidad de medida
+     * Actualizar una unidad de medida.
      */
     public function update(Request $request, $id)
     {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'Usuario no autenticado.',
+            ], 401);
+        }
+
+        if (!$user->empresa_id || !$user->empresa) {
+            return response()->json([
+                'message' => 'El usuario no tiene una empresa asociada.',
+            ], 403);
+        }
+
+        $empresaId = (int) $user->empresa_id;
+        $usuarioId = (int) $user->id;
+
+        /*
+         * Validar el ID antes de consultar.
+         */
+        $request->validate([
+            '_id' => [
+                'nullable',
+            ],
+        ]);
+
+        /*
+         * Validación fuera del try/catch.
+         */
+        $validated = $request->validate([
+            'nombre' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+
+            'abreviatura' => [
+                'nullable',
+                'string',
+                'max:50',
+            ],
+
+            'tipo' => [
+                'required',
+                Rule::in([
+                    'unidad',
+                    'peso',
+                    'volumen',
+                    'longitud',
+                    'servicio',
+                ]),
+            ],
+
+            'fraccionable' => [
+                'nullable',
+                'boolean',
+            ],
+
+            'factor_conversion' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'activo' => [
+                'nullable',
+                'boolean',
+            ],
+        ]);
+
+        $id = filter_var(
+            $id,
+            FILTER_VALIDATE_INT
+        );
+
+        if ($id === false || $id < 1) {
+            return response()->json([
+                'message' => 'Identificador de unidad inválido.',
+            ], 422);
+        }
+
+        $validated['nombre'] = trim($validated['nombre']);
+
+        if (
+            isset($validated['abreviatura'])
+            && $validated['abreviatura'] !== null
+        ) {
+            $validated['abreviatura'] = trim(
+                $validated['abreviatura']
+            );
+        }
+
         try {
-            $empresaId = $request->user()->empresa_id;
+            $unidad = UnidadMedida::where(
+                'empresa_id',
+                $empresaId
+            )->findOrFail($id);
 
-            $unidad = UnidadMedida::where('empresa_id', $empresaId)->findOrFail($id);
+            $datosAntes = $unidad->toArray();
 
-            $request->validate([
-                'nombre' => 'required|string|max:255',
-                'abreviatura' => 'nullable|string|max:50',
-                'tipo' => 'required|in:unidad,peso,volumen,longitud,servicio',
-                'fraccionable' => 'nullable|boolean',
-                'factor_conversion' => 'nullable|numeric|min:0',
-                'activo' => 'nullable|boolean',
-            ]);
+            $datosActualizar = [
+                'nombre' => $validated['nombre'],
+                'abreviatura' => $validated['abreviatura'] ?? null,
+                'tipo' => $validated['tipo'],
+                'fraccionable' => array_key_exists(
+                    'fraccionable',
+                    $validated
+                )
+                    ? $validated['fraccionable']
+                    : false,
+                'factor_conversion' => $validated['factor_conversion'] ?? 1,
+            ];
 
-            $unidad->update([
-                'nombre' => $request->nombre,
-                'abreviatura' => $request->abreviatura,
-                'tipo' => $request->tipo,
-                'fraccionable' => $request->fraccionable ?? false,
-                'factor_conversion' => $request->factor_conversion ?? 1,
-                'activo' => $request->activo ?? true,
-            ]);
+            if (array_key_exists('activo', $validated)) {
+                $datosActualizar['activo'] = $validated['activo'];
+            }
+
+            $unidad->update($datosActualizar);
+            $unidad->refresh();
+
+            $this->registrarAuditoria(
+                $request,
+                'actualizar',
+                'unidades_medida',
+                $unidad->id,
+                $datosAntes,
+                $unidad->toArray(),
+                $empresaId,
+                $usuarioId
+            );
 
             return response()->json([
                 'message' => 'Unidad actualizada correctamente',
-                'data' => $unidad
+                'data' => $unidad,
             ]);
-        } catch (\Exception $e) {
-            Log::error('Error al actualizar unidad: ' . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->registrarAuditoria(
+                $request,
+                'actualizar_error',
+                'unidades_medida',
+                isset($unidad)
+                    ? $unidad->id
+                    : $id,
+                isset($unidad)
+                    ? $unidad->toArray()
+                    : null,
+                [
+                    'error_tipo' => get_class($e),
+                ],
+                $empresaId,
+                $usuarioId
+            );
+
+            Log::error(
+                'Error al actualizar unidad',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $usuarioId,
+                    'unidad_id' => $id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
             return response()->json([
-                'message' => 'Error al actualizar unidad: ' . $e->getMessage()
+                'message' => 'Error al actualizar unidad',
             ], 500);
         }
     }
 
     /**
-     * Eliminar una unidad de medida
+     * Eliminar una unidad de medida.
      */
     public function destroy($id, Request $request)
     {
-        try {
-            $empresaId = $request->user()->empresa_id;
+        $user = $request->user();
 
-            $unidad = UnidadMedida::where('empresa_id', $empresaId)->findOrFail($id);
+        if (!$user) {
+            return response()->json([
+                'message' => 'Usuario no autenticado.',
+            ], 401);
+        }
+
+        if (!$user->empresa_id || !$user->empresa) {
+            return response()->json([
+                'message' => 'El usuario no tiene una empresa asociada.',
+            ], 403);
+        }
+
+        $empresaId = (int) $user->empresa_id;
+        $usuarioId = (int) $user->id;
+
+        $id = filter_var(
+            $id,
+            FILTER_VALIDATE_INT
+        );
+
+        if ($id === false || $id < 1) {
+            return response()->json([
+                'message' => 'Identificador de unidad inválido.',
+            ], 422);
+        }
+
+        try {
+            $unidad = UnidadMedida::where(
+                'empresa_id',
+                $empresaId
+            )->findOrFail($id);
+
+            $datosAntes = $unidad->toArray();
+
             $unidad->delete();
 
+            $this->registrarAuditoria(
+                $request,
+                'eliminar',
+                'unidades_medida',
+                $unidad->id,
+                $datosAntes,
+                null,
+                $empresaId,
+                $usuarioId
+            );
+
             return response()->json([
-                'message' => 'Unidad eliminada correctamente'
+                'message' => 'Unidad eliminada correctamente',
             ]);
-        } catch (\Exception $e) {
-            Log::error('Error al eliminar unidad: ' . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->registrarAuditoria(
+                $request,
+                'eliminar_error',
+                'unidades_medida',
+                $id,
+                isset($unidad)
+                    ? $unidad->toArray()
+                    : null,
+                [
+                    'error_tipo' => get_class($e),
+                ],
+                $empresaId,
+                $usuarioId
+            );
+
+            Log::error(
+                'Error al eliminar unidad',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $usuarioId,
+                    'unidad_id' => $id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
             return response()->json([
-                'message' => 'Error al eliminar unidad: ' . $e->getMessage()
+                'message' => 'Error al eliminar unidad',
             ], 500);
         }
+    }
+
+    /**
+     * Registrar auditoría de forma segura.
+     */
+    private function registrarAuditoria(
+        Request $request,
+        string $accion,
+        string $tabla,
+        ?int $registroId,
+        ?array $datosAntes,
+        ?array $datosDespues,
+        ?int $empresaId,
+        ?int $usuarioId
+    ): void {
+        if ($request->user()?->rol === 'superadmin') {
+            return;
+        }
+
+        try {
+            $this->auditoria->registrar(
+                $request,
+                $accion,
+                $tabla,
+                $registroId,
+                $datosAntes,
+                $datosDespues,
+                $empresaId,
+                $usuarioId
+            );
+        } catch (Throwable $e) {
+            Log::warning(
+                'No fue posible registrar auditoría de unidad de medida.',
+                [
+                    'accion' => $accion,
+                    'tabla' => $tabla,
+                    'registro_id' => $registroId,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $usuarioId,
+                    'error' => $e->getMessage(),
+                ]
+            );
+        }
+    }
+
+    /**
+     * Preparar datos para auditoría.
+     *
+     * No incluye credenciales ni tokens.
+     */
+    private function datosAuditoria(array $datos): array
+    {
+        unset(
+            $datos['password'],
+            $datos['password_confirmation'],
+            $datos['token'],
+            $datos['access_token'],
+            $datos['refresh_token']
+        );
+
+        return $datos;
     }
 }

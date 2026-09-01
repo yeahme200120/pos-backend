@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Cupon;
+use App\Services\AuditoriaService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -36,6 +37,22 @@ class CuponController extends Controller
 
         $cupones = $query->orderBy('created_at', 'desc')
             ->paginate($request->per_page ?? 20);
+
+        app(AuditoriaService::class)->registrar(
+            'cupones.consultados',
+            'cupones',
+            null,
+            null,
+            [
+                'empresa_id' => $empresaId,
+                'search' => $request->search,
+                'activo' => $request->activo,
+                'disponible' => $request->disponible,
+                'pagina' => $cupones->currentPage(),
+                'total' => $cupones->total(),
+            ],
+            $request
+        );
 
         return response()->json($cupones);
     }
@@ -78,6 +95,15 @@ class CuponController extends Controller
 
             DB::commit();
 
+            app(AuditoriaService::class)->registrar(
+                'cupon.creado',
+                'cupones',
+                (int) $cupon->id,
+                null,
+                $cupon->toArray(),
+                $request
+            );
+
             return response()->json([
                 'message' => 'Cupón creado correctamente',
                 'data' => $cupon
@@ -100,6 +126,8 @@ class CuponController extends Controller
         $empresaId = $request->user()->empresa_id;
 
         $cupon = Cupon::where('empresa_id', $empresaId)->findOrFail($id);
+
+        $datosAntes = $cupon->toArray();
 
         $request->validate([
             'codigo' => ['required', 'string', 'max:50', Rule::unique('cupones')->ignore($cupon->id)],
@@ -129,7 +157,18 @@ class CuponController extends Controller
                 'activo' => $request->activo ?? true,
             ]);
 
+            $cupon->refresh();
+
             DB::commit();
+
+            app(AuditoriaService::class)->registrar(
+                'cupon.actualizado',
+                'cupones',
+                (int) $cupon->id,
+                $datosAntes,
+                $cupon->toArray(),
+                $request
+            );
 
             return response()->json([
                 'message' => 'Cupón actualizado correctamente',
@@ -153,7 +192,19 @@ class CuponController extends Controller
         $empresaId = $request->user()->empresa_id;
 
         $cupon = Cupon::where('empresa_id', $empresaId)->findOrFail($id);
+
+        $datosAntes = $cupon->toArray();
+
         $cupon->delete();
+
+        app(AuditoriaService::class)->registrar(
+            'cupon.eliminado',
+            'cupones',
+            (int) $cupon->id,
+            $datosAntes,
+            null,
+            $request
+        );
 
         return response()->json([
             'message' => 'Cupón eliminado correctamente'
@@ -177,6 +228,19 @@ class CuponController extends Controller
             ->first();
 
         if (!$cupon) {
+            app(AuditoriaService::class)->registrar(
+                'cupon.validacion.fallida',
+                'cupones',
+                null,
+                null,
+                [
+                    'codigo' => strtoupper($request->codigo),
+                    'subtotal' => $request->subtotal,
+                    'motivo' => 'cupon_no_encontrado',
+                ],
+                $request
+            );
+
             return response()->json([
                 'valido' => false,
                 'message' => 'Cupón no encontrado'
@@ -184,6 +248,19 @@ class CuponController extends Controller
         }
 
         if (!$cupon->estaActivo()) {
+            app(AuditoriaService::class)->registrar(
+                'cupon.validacion.fallida',
+                'cupones',
+                (int) $cupon->id,
+                null,
+                [
+                    'codigo' => $cupon->codigo,
+                    'subtotal' => $request->subtotal,
+                    'motivo' => 'cupon_inactivo_o_expirado',
+                ],
+                $request
+            );
+
             return response()->json([
                 'valido' => false,
                 'message' => 'El cupón no está activo o ha expirado'
@@ -193,11 +270,38 @@ class CuponController extends Controller
         $descuento = $cupon->getDescuento($request->subtotal);
 
         if ($descuento == 0) {
+            app(AuditoriaService::class)->registrar(
+                'cupon.validacion.fallida',
+                'cupones',
+                (int) $cupon->id,
+                null,
+                [
+                    'codigo' => $cupon->codigo,
+                    'subtotal' => $request->subtotal,
+                    'motivo' => 'cupon_no_aplica',
+                ],
+                $request
+            );
+
             return response()->json([
                 'valido' => false,
                 'message' => 'El cupón no aplica para este monto'
             ], 422);
         }
+
+        app(AuditoriaService::class)->registrar(
+            'cupon.validado',
+            'cupones',
+            (int) $cupon->id,
+            null,
+            [
+                'codigo' => $cupon->codigo,
+                'subtotal' => $request->subtotal,
+                'descuento' => $descuento,
+                'valido' => true,
+            ],
+            $request
+        );
 
         return response()->json([
             'valido' => true,

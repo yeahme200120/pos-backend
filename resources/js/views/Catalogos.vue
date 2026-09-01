@@ -1,4 +1,3 @@
-<!-- resources/js/views/Catalogos.vue -->
 <template>
     <div>
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-3">
@@ -57,14 +56,12 @@
                             type="text"
                             class="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                             placeholder="Buscar producto..."
-                            @input="cargarProductos"
                         />
                     </div>
                     <div class="w-48">
                         <select 
                             v-model="filtrosProducto.categoria"
                             class="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            @change="cargarProductos"
                         >
                             <option value="">Todas las categorías</option>
                             <option v-for="cat in categorias" :key="cat.id" :value="cat.id">
@@ -82,11 +79,11 @@
 
                 <!-- Tabla Productos -->
                 <div class="overflow-x-auto">
-                    <div v-if="cargandoProductos" class="text-center py-8">
+                    <div v-if="cargando" class="text-center py-8">
                         <span class="inline-block animate-spin mr-2">⟳</span>
                         Cargando...
                     </div>
-                    <div v-else-if="productos.length === 0" class="text-center py-8 text-gray-500">
+                    <div v-else-if="productosFiltrados.length === 0" class="text-center py-8 text-gray-500">
                         No hay productos registrados
                     </div>
                     <table v-else class="w-full divide-y divide-gray-200">
@@ -102,7 +99,7 @@
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
-                            <tr v-for="producto in productos" :key="producto.id" class="hover:bg-gray-50">
+                            <tr v-for="producto in productosFiltrados" :key="producto.id" class="hover:bg-gray-50">
                                 <td class="px-4 py-3 text-sm">{{ producto.codigo }}</td>
                                 <td class="px-4 py-3 text-sm font-medium">{{ producto.nombre }}</td>
                                 <td class="px-4 py-3 text-sm text-right">${{ formatearNumero(producto.precio) }}</td>
@@ -137,7 +134,7 @@
         <div v-if="tabActivo === 'categorias'">
             <div class="bg-white rounded-lg shadow overflow-hidden">
                 <div class="overflow-x-auto">
-                    <div v-if="cargandoCategorias" class="text-center py-8">
+                    <div v-if="cargando" class="text-center py-8">
                         <span class="inline-block animate-spin mr-2">⟳</span>
                         Cargando...
                     </div>
@@ -188,7 +185,7 @@
         <div v-if="tabActivo === 'unidades'">
             <div class="bg-white rounded-lg shadow overflow-hidden">
                 <div class="overflow-x-auto">
-                    <div v-if="cargandoUnidades" class="text-center py-8">
+                    <div v-if="cargando" class="text-center py-8">
                         <span class="inline-block animate-spin mr-2">⟳</span>
                         Cargando...
                     </div>
@@ -423,22 +420,64 @@ export default {
             productos: [],
             categorias: [],
             unidades: [],
-            cargandoProductos: false,
-            cargandoCategorias: false,
-            cargandoUnidades: false,
+            cargando: false,
             guardando: false,
             filtrosProducto: { search: '', categoria: '' },
             modalProducto: false,
             modalCategoria: false,
             modalUnidad: false,
             editando: { producto: false, categoria: false, unidad: false },
-            formProducto: { id: null, codigo: '', nombre: '', descripcion: '', categoria_id: null, unidad_medida_id: null, precio: 0, costo: 0, stock: 0, stock_minimo: 0, impuesto: 0, activo: true },
-            formCategoria: { id: null, nombre: '', descripcion: '', color: '#3B82F6', activo: true },
-            formUnidad: { id: null, nombre: '', abreviatura: '', tipo: 'unidad', fraccionable: false, factor_conversion: 1, activo: true },
+            formProducto: {
+                id: null,
+                codigo: '',
+                nombre: '',
+                descripcion: '',
+                categoria_id: null,
+                unidad_medida_id: null,
+                precio: 0,
+                costo: 0,
+                stock: 0,
+                stock_minimo: 0,
+                impuesto: 0,
+                activo: true
+            },
+            formCategoria: {
+                id: null,
+                nombre: '',
+                descripcion: '',
+                color: '#3B82F6',
+                activo: true
+            },
+            formUnidad: {
+                id: null,
+                nombre: '',
+                abreviatura: '',
+                tipo: 'unidad',
+                fraccionable: false,
+                factor_conversion: 1,
+                activo: true
+            },
             errorProducto: null,
             errorCategoria: null,
             errorUnidad: null
         };
+    },
+    computed: {
+        // Filtra productos en memoria según búsqueda y categoría
+        productosFiltrados() {
+            let list = this.productos;
+            if (this.filtrosProducto.search) {
+                const search = this.filtrosProducto.search.toLowerCase();
+                list = list.filter(p =>
+                    p.nombre.toLowerCase().includes(search) ||
+                    (p.codigo && p.codigo.toLowerCase().includes(search))
+                );
+            }
+            if (this.filtrosProducto.categoria) {
+                list = list.filter(p => p.categoria_id === this.filtrosProducto.categoria);
+            }
+            return list;
+        }
     },
     mounted() {
         this.cargarCatalogos();
@@ -450,103 +489,88 @@ export default {
             if (isNaN(num)) return '0.00';
             return num.toFixed(2);
         },
+
+        // =====================================================
+        // CARGA DE CATÁLOGOS (única llamada)
+        // =====================================================
         async cargarCatalogos() {
-            // Cargar todo desde el endpoint de catálogos
-            await Promise.all([
-                this.cargarProductos(),
-                this.cargarCategorias(),
-                this.cargarUnidades()
-            ]);
-        },
-        async cargarProductos() {
-            this.cargandoProductos = true;
+            this.cargando = true;
             try {
-                const params = {};
-                if (this.filtrosProducto.search) params.search = this.filtrosProducto.search;
-                if (this.filtrosProducto.categoria) params.categoria_id = this.filtrosProducto.categoria;
-                const res = await api.get('/productos', { params });
-                this.productos = res.data.data || [];
+                const res = await api.get('/catalogos');
+                this.productos = res.data.productos || [];
+                this.categorias = res.data.categorias || [];
+                this.unidades = res.data.unidades_medida || [];
+
                 this.tabs.find(t => t.id === 'productos').total = this.productos.length;
-            } catch (error) {
-                console.error('Error cargando productos:', error);
-            } finally {
-                this.cargandoProductos = false;
-            }
-        },
-        async cargarCategorias() {
-            this.cargandoCategorias = true;
-            try {
-                // ✅ Usar el endpoint correcto
-                const res = await api.get('/categorias');
-                this.categorias = res.data || [];
                 this.tabs.find(t => t.id === 'categorias').total = this.categorias.length;
-            } catch (error) {
-                console.error('Error cargando categorías:', error);
-                // Si falla, intentar cargar desde el catálogo general
-                try {
-                    const res = await api.get('/catalogos');
-                    if (res.data && res.data.categorias) {
-                        this.categorias = res.data.categorias;
-                        this.tabs.find(t => t.id === 'categorias').total = this.categorias.length;
-                    }
-                } catch (e) {
-                    console.error('Error cargando categorías desde catálogos:', e);
-                }
-            } finally {
-                this.cargandoCategorias = false;
-            }
-        },
-        async cargarUnidades() {
-            this.cargandoUnidades = true;
-            try {
-                // ✅ Usar el endpoint correcto
-                const res = await api.get('/unidades');
-                this.unidades = res.data || [];
                 this.tabs.find(t => t.id === 'unidades').total = this.unidades.length;
             } catch (error) {
-                console.error('Error cargando unidades:', error);
-                // Si falla, intentar cargar desde el catálogo general
-                try {
-                    const res = await api.get('/catalogos');
-                    if (res.data && res.data.unidades_medida) {
-                        this.unidades = res.data.unidades_medida;
-                        this.tabs.find(t => t.id === 'unidades').total = this.unidades.length;
-                    }
-                } catch (e) {
-                    console.error('Error cargando unidades desde catálogos:', e);
-                }
+                console.error('❌ Error cargando catálogos:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'No se pudieron cargar los catálogos'
+                });
             } finally {
-                this.cargandoUnidades = false;
+                this.cargando = false;
             }
         },
+
+        // =====================================================
+        // FILTROS
+        // =====================================================
         limpiarFiltrosProducto() {
             this.filtrosProducto = { search: '', categoria: '' };
-            this.cargarProductos();
         },
+
+        // =====================================================
+        // ABRIR / CERRAR MODALES
+        // =====================================================
         abrirModal(tipo, data = null) {
             if (tipo === 'producto') {
                 this.editando.producto = !!data;
-                this.formProducto = data ? { ...data } : { id: null, codigo: '', nombre: '', descripcion: '', categoria_id: null, unidad_medida_id: null, precio: 0, costo: 0, stock: 0, stock_minimo: 0, impuesto: 0, activo: true };
+                this.formProducto = data
+                    ? { ...data }
+                    : { id: null, codigo: '', nombre: '', descripcion: '', categoria_id: null, unidad_medida_id: null, precio: 0, costo: 0, stock: 0, stock_minimo: 0, impuesto: 0, activo: true };
                 this.errorProducto = null;
                 this.modalProducto = true;
             } else if (tipo === 'categoria') {
                 this.editando.categoria = !!data;
-                this.formCategoria = data ? { ...data } : { id: null, nombre: '', descripcion: '', color: '#3B82F6', activo: true };
+                this.formCategoria = data
+                    ? { ...data }
+                    : { id: null, nombre: '', descripcion: '', color: '#3B82F6', activo: true };
                 this.errorCategoria = null;
                 this.modalCategoria = true;
             } else if (tipo === 'unidad') {
                 this.editando.unidad = !!data;
-                this.formUnidad = data ? { ...data } : { id: null, nombre: '', abreviatura: '', tipo: 'unidad', fraccionable: false, factor_conversion: 1, activo: true };
+                this.formUnidad = data
+                    ? { ...data }
+                    : { id: null, nombre: '', abreviatura: '', tipo: 'unidad', fraccionable: false, factor_conversion: 1, activo: true };
                 this.errorUnidad = null;
                 this.modalUnidad = true;
             }
         },
-        cerrarModalProducto() { this.modalProducto = false; this.editando.producto = false; },
-        cerrarModalCategoria() { this.modalCategoria = false; this.editando.categoria = false; },
-        cerrarModalUnidad() { this.modalUnidad = false; this.editando.unidad = false; },
+
+        cerrarModalProducto() {
+            this.modalProducto = false;
+            this.editando.producto = false;
+        },
+        cerrarModalCategoria() {
+            this.modalCategoria = false;
+            this.editando.categoria = false;
+        },
+        cerrarModalUnidad() {
+            this.modalUnidad = false;
+            this.editando.unidad = false;
+        },
+
         editarProducto(p) { this.abrirModal('producto', p); },
         editarCategoria(c) { this.abrirModal('categoria', c); },
         editarUnidad(u) { this.abrirModal('unidad', u); },
+
+        // =====================================================
+        // GUARDAR
+        // =====================================================
         async guardarProducto() {
             this.guardando = true;
             this.errorProducto = null;
@@ -557,20 +581,27 @@ export default {
                 data.stock = parseInt(data.stock) || 0;
                 data.stock_minimo = parseInt(data.stock_minimo) || 0;
                 data.impuesto = parseFloat(data.impuesto) || 0;
+
                 if (this.editando.producto) {
                     await api.put(`/productos/${this.formProducto.id}`, data);
                 } else {
                     await api.post('/productos', data);
                 }
                 this.cerrarModalProducto();
-                await this.cargarProductos();
-                Swal.fire({ icon: 'success', title: this.editando.producto ? 'Producto actualizado' : 'Producto creado', timer: 1500, showConfirmButton: false });
+                await this.cargarCatalogos();
+                Swal.fire({
+                    icon: 'success',
+                    title: this.editando.producto ? 'Producto actualizado' : 'Producto creado',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
             } catch (error) {
                 this.errorProducto = error.response?.data?.message || 'Error al guardar';
             } finally {
                 this.guardando = false;
             }
         },
+
         async guardarCategoria() {
             this.guardando = true;
             this.errorCategoria = null;
@@ -581,14 +612,20 @@ export default {
                     await api.post('/categorias', this.formCategoria);
                 }
                 this.cerrarModalCategoria();
-                await this.cargarCategorias();
-                Swal.fire({ icon: 'success', title: this.editando.categoria ? 'Categoría actualizada' : 'Categoría creada', timer: 1500, showConfirmButton: false });
+                await this.cargarCatalogos();
+                Swal.fire({
+                    icon: 'success',
+                    title: this.editando.categoria ? 'Categoría actualizada' : 'Categoría creada',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
             } catch (error) {
                 this.errorCategoria = error.response?.data?.message || 'Error al guardar';
             } finally {
                 this.guardando = false;
             }
         },
+
         async guardarUnidad() {
             this.guardando = true;
             this.errorUnidad = null;
@@ -599,44 +636,76 @@ export default {
                     await api.post('/unidades', this.formUnidad);
                 }
                 this.cerrarModalUnidad();
-                await this.cargarUnidades();
-                Swal.fire({ icon: 'success', title: this.editando.unidad ? 'Unidad actualizada' : 'Unidad creada', timer: 1500, showConfirmButton: false });
+                await this.cargarCatalogos();
+                Swal.fire({
+                    icon: 'success',
+                    title: this.editando.unidad ? 'Unidad actualizada' : 'Unidad creada',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
             } catch (error) {
                 this.errorUnidad = error.response?.data?.message || 'Error al guardar';
             } finally {
                 this.guardando = false;
             }
         },
+
+        // =====================================================
+        // ELIMINAR
+        // =====================================================
         async eliminarProducto(id) {
-            const res = await Swal.fire({ title: '¿Eliminar producto?', text: 'Esta acción no se puede deshacer', icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Sí, eliminar' });
+            const res = await Swal.fire({
+                title: '¿Eliminar producto?',
+                text: 'Esta acción no se puede deshacer',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                confirmButtonText: 'Sí, eliminar'
+            });
             if (res.isConfirmed) {
                 try {
                     await api.delete(`/productos/${id}`);
-                    await this.cargarProductos();
+                    await this.cargarCatalogos();
                     Swal.fire({ icon: 'success', title: 'Eliminado', timer: 1500, showConfirmButton: false });
                 } catch (error) {
                     Swal.fire({ icon: 'error', title: 'Error', text: error.response?.data?.message || 'Error al eliminar' });
                 }
             }
         },
+
         async eliminarCategoria(id) {
-            const res = await Swal.fire({ title: '¿Eliminar categoría?', text: 'Esta acción no se puede deshacer', icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Sí, eliminar' });
+            const res = await Swal.fire({
+                title: '¿Eliminar categoría?',
+                text: 'Esta acción no se puede deshacer',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                confirmButtonText: 'Sí, eliminar'
+            });
             if (res.isConfirmed) {
                 try {
                     await api.delete(`/categorias/${id}`);
-                    await this.cargarCategorias();
+                    await this.cargarCatalogos();
                     Swal.fire({ icon: 'success', title: 'Eliminada', timer: 1500, showConfirmButton: false });
                 } catch (error) {
                     Swal.fire({ icon: 'error', title: 'Error', text: error.response?.data?.message || 'Error al eliminar' });
                 }
             }
         },
+
         async eliminarUnidad(id) {
-            const res = await Swal.fire({ title: '¿Eliminar unidad?', text: 'Esta acción no se puede deshacer', icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: 'Sí, eliminar' });
+            const res = await Swal.fire({
+                title: '¿Eliminar unidad?',
+                text: 'Esta acción no se puede deshacer',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                confirmButtonText: 'Sí, eliminar'
+            });
             if (res.isConfirmed) {
                 try {
                     await api.delete(`/unidades/${id}`);
-                    await this.cargarUnidades();
+                    await this.cargarCatalogos();
                     Swal.fire({ icon: 'success', title: 'Eliminada', timer: 1500, showConfirmButton: false });
                 } catch (error) {
                     Swal.fire({ icon: 'error', title: 'Error', text: error.response?.data?.message || 'Error al eliminar' });

@@ -29,14 +29,14 @@ use Illuminate\Support\Facades\Route;
 | API Routes - Laravel 12
 |--------------------------------------------------------------------------
 */
-// Logo de la empresa (para el sidebar)
-Route::prefix('empresa')->group(function () {
-    Route::get('/logo', [EmpresaController::class, 'logo']);
-    Route::post('/logo', [EmpresaController::class, 'uploadLogo']);
-    Route::delete('/logo', [EmpresaController::class, 'deleteLogo']);
-});
-Route::prefix('v1')->group(function () {
 
+Route::prefix('v1')->group(function () {
+    // Logo de la empresa (para el sidebar)
+    Route::prefix('empresa')->group(function () {
+        Route::get('/logo', [EmpresaController::class, 'logo']);
+        Route::post('/logo', [EmpresaController::class, 'uploadLogo']);
+        Route::delete('/logo', [EmpresaController::class, 'deleteLogo']);
+    });
     // --- RUTAS PÚBLICAS (NO requieren autenticación) ---
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/password/forgot', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');

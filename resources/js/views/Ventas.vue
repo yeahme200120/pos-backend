@@ -1,4 +1,3 @@
-<!-- resources/js/views/Ventas.vue -->
 <template>
     <div class="h-full flex flex-col p-2 sm:p-4">
         <h1 class="text-xl sm:text-2xl font-bold mb-3 sm:mb-4">Nueva Venta</h1>
@@ -91,7 +90,7 @@
                 <!-- Carrito -->
                 <div class="flex-1 overflow-y-auto p-2 sm:p-3">
                     <h3 class="font-semibold text-sm mb-2">Carrito <span class="text-gray-400 text-xs">({{ carrito ?
-                            carrito.length : 0 }})</span></h3>
+                        carrito.length : 0 }})</span></h3>
 
                     <div v-if="!carrito || carrito.length === 0" class="text-center py-8 text-gray-400 text-sm">
                         <p class="text-3xl mb-2">🛒</p>
@@ -129,7 +128,7 @@
                     </div>
                 </div>
 
-                <!-- Resumen -->
+                <!-- Resumen y Pagos -->
                 <div class="p-2 sm:p-3 border-t border-gray-200 bg-gray-50">
                     <div class="space-y-1 text-sm">
                         <div class="flex justify-between">
@@ -150,10 +149,22 @@
                         </div>
                     </div>
 
-                    <!-- Pagos -->
+                    <!-- Mostrar cambio si hay excedente y existe pago en efectivo -->
+                    <div v-if="cambio > 0" class="mt-2 p-2 bg-green-100 rounded-lg border border-green-300">
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm font-semibold text-green-800">🔄 Cambio a devolver:</span>
+                            <span class="text-lg font-bold text-green-700">${{ formatearNumero(cambio) }}</span>
+                        </div>
+                        <div v-if="!todosEfectivo" class="text-xs text-green-700 mt-1">
+                            * El excedente se devolverá en efectivo
+                        </div>
+                    </div>
+
+                    <!-- Pagos (todos editables) -->
                     <div class="mt-3 space-y-2">
-                        <div v-for="(pago, index) in (venta.pagos || [])" :key="index" class="flex gap-2">
-                            <select v-model="pago.forma_pago" class="flex-1 px-2 py-1 border rounded text-sm">
+                        <div v-for="(pago, index) in (venta.pagos || [])" :key="index" class="flex gap-2 items-center">
+                            <select v-model="pago.forma_pago" class="flex-1 px-2 py-1 border rounded text-sm"
+                                @change="validarPagos">
                                 <option value="Efectivo">Efectivo</option>
                                 <option value="Tarjeta Crédito">Tarjeta Crédito</option>
                                 <option value="Tarjeta Débito">Tarjeta Débito</option>
@@ -161,7 +172,7 @@
                             </select>
                             <input type="number" v-model="pago.monto"
                                 class="w-20 sm:w-24 px-2 py-1 border rounded text-sm" placeholder="Monto" min="0"
-                                step="0.01" />
+                                step="0.01" @input="validarPagos" />
                             <button v-if="(venta.pagos || []).length > 1" @click="eliminarPago(index)"
                                 class="text-red-500 hover:text-red-700 text-sm px-2">
                                 ✕
@@ -170,6 +181,11 @@
                         <button @click="agregarPago" class="text-blue-600 hover:text-blue-800 text-sm">
                             + Agregar pago
                         </button>
+                    </div>
+
+                    <!-- Mensaje de error de pagos -->
+                    <div v-if="errorPago" class="mt-2 p-2 bg-red-100 text-red-700 rounded text-sm">
+                        {{ errorPago }}
                     </div>
 
                     <!-- Botones de acción -->
@@ -214,6 +230,7 @@ export default {
             cargandoProductos: false,
             guardando: false,
             error: null,
+            errorPago: null,
             venta: {
                 cliente_id: null,
                 pagos: [
@@ -230,7 +247,6 @@ export default {
     computed: {
         productosFiltrados() {
             let list = this.productos || [];
-
             if (this.filtroProducto) {
                 const search = this.filtroProducto.toLowerCase();
                 list = list.filter(p =>
@@ -239,11 +255,9 @@ export default {
                     (p.descripcion && p.descripcion.toLowerCase().includes(search))
                 );
             }
-
             if (this.filtroCategoria) {
                 list = list.filter(p => p.categoria_id === this.filtroCategoria);
             }
-
             return list;
         },
         subtotal() {
@@ -259,6 +273,32 @@ export default {
         totalPagado() {
             if (!this.venta || !this.venta.pagos) return 0;
             return this.venta.pagos.reduce((sum, p) => sum + (parseFloat(p.monto) || 0), 0);
+        },
+        // Indica si existe al menos un pago en efectivo con monto > 0
+        hayEfectivo() {
+            if (!this.venta || !this.venta.pagos) return false;
+            return this.venta.pagos.some(p => p.forma_pago === 'Efectivo' && parseFloat(p.monto) > 0);
+        },
+        // Indica si todos los pagos (con monto > 0) son en efectivo
+        todosEfectivo() {
+            if (!this.venta || !this.venta.pagos) return false;
+            const pagosConMonto = this.venta.pagos.filter(p => parseFloat(p.monto) > 0);
+            if (pagosConMonto.length === 0) return false;
+            return pagosConMonto.every(p => p.forma_pago === 'Efectivo');
+        },
+        // Cambio: solo si hay excedente y existe al menos un pago en efectivo
+        cambio() {
+            const totalPagado = this.totalPagado;
+            const total = this.total;
+            if (totalPagado > total && this.hayEfectivo) {
+                return totalPagado - total;
+            }
+            return 0;
+        }
+    },
+    watch: {
+        total() {
+            this.validarPagos();
         }
     },
     mounted() {
@@ -278,9 +318,11 @@ export default {
             this.cargandoProductos = true;
             try {
                 const res = await api.get('/productos?per_page=100&activo=1');
-                this.productos = res.data.data || [];
+                this.productos = res.data.data?.productos || [];
+                console.log('📦 Productos cargados:', this.productos.length);
             } catch (error) {
                 console.error('Error cargando productos:', error);
+                this.productos = [];
             } finally {
                 this.cargandoProductos = false;
             }
@@ -301,9 +343,7 @@ export default {
                 console.error('Error cargando categorías:', error);
             }
         },
-        filtrarProductos() {
-            // El filtro se aplica automáticamente por el computed
-        },
+        filtrarProductos() { /* computed */ },
         limpiarFiltros() {
             this.filtroProducto = '';
             this.filtroCategoria = '';
@@ -324,7 +364,7 @@ export default {
                         id: producto.id,
                         nombre: producto.nombre,
                         codigo: producto.codigo,
-                        precio: producto.precio,
+                        precio: parseFloat(producto.precio) || 0,
                         cantidad: 1,
                         stock: producto.stock || 0
                     });
@@ -333,6 +373,7 @@ export default {
                     this.error = 'Producto sin stock';
                 }
             }
+            this.$nextTick(() => this.validarPagos());
         },
         cambiarCantidad(index, delta) {
             if (!this.carrito || !this.carrito[index]) return;
@@ -345,13 +386,14 @@ export default {
             }
             item.cantidad = nuevaCantidad;
             this.error = null;
+            this.$nextTick(() => this.validarPagos());
         },
         eliminarDelCarrito(index) {
             if (this.carrito) this.carrito.splice(index, 1);
+            this.$nextTick(() => this.validarPagos());
         },
         limpiarCarrito() {
             if (!this.carrito || this.carrito.length === 0) return;
-
             Swal.fire({
                 title: '¿Limpiar carrito?',
                 text: 'Se eliminarán todos los productos',
@@ -365,85 +407,135 @@ export default {
                 if (result.isConfirmed) {
                     this.carrito = [];
                     this.error = null;
+                    this.errorPago = null;
+                    this.venta.pagos = [{ forma_pago: 'Efectivo', monto: 0 }];
+                    this.validarPagos();
                 }
             });
         },
         agregarPago() {
             if (!this.venta) this.venta = { pagos: [] };
             this.venta.pagos.push({ forma_pago: 'Efectivo', monto: 0 });
+            this.validarPagos();
         },
         eliminarPago(index) {
             if (this.venta && this.venta.pagos && this.venta.pagos.length > 1) {
                 this.venta.pagos.splice(index, 1);
+                this.validarPagos();
             }
         },
-        // resources/js/views/Ventas.vue - Método verificarVentaPendiente
+        // ✅ Validación de pagos (sin auto-llenado)
+        validarPagos() {
+            this.errorPago = null;
+            const pagos = this.venta.pagos.filter(p => parseFloat(p.monto) > 0);
+            if (pagos.length === 0) {
+                this.errorPago = 'Agrega al menos un pago con monto > 0';
+                return;
+            }
 
+            const total = this.total;
+            const totalPagado = pagos.reduce((sum, p) => sum + parseFloat(p.monto), 0);
+
+            // Verificar que ningún pago no-efectivo supere el total (individualmente)
+            for (let p of pagos) {
+                if (p.forma_pago !== 'Efectivo' && parseFloat(p.monto) > total) {
+                    this.errorPago = `El pago con ${p.forma_pago} ($${this.formatearNumero(p.monto)}) supera el total ($${this.formatearNumero(total)})`;
+                    return;
+                }
+            }
+
+            // Verificar que el total pagado sea >= total
+            if (totalPagado < total) {
+                this.errorPago = `El monto pagado ($${this.formatearNumero(totalPagado)}) es menor al total ($${this.formatearNumero(total)})`;
+                return;
+            }
+
+            // Si hay pagos no-efectivo, su suma no debe superar el total (a menos que efectivo cubra el excedente)
+            const pagosNoEfectivo = pagos.filter(p => p.forma_pago !== 'Efectivo');
+            const totalNoEfectivo = pagosNoEfectivo.reduce((sum, p) => sum + parseFloat(p.monto), 0);
+            if (totalNoEfectivo > total) {
+                this.errorPago = `La suma de pagos no-efectivo ($${this.formatearNumero(totalNoEfectivo)}) supera el total ($${this.formatearNumero(total)})`;
+                return;
+            }
+
+            // Si hay efectivo, permitir excedente
+        },
+
+        // =============================================
+        // VENTA PENDIENTE (mejorada)
+        // =============================================
         async verificarVentaPendiente() {
             try {
                 const res = await api.get('/ventas/pendiente/actual');
-
-                // ✅ Si la respuesta es exitosa y hay datos
-                if (res.data.success && res.data.data) {
-                    const pendiente = res.data.data;
-
-                    const result = await Swal.fire({
-                        title: 'Venta pendiente encontrada',
-                        html: `
-                    <div style="text-align: left;">
-                        <p><strong>Folio:</strong> ${pendiente.folio}</p>
-                        <p><strong>Productos:</strong> ${pendiente.detalles?.length || 0}</p>
-                        <p><strong>Total:</strong> $${this.formatearNumero(pendiente.total)}</p>
-                        <p><strong>Cliente:</strong> ${pendiente.cliente?.nombre || 'Cliente genérico'}</p>
-                    </div>
-                `,
-                        icon: 'info',
-                        showCancelButton: true,
-                        confirmButtonColor: '#3085d6',
-                        cancelButtonColor: '#d33',
-                        confirmButtonText: '✅ Cargar venta',
-                        cancelButtonText: '🗑️ Eliminar pendiente'
-                    });
-
-                    if (result.isConfirmed) {
-                        this.cargarVentaPendiente(pendiente);
+                if (res.status === 200 && res.data) {
+                    // Extraer la venta pendiente: puede venir en res.data o en res.data.data
+                    let pendiente = res.data.data || res.data;
+                    // Si es un array o está vacío, ignorar
+                    if (pendiente && typeof pendiente === 'object' && Object.keys(pendiente).length > 0 && pendiente.id) {
+                        this.mostrarDialogoVentaPendiente(pendiente);
                     } else {
-                        await api.delete('/ventas/pendiente/eliminar');
-                        Swal.fire({
-                            icon: 'info',
-                            title: 'Venta pendiente eliminada',
-                            timer: 2000,
-                            showConfirmButton: false
-                        });
+                        console.log('No hay venta pendiente válida');
                     }
                 }
             } catch (error) {
-                // ✅ Manejar el error 404 correctamente
-                // Si la respuesta es 404, significa que no hay venta pendiente
                 if (error.response && error.response.status === 404) {
-                    console.log('No hay venta pendiente');
-                    // No hacer nada, es normal
+                    console.log('No hay venta pendiente (404)');
                 } else {
-                    // Otro tipo de error
                     console.error('Error al verificar venta pendiente:', error);
                 }
             }
         },
+
+        mostrarDialogoVentaPendiente(pendiente) {
+            Swal.fire({
+                title: 'Venta pendiente encontrada',
+                html: `
+            <div style="text-align: left;">
+                <p><strong>Folio:</strong> ${pendiente.folio || 'N/A'}</p>
+                <p><strong>Productos:</strong> ${pendiente.detalles?.length || 0}</p>
+                <p><strong>Total:</strong> $${this.formatearNumero(pendiente.total || 0)}</p>
+                <p><strong>Cliente:</strong> ${pendiente.cliente?.nombre || 'Cliente genérico'}</p>
+            </div>
+        `,
+                icon: 'info',
+                showCancelButton: true,
+                confirmButtonColor: '#3085d6',
+                cancelButtonColor: '#d33',
+                confirmButtonText: '✅ Cargar venta',
+                cancelButtonText: '🗑️ Eliminar pendiente'
+            }).then(async (result) => {
+                if (result.isConfirmed) {
+                    this.cargarVentaPendiente(pendiente);
+                } else {
+                    try {
+                        await api.delete('/ventas/pendiente/eliminar');
+                        Swal.fire({ icon: 'info', title: 'Venta pendiente eliminada', timer: 2000, showConfirmButton: false });
+                    } catch (error) {
+                        console.error('Error eliminando pendiente:', error);
+                        Swal.fire({ icon: 'error', title: 'Error al eliminar', text: error.response?.data?.message || '' });
+                    }
+                }
+            });
+        },
+
         cargarVentaPendiente(pendiente) {
+            // Asegurar que pendiente tenga los campos necesarios
+            if (!pendiente || !pendiente.id) {
+                Swal.fire({ icon: 'error', title: 'Error', text: 'La venta pendiente no es válida' });
+                return;
+            }
             this.ventaPendienteId = pendiente.id;
             this.esVentaPendiente = true;
-            this.venta.cliente_id = pendiente.cliente_id;
+            this.venta.cliente_id = pendiente.cliente_id || null;
             this.venta.notas = pendiente.notas || '';
-
             this.carrito = (pendiente.detalles || []).map(d => ({
                 id: d.producto_id,
-                nombre: d.producto?.nombre || 'Producto',
-                codigo: d.producto?.codigo || '',
+                nombre: d.producto?.nombre || d.nombre_producto || 'Producto',
+                codigo: d.producto?.codigo || d.codigo_producto || '',
                 precio: parseFloat(d.precio_unitario) || 0,
                 cantidad: parseFloat(d.cantidad) || 0,
                 stock: d.producto?.stock || 0
             }));
-
             if (pendiente.pagos && pendiente.pagos.length > 0) {
                 this.venta.pagos = pendiente.pagos.map(p => ({
                     forma_pago: p.forma_pago || 'Efectivo',
@@ -452,22 +544,20 @@ export default {
             } else {
                 this.venta.pagos = [{ forma_pago: 'Efectivo', monto: 0 }];
             }
-
             this.descuento = parseFloat(pendiente.descuento || 0);
             this.impuesto = parseFloat(pendiente.impuesto || 16);
-
-            Swal.fire({
-                icon: 'success',
-                title: 'Venta pendiente cargada',
-                timer: 2000,
-                showConfirmButton: false
-            });
+            this.$nextTick(() => this.validarPagos());
+            Swal.fire({ icon: 'success', title: 'Venta pendiente cargada', timer: 2000, showConfirmButton: false });
         },
+
+        // =============================================
+        // GUARDAR Y CONFIRMAR VENTA
+        // =============================================
         async guardarPendiente() {
             if (!this.carrito || this.carrito.length === 0) {
+                this.error = 'Agrega al menos un producto';
                 return;
             }
-
             try {
                 const data = {
                     cliente_id: this.venta.cliente_id,
@@ -481,28 +571,36 @@ export default {
                         .filter(p => p.monto > 0)
                         .map(p => ({
                             forma_pago: p.forma_pago,
-                            monto: p.monto
+                            monto: parseFloat(p.monto)
                         })),
                     descuento_global: this.descuento,
                     impuesto_global: this.impuesto,
                     notas: this.venta.notas || ''
                 };
-
                 await api.post('/ventas/pendiente/guardar', data);
-
-                Swal.fire({
-                    icon: 'info',
-                    title: 'Venta guardada como pendiente',
-                    timer: 2000,
-                    showConfirmButton: false
-                });
+                Swal.fire({ icon: 'info', title: 'Venta guardada como pendiente', timer: 2000, showConfirmButton: false });
+                this.carrito = [];
+                this.venta.pagos = [{ forma_pago: 'Efectivo', monto: 0 }];
+                this.venta.cliente_id = null;
+                this.venta.notas = '';
+                this.descuento = 0;
+                this.error = null;
+                this.errorPago = null;
             } catch (error) {
                 console.error('Error guardando pendiente:', error);
+                this.error = error.response?.data?.message || 'Error al guardar pendiente';
             }
         },
+
         async confirmarVenta() {
             if (!this.carrito || this.carrito.length === 0) {
                 this.error = 'Agrega al menos un producto';
+                return;
+            }
+
+            this.validarPagos();
+            if (this.errorPago) {
+                this.error = this.errorPago;
                 return;
             }
 
@@ -512,53 +610,69 @@ export default {
                 return;
             }
 
-            if (this.totalPagado < this.total) {
-                this.error = `El monto pagado ($${this.formatearNumero(this.totalPagado)}) es menor al total ($${this.formatearNumero(this.total)})`;
+            const totalPagado = this.totalPagado;
+            if (totalPagado < this.total) {
+                this.error = `El monto pagado ($${this.formatearNumero(totalPagado)}) es menor al total ($${this.formatearNumero(this.total)})`;
                 return;
             }
 
+            // Construcción del diálogo de confirmación
             let htmlContent = `
                 <div style="text-align: left;">
                     <p><strong>Total de la venta:</strong> $${this.formatearNumero(this.total)}</p>
                     <p><strong>Productos:</strong> ${this.carrito.length}</p>
                     <p><strong>Cliente:</strong> ${this.venta.cliente_id ? this.clientes.find(c => c.id === this.venta.cliente_id)?.nombre : 'Cliente genérico'}</p>
                     <hr style="margin: 8px 0;">
-                    <p><strong>Total pagado:</strong> $${this.formatearNumero(this.totalPagado)}</p>
+                    <p><strong>Total pagado:</strong> $${this.formatearNumero(totalPagado)}</p>
             `;
 
-            const soloEfectivo = this.venta.pagos.filter(p => p.monto > 0).every(p => p.forma_pago === 'Efectivo');
-
-            if (soloEfectivo && this.totalPagado > this.total) {
-                const cambio = this.totalPagado - this.total;
-                htmlContent += `
-                    <div style="background: #dbeafe; padding: 10px; border-radius: 8px; margin-top: 8px;">
-                        <p style="color: #1e40af; font-weight: bold; margin: 0;">🔄 Cambio a devolver:</p>
-                        <p style="color: #1e40af; font-size: 1.2rem; font-weight: bold; margin: 4px 0 0 0;">$${this.formatearNumero(cambio)}</p>
-                    </div>
-                `;
-            } else if (this.totalPagado > this.total) {
-                const diferencia = this.totalPagado - this.total;
-                htmlContent += `
-                    <div style="background: #fef3c7; padding: 10px; border-radius: 8px; margin-top: 8px;">
-                        <p style="color: #92400e; font-weight: bold; margin: 0;">⚠️ Cobro superior al total</p>
-                        <p style="color: #92400e; margin: 4px 0 0 0;">
-                            <strong>Monto a cobrar:</strong> $${this.formatearNumero(this.total)}<br>
-                            <strong>Monto pagado:</strong> $${this.formatearNumero(this.totalPagado)}<br>
-                            <strong>Diferencia:</strong> $${this.formatearNumero(diferencia)}
-                        </p>
-                        <p style="color: #92400e; font-size: 0.8rem; margin-top: 4px;">
-                            ⚠️ Está cobrando más del total. ¿Desea continuar?
-                        </p>
-                    </div>
-                `;
+            if (totalPagado > this.total) {
+                if (this.hayEfectivo) {
+                    const cambio = totalPagado - this.total;
+                    htmlContent += `
+                        <div style="background: #dbeafe; padding: 10px; border-radius: 8px; margin-top: 8px;">
+                            <p style="color: #1e40af; font-weight: bold; margin: 0;">🔄 Cambio a devolver (en efectivo):</p>
+                            <p style="color: #1e40af; font-size: 1.2rem; font-weight: bold; margin: 4px 0 0 0;">$${this.formatearNumero(cambio)}</p>
+                        </div>
+                    `;
+                    if (!this.todosEfectivo) {
+                        htmlContent += `
+                            <div style="background: #fef3c7; padding: 10px; border-radius: 8px; margin-top: 8px;">
+                                <p style="color: #92400e; font-weight: bold; margin: 0;">⚠️ Cobro superior al total</p>
+                                <p style="color: #92400e; margin: 4px 0 0 0;">
+                                    <strong>Monto a cobrar:</strong> $${this.formatearNumero(this.total)}<br>
+                                    <strong>Monto pagado:</strong> $${this.formatearNumero(totalPagado)}<br>
+                                    <strong>Diferencia:</strong> $${this.formatearNumero(cambio)}
+                                </p>
+                                <p style="color: #92400e; font-size: 0.8rem; margin-top: 4px;">
+                                    ⚠️ El excedente se devolverá en efectivo.
+                                </p>
+                            </div>
+                        `;
+                    }
+                } else {
+                    // No debería ocurrir porque validación lo impide, pero por seguridad
+                    htmlContent += `
+                        <div style="background: #fef3c7; padding: 10px; border-radius: 8px; margin-top: 8px;">
+                            <p style="color: #92400e; font-weight: bold; margin: 0;">⚠️ Cobro superior al total</p>
+                            <p style="color: #92400e; margin: 4px 0 0 0;">
+                                <strong>Monto a cobrar:</strong> $${this.formatearNumero(this.total)}<br>
+                                <strong>Monto pagado:</strong> $${this.formatearNumero(totalPagado)}<br>
+                                <strong>Diferencia:</strong> $${this.formatearNumero(totalPagado - this.total)}
+                            </p>
+                            <p style="color: #92400e; font-size: 0.8rem; margin-top: 4px;">
+                                ⚠️ No se permiten excedentes sin pago en efectivo.
+                            </p>
+                        </div>
+                    `;
+                }
             }
-
             htmlContent += `</div>`;
 
             const result = await Swal.fire({
                 title: 'Confirmar Venta',
                 html: htmlContent,
-                icon: this.totalPagado > this.total && !soloEfectivo ? 'warning' : 'question',
+                icon: totalPagado > this.total && !this.todosEfectivo ? 'warning' : 'question',
                 showCancelButton: true,
                 confirmButtonColor: '#3085d6',
                 cancelButtonColor: '#d33',
@@ -571,6 +685,48 @@ export default {
                 this.error = null;
 
                 try {
+                    // ============================================================
+                    // AJUSTE DE PAGOS EN EFECTIVO (restar el excedente del efectivo)
+                    // ============================================================
+                    let pagosAjustados = this.venta.pagos
+                        .filter(p => p.monto > 0)
+                        .map(p => ({
+                            forma_pago: p.forma_pago,
+                            monto: parseFloat(p.monto),
+                            cambio: parseFloat(p.cambio || 0)
+                        }));
+
+                    const totalPagadoOriginal = pagosAjustados.reduce((sum, p) => sum + p.monto, 0);
+                    const diferencia = totalPagadoOriginal - this.total;
+
+                    if (diferencia > 0) {
+                        let restante = diferencia;
+                        let cambioAsignado = false;
+
+                        for (let pago of pagosAjustados) {
+                            if (pago.forma_pago === 'Efectivo' && pago.monto > 0) {
+                                if (pago.monto >= restante) {
+                                    pago.monto = pago.monto - restante;
+                                    if (!cambioAsignado) {
+                                        pago.cambio = diferencia; // asignar cambio total al primer efectivo
+                                        cambioAsignado = true;
+                                    }
+                                    restante = 0;
+                                } else {
+                                    restante -= pago.monto;
+                                    pago.monto = 0;
+                                }
+                            }
+                            if (restante <= 0) break;
+                        }
+
+                        if (restante > 0) {
+                            console.warn('No se pudo ajustar completamente la diferencia', restante);
+                            throw new Error('Error al ajustar los pagos en efectivo');
+                        }
+                    }
+
+                    // Construir payload con pagos ajustados
                     const data = {
                         cliente_id: this.venta.cliente_id,
                         productos: this.carrito.map(item => ({
@@ -579,11 +735,12 @@ export default {
                             precio: item.precio,
                             descuento: 0
                         })),
-                        pagos: this.venta.pagos
+                        pagos: pagosAjustados
                             .filter(p => p.monto > 0)
                             .map(p => ({
                                 forma_pago: p.forma_pago,
-                                monto: p.monto
+                                monto: parseFloat(p.monto.toFixed(2)),
+                                cambio: parseFloat(p.cambio ? p.cambio.toFixed(2) : 0)
                             })),
                         descuento_global: this.descuento,
                         impuesto_global: this.impuesto,
@@ -593,16 +750,12 @@ export default {
                     await api.post('/ventas', data);
 
                     if (this.ventaPendienteId) {
-                        await api.delete('/ventas/pendiente/eliminar');
+                        try { await api.delete('/ventas/pendiente/eliminar'); } catch (e) { }
                     }
 
-                    Swal.fire({
-                        icon: 'success',
-                        title: '¡Venta registrada!',
-                        timer: 2000,
-                        showConfirmButton: false
-                    });
+                    Swal.fire({ icon: 'success', title: '¡Venta registrada!', timer: 2000, showConfirmButton: false });
 
+                    // Limpiar carrito
                     this.carrito = [];
                     this.venta.pagos = [{ forma_pago: 'Efectivo', monto: 0 }];
                     this.descuento = 0;
@@ -610,24 +763,17 @@ export default {
                     this.venta.notas = '';
                     this.ventaPendienteId = null;
                     this.esVentaPendiente = false;
+                    this.error = null;
+                    this.errorPago = null;
 
                 } catch (error) {
                     this.error = error.response?.data?.message || 'Error al registrar la venta';
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Error',
-                        text: this.error
-                    });
+                    Swal.fire({ icon: 'error', title: 'Error', text: this.error });
                 } finally {
                     this.guardando = false;
                 }
             } else {
                 await this.guardarPendiente();
-                this.carrito = [];
-                this.venta.pagos = [{ forma_pago: 'Efectivo', monto: 0 }];
-                this.descuento = 0;
-                this.venta.cliente_id = null;
-                this.venta.notas = '';
             }
         }
     }
