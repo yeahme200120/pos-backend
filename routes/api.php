@@ -1,37 +1,40 @@
 <?php
+
 // routes/api.php
 
 use App\Http\Controllers\Api\V1\AdminController;
 use App\Http\Controllers\Api\V1\AuditoriaController;
-use App\Http\Controllers\Api\V1\CategoriaController;
-use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\CajaController;
 use App\Http\Controllers\Api\V1\CatalogController;
+use App\Http\Controllers\Api\V1\CategoriaController;
 use App\Http\Controllers\Api\V1\ClienteController;
 use App\Http\Controllers\Api\V1\CuponController;
 use App\Http\Controllers\Api\V1\EmpresaController;
-use App\Http\Controllers\Api\V1\SyncController;
-use App\Http\Controllers\Api\V1\VentaController;
-use App\Http\Controllers\Api\V1\LicenseController;
 use App\Http\Controllers\Api\V1\EstadisticasController;
-use App\Http\Controllers\Api\V1\LogoController;
+use App\Http\Controllers\Api\V1\LicenseController;
+use App\Http\Controllers\Api\V1\MesaController;
+use App\Http\Controllers\Api\V1\OperacionController;
 use App\Http\Controllers\Api\V1\ProductoController;
 use App\Http\Controllers\Api\V1\PromocionController;
+use App\Http\Controllers\Api\V1\ReportShareController;
+use App\Http\Controllers\Api\V1\SyncController;
 use App\Http\Controllers\Api\V1\TicketConfigController;
 use App\Http\Controllers\Api\V1\UnidadMedidaController;
-use App\Http\Controllers\Api\V1\ReportShareController;
+use App\Http\Controllers\Api\V1\VentaController;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
 | API Routes - Laravel 12
 |--------------------------------------------------------------------------
 */
- // Logo de la empresa (para el sidebar)
-        Route::prefix('empresa')->group(function () {
-            Route::get('/logo', [EmpresaController::class, 'logo']);
-            Route::post('/logo', [EmpresaController::class, 'uploadLogo']);
-            Route::delete('/logo', [EmpresaController::class, 'deleteLogo']);
-        });
+// Logo de la empresa (para el sidebar)
+Route::prefix('empresa')->group(function () {
+    Route::get('/logo', [EmpresaController::class, 'logo']);
+    Route::post('/logo', [EmpresaController::class, 'uploadLogo']);
+    Route::delete('/logo', [EmpresaController::class, 'deleteLogo']);
+});
 Route::prefix('v1')->group(function () {
 
     // --- RUTAS PÚBLICAS (NO requieren autenticación) ---
@@ -48,6 +51,7 @@ Route::prefix('v1')->group(function () {
         Route::patch('/user/profile', [AuthController::class, 'updateProfile']);
         Route::post('/user/password', [AuthController::class, 'changePassword'])->middleware('throttle:5,1');
         Route::get('/me/permissions', [AuthController::class, 'permissions']);
+        Route::get('/operacion/estado', [OperacionController::class, 'estado']);
 
         // Catálogos
         Route::get('/catalogos', [CatalogController::class, 'index']);
@@ -100,6 +104,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/ventas/pendiente/actual', [VentaController::class, 'pendienteActual']);
         Route::post('/ventas/pendiente/guardar', [VentaController::class, 'guardarPendiente']);
         Route::delete('/ventas/pendiente/eliminar', [VentaController::class, 'eliminarPendiente']);
+        Route::post('/ventas/{id}/pagar', [VentaController::class, 'pagar']);
         Route::get('/ventas/exportar', [VentaController::class, 'exportar']);
         Route::get('/ventas/pendientes', [VentaController::class, 'pendientes']);
 
@@ -119,6 +124,14 @@ Route::prefix('v1')->group(function () {
         Route::post('/ventas', [VentaController::class, 'store']);
         Route::get('/ventas', [VentaController::class, 'index']);
 
+        // Cajas diarias y mesas
+        Route::get('/cajas/actual', [CajaController::class, 'actual']);
+        Route::post('/cajas/abrir', [CajaController::class, 'abrir']);
+        Route::post('/cajas/{id}/cerrar', [CajaController::class, 'cerrar']);
+        Route::get('/mesas', [MesaController::class, 'index']);
+        Route::post('/mesas', [MesaController::class, 'store']);
+        Route::put('/mesas/{id}', [MesaController::class, 'update']);
+
         // Licencia
         Route::get('/licencia/estado', [LicenseController::class, 'status']);
 
@@ -133,8 +146,6 @@ Route::prefix('v1')->group(function () {
         // Configuración del ticket
         Route::get('/ticket/config', [TicketConfigController::class, 'index']);
         Route::put('/ticket/config', [TicketConfigController::class, 'update']);
-
-       
 
         // CRUD Empresas (solo superadmin)
         Route::get('/empresas', [EmpresaController::class, 'index']);

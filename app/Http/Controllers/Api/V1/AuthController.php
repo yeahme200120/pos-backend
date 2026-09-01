@@ -52,6 +52,7 @@ class AuthController extends Controller
                 'nombre' => $user->empresa->nombre,
                 'logo_url' => $user->empresa->logo_url,
                 'colores' => $user->empresa->colores,
+                'configuracion' => $user->empresa->configuracion,
             ] : null,
             'licencia' => [
                 'tipo' => $user->licencia_tipo,

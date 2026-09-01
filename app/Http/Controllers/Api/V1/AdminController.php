@@ -56,7 +56,7 @@ class AdminController extends Controller
             'email' => 'required|email|unique:users,email',
             'password' => 'required|min:6',
             'telefono' => 'nullable|string|max:20',
-            'rol' => 'required|in:superadmin,admin,vendedor',
+            'rol' => 'required|in:superadmin,admin,cajero,vendedor',
             'empresa_id' => 'required|exists:empresas,id',
             'activo' => 'boolean',
         ], [
@@ -122,7 +122,7 @@ class AdminController extends Controller
                 'name' => 'required|string|max:255',
                 'email' => 'required|email|unique:users,email,' . $id,
                 'telefono' => 'nullable|string|max:20', // ✅ AGREGADO
-                'rol' => 'required|in:superadmin,admin,vendedor',
+                'rol' => 'required|in:superadmin,admin,cajero,vendedor',
                 'empresa_id' => 'required|exists:empresas,id',
                 'activo' => 'boolean',
                 'licencia_tipo' => 'nullable|in:dia,semana,quincena,mes,bimestre,trimestre,semestre,anual,permanente',

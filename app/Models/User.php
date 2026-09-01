@@ -126,6 +126,11 @@ class User extends Authenticatable
         return $this->rol === 'vendedor';
     }
 
+    public function isCajero(): bool
+    {
+        return in_array($this->rol, ['cajero', 'admin', 'superadmin'], true);
+    }
+
     /**
      * Generar un número de usuario único basado en el ID + prefijo.
      * Formato: 1000000001, 1000000002, etc.

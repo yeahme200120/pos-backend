@@ -403,6 +403,17 @@ Ese archivo complementa la especificación técnica principal y define la lógic
 8. PDF/XLSX puede generarse y compartirse antes de cerrar el día, aun sin Internet.
 9. La aplicación release compila, pasa análisis estático y maneja de forma visible los estados offline, sincronizando, error y bloqueado.
 
+## 15. Cajas diarias, mesas y carrito pendiente
+
+1. Al iniciar jornada consulta `GET /api/v1/cajas/actual`; si no hay caja, solicita apertura antes de cobrar.
+2. Lee `empresa.configuracion.mesas_activas`: con `true` muestra mesas y guarda cada pendiente con `mesa_id`; con `false` conserva la venta directa sin mesa.
+3. Al salir del carrito guarda localmente y sincroniza `POST /api/v1/ventas/pendiente/guardar`. Una pendiente no es una venta pagada, no descuenta stock definitivo ni se incluye en caja.
+4. Para reanudar, carga `GET /api/v1/ventas/pendiente/actual?mesa_id={id}` o sin parámetro en venta directa, y reconstruye el carrito con `detalles`, cliente y notas. La lista general es `GET /api/v1/ventas/pendientes?para_cobro=1`.
+5. Al cobrar exige caja abierta y llama `POST /api/v1/ventas/{id}/pagar` con `caja_id` y pagos. Solo si responde exitosamente limpia el carrito y marca/libera la mesa.
+6. Para cerrar, llama `POST /api/v1/cajas/{id}/cerrar`, pide efectivo contado y muestra monto esperado, declarado y diferencia devueltos por el servidor.
+
+Estados mínimos: `caja_cerrada`, `caja_abierta`, `mesa_libre`, `mesa_ocupada`, `venta_pendiente`, `cobrando`, `pagada` y `error`.
+
 ## 14. Orden recomendado de implementación
 
 1. Corregir contratos críticos de backend (sync offline, sync pull, auditoría y autorización).

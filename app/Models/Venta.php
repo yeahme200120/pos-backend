@@ -14,6 +14,8 @@ class Venta extends Model
         'uuid',
         'empresa_id',
         'usuario_id',
+        'caja_id',
+        'mesa_id',
         'cliente_id',
         'folio',
         'fecha',
@@ -70,6 +72,16 @@ class Venta extends Model
         return $this->hasMany(Pago::class);
     }
 
+    public function caja()
+    {
+        return $this->belongsTo(Caja::class);
+    }
+
+    public function mesa()
+    {
+        return $this->belongsTo(Mesa::class);
+    }
+
     // Scopes
     public function scopeDeEmpresa($query, $empresaId)
     {
@@ -99,7 +111,7 @@ class Venta extends Model
 
     public function getTotalFormateadoAttribute()
     {
-        return '$' . number_format($this->total, 2);
+        return '$'.number_format($this->total, 2);
     }
 
     public function getEstadoColorAttribute()
@@ -111,6 +123,7 @@ class Venta extends Model
             default => 'secondary',
         };
     }
+
     // Agregar relación con auditorías
     public function auditorias()
     {

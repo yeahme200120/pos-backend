@@ -10,6 +10,7 @@ return new class extends Migration
     {
         Schema::create('logs_auditoria', function (Blueprint $table) {
            $table->id();
+            $table->unsignedBigInteger('empresa_id')->nullable();
             $table->unsignedBigInteger('usuario_id')->nullable();
             $table->string('accion');
             $table->string('tabla');

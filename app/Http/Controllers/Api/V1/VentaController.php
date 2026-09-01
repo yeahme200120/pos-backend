@@ -3,21 +3,21 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Models\Producto;
-use App\Models\Venta;
-use App\Models\DetalleVenta;
-use App\Models\Pago;
+use App\Models\Caja;
 use App\Models\Cliente;
 use App\Models\ConfiguracionTicket;
+use App\Models\DetalleVenta;
 use App\Models\LogAuditoria;
+use App\Models\Mesa;
+use App\Models\Pago;
+use App\Models\Producto;
+use App\Models\Venta;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
-use Carbon\Carbon;
 use Illuminate\Support\Facades\Storage;
-use Barryvdh\DomPDF\Facade\Pdf;
-use SimpleSoftwareIO\QrCode\Facades\QrCode;
+use Illuminate\Support\Str;
 
 class VentaController extends Controller
 {
@@ -44,7 +44,17 @@ class VentaController extends Controller
             'descuento_global' => 'nullable|numeric|min:0',
             'impuesto_global' => 'nullable|numeric|min:0|max:100',
             'notas' => 'nullable|string|max:500',
+            'caja_id' => 'nullable|integer',
         ]);
+
+        $caja = null;
+        if ($user->empresa?->usaCajas()) {
+            $caja = Caja::where('empresa_id', $empresaId)->where('fecha_comercial', today())
+                ->where('estado', 'abierta')->first();
+            if (! $caja) {
+                return response()->json(['success' => false, 'message' => 'Debe abrirse la caja de la empresa antes de registrar ventas.'], 422);
+            }
+        }
 
         DB::beginTransaction();
         try {
@@ -58,8 +68,8 @@ class VentaController extends Controller
                     ->lockForUpdate()
                     ->first();
 
-                if (!$producto) {
-                    throw new \Exception("Producto no encontrado");
+                if (! $producto) {
+                    throw new \Exception('Producto no encontrado');
                 }
 
                 if ($producto->stock < $item['cantidad']) {
@@ -107,6 +117,7 @@ class VentaController extends Controller
                 'folio' => $folio,
                 'empresa_id' => $empresaId,
                 'usuario_id' => $user->id,
+                'caja_id' => $caja?->id,
                 'cliente_id' => $request->cliente_id,
                 'fecha' => now(),
                 'subtotal' => $total,
@@ -138,7 +149,7 @@ class VentaController extends Controller
             if ($request->cliente_id) {
                 Cliente::where('id', $request->cliente_id)->update([
                     'ultima_compra' => now(),
-                    'saldo_pendiente' => DB::raw('saldo_pendiente + ' . ($request->saldo_a_credito ?? 0))
+                    'saldo_pendiente' => DB::raw('saldo_pendiente + '.($request->saldo_a_credito ?? 0)),
                 ]);
             }
 
@@ -156,7 +167,7 @@ class VentaController extends Controller
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Error al registrar venta: ' . $e->getMessage());
+            Log::error('Error al registrar venta: '.$e->getMessage());
 
             return response()->json([
                 'success' => false,
@@ -236,10 +247,10 @@ class VentaController extends Controller
             ->withTrashed()
             ->find($id);
 
-        if (!$venta) {
+        if (! $venta) {
             return response()->json([
                 'success' => false,
-                'message' => 'Venta no encontrada'
+                'message' => 'Venta no encontrada',
             ], 404);
         }
 
@@ -247,7 +258,7 @@ class VentaController extends Controller
         if ($venta->estado === 'cancelado') {
             return response()->json([
                 'success' => false,
-                'message' => 'La venta ya está cancelada'
+                'message' => 'La venta ya está cancelada',
             ], 422);
         }
 
@@ -255,7 +266,7 @@ class VentaController extends Controller
         if ($venta->estado !== 'pagado') {
             return response()->json([
                 'success' => false,
-                'message' => 'Solo se pueden anular ventas pagadas. Estado actual: ' . $venta->estado
+                'message' => 'Solo se pueden anular ventas pagadas. Estado actual: '.$venta->estado,
             ], 422);
         }
 
@@ -263,7 +274,7 @@ class VentaController extends Controller
         if ($venta->detalles->count() === 0) {
             return response()->json([
                 'success' => false,
-                'message' => 'La venta no tiene productos para anular'
+                'message' => 'La venta no tiene productos para anular',
             ], 422);
         }
 
@@ -324,14 +335,14 @@ class VentaController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Error al anular venta: ' . $e->getMessage(), [
+            Log::error('Error al anular venta: '.$e->getMessage(), [
                 'venta_id' => $id,
                 'user_id' => $user->id,
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Error al anular la venta: ' . $e->getMessage(),
+                'message' => 'Error al anular la venta: '.$e->getMessage(),
             ], 422);
         }
     }
@@ -349,10 +360,10 @@ class VentaController extends Controller
             ->withTrashed()
             ->find($id);
 
-        if (!$venta) {
+        if (! $venta) {
             return response()->json([
                 'success' => false,
-                'message' => 'Venta no encontrada'
+                'message' => 'Venta no encontrada',
             ], 404);
         }
 
@@ -360,7 +371,7 @@ class VentaController extends Controller
         if ($venta->estado === 'cancelado') {
             return response()->json([
                 'success' => false,
-                'message' => 'No se puede devolver una venta que ya está cancelada'
+                'message' => 'No se puede devolver una venta que ya está cancelada',
             ], 422);
         }
 
@@ -368,7 +379,7 @@ class VentaController extends Controller
         if ($venta->estado !== 'pagado') {
             return response()->json([
                 'success' => false,
-                'message' => 'Solo se pueden devolver ventas pagadas. Estado actual: ' . $venta->estado
+                'message' => 'Solo se pueden devolver ventas pagadas. Estado actual: '.$venta->estado,
             ], 422);
         }
 
@@ -376,7 +387,7 @@ class VentaController extends Controller
         if ($venta->detalles->count() === 0) {
             return response()->json([
                 'success' => false,
-                'message' => 'La venta no tiene productos para devolver'
+                'message' => 'La venta no tiene productos para devolver',
             ], 422);
         }
 
@@ -397,13 +408,13 @@ class VentaController extends Controller
                     ->where('venta_id', $venta->id)
                     ->first();
 
-                if (!$detalle) {
-                    throw new \Exception("Detalle de venta no encontrado");
+                if (! $detalle) {
+                    throw new \Exception('Detalle de venta no encontrado');
                 }
 
                 // Verificar que el detalle no haya sido eliminado
                 if ($detalle->trashed()) {
-                    throw new \Exception("Este producto ya fue devuelto anteriormente");
+                    throw new \Exception('Este producto ya fue devuelto anteriormente');
                 }
 
                 if ($item['cantidad'] > $detalle->cantidad) {
@@ -457,17 +468,17 @@ class VentaController extends Controller
 
             // Registrar devolución en notas
             $notaDevolucion = "═ DEVOLUCIÓN ═\n";
-            $notaDevolucion .= "Fecha: " . now()->format('d/m/Y H:i:s') . "\n";
-            $notaDevolucion .= "Motivo: " . ($request->motivo ?? 'Sin motivo') . "\n";
-            $notaDevolucion .= "Total devuelto: $" . number_format($totalDevolucion, 2) . "\n";
+            $notaDevolucion .= 'Fecha: '.now()->format('d/m/Y H:i:s')."\n";
+            $notaDevolucion .= 'Motivo: '.($request->motivo ?? 'Sin motivo')."\n";
+            $notaDevolucion .= 'Total devuelto: $'.number_format($totalDevolucion, 2)."\n";
             $notaDevolucion .= "Productos devueltos:\n";
             foreach ($detallesDevueltos as $dev) {
                 $notaDevolucion .= "  • {$dev['producto']}: {$dev['cantidad']} (${dev['monto']})\n";
             }
-            $notaDevolucion .= "═ FIN DEVOLUCIÓN ═";
+            $notaDevolucion .= '═ FIN DEVOLUCIÓN ═';
 
             if ($venta->notas) {
-                $venta->notas .= "\n\n" . $notaDevolucion;
+                $venta->notas .= "\n\n".$notaDevolucion;
             } else {
                 $venta->notas = $notaDevolucion;
             }
@@ -496,7 +507,7 @@ class VentaController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Error al devolver venta: ' . $e->getMessage(), [
+            Log::error('Error al devolver venta: '.$e->getMessage(), [
                 'venta_id' => $id,
                 'user_id' => $user->id,
             ]);
@@ -516,8 +527,17 @@ class VentaController extends Controller
         $user = $request->user();
         $empresaId = $user->empresa_id;
 
-        $ventas = Venta::where('empresa_id', $empresaId)
-            ->where('sincronizado', false)
+        $query = Venta::where('empresa_id', $empresaId);
+        if ($request->boolean('para_cobro')) {
+            $query->where('estado', 'pendiente');
+            if ($request->filled('mesa_id')) {
+                $query->where('mesa_id', $request->mesa_id);
+            }
+        } else {
+            $query->where('sincronizado', false);
+        }
+
+        $ventas = $query
             ->with(['cliente', 'detalles.producto', 'pagos'])
             ->orderBy('created_at', 'asc')
             ->get();
@@ -550,11 +570,11 @@ class VentaController extends Controller
         $ventas = $query->orderBy('fecha', 'desc')->get();
 
         // Crear CSV
-        $filename = 'ventas_' . now()->format('Y-m-d_H-i-s') . '.csv';
-        $path = storage_path('app/public/exports/' . $filename);
+        $filename = 'ventas_'.now()->format('Y-m-d_H-i-s').'.csv';
+        $path = storage_path('app/public/exports/'.$filename);
 
         // Crear directorio si no existe
-        if (!Storage::disk('public')->exists('exports')) {
+        if (! Storage::disk('public')->exists('exports')) {
             Storage::disk('public')->makeDirectory('exports');
         }
 
@@ -568,7 +588,7 @@ class VentaController extends Controller
             'Descuento',
             'Impuesto',
             'Total',
-            'Estado'
+            'Estado',
         ]);
 
         foreach ($ventas as $venta) {
@@ -591,7 +611,7 @@ class VentaController extends Controller
             'success' => true,
             'message' => 'Exportación completada',
             'data' => [
-                'url' => asset('storage/exports/' . $filename),
+                'url' => asset('storage/exports/'.$filename),
                 'filename' => $filename,
             ],
         ]);
@@ -601,7 +621,7 @@ class VentaController extends Controller
     {
         try {
             $user = $request->user();
-            if (!$user) {
+            if (! $user) {
                 return response()->json(['error' => 'No autenticado'], 401);
             }
 
@@ -611,7 +631,7 @@ class VentaController extends Controller
                 ->with(['cliente', 'usuario', 'detalles.producto', 'pagos'])
                 ->find($id);
 
-            if (!$venta) {
+            if (! $venta) {
                 return response()->json(['error' => 'Venta no encontrada'], 404);
             }
 
@@ -623,9 +643,9 @@ class VentaController extends Controller
                 // Intentar en public/img/
                 $paths = [
                     public_path($empresa->logo),
-                    public_path('img/' . basename($empresa->logo)),
-                    storage_path('app/public/' . $empresa->logo),
-                    public_path('storage/' . $empresa->logo),
+                    public_path('img/'.basename($empresa->logo)),
+                    storage_path('app/public/'.$empresa->logo),
+                    public_path('storage/'.$empresa->logo),
                 ];
 
                 foreach ($paths as $path) {
@@ -640,7 +660,7 @@ class VentaController extends Controller
                 ->where('activo', true)
                 ->first();
 
-            if (!$config) {
+            if (! $config) {
                 $config = new ConfiguracionTicket([
                     'papel' => '58mm',
                     'fuente' => 'Arial',
@@ -651,7 +671,7 @@ class VentaController extends Controller
                     'qr_contenido' => $venta->uuid,
                     'cabecera' => '¡Gracias por su compra!',
                     'pie_pagina' => '',
-                    'campos' => []
+                    'campos' => [],
                 ]);
             }
 
@@ -670,7 +690,7 @@ class VentaController extends Controller
             if (is_string($campos)) {
                 $campos = json_decode($campos, true);
             }
-            if (!is_array($campos)) {
+            if (! is_array($campos)) {
                 $campos = [];
             }
 
@@ -693,7 +713,7 @@ class VentaController extends Controller
                 'logoPath' => $logoPath,
             ];
 
-            if (!view()->exists('tickets.venta')) {
+            if (! view()->exists('tickets.venta')) {
                 return response()->json(['error' => 'Vista tickets.venta no encontrada'], 500);
             }
 
@@ -708,7 +728,7 @@ class VentaController extends Controller
                 'isRemoteEnabled' => true,
             ]);
 
-            $filename = 'ticket_' . $venta->folio . '.pdf';
+            $filename = 'ticket_'.$venta->folio.'.pdf';
 
             if ($request->boolean('download')) {
                 return $pdf->download($filename);
@@ -724,7 +744,7 @@ class VentaController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Error al generar el ticket: ' . $e->getMessage()
+                'message' => 'Error al generar el ticket: '.$e->getMessage(),
             ], 500);
         }
     }
@@ -800,7 +820,8 @@ class VentaController extends Controller
             ->first();
 
         $numero = $ultimaVenta ? intval(substr($ultimaVenta->folio, -6)) + 1 : 1;
-        return 'V-' . now()->format('y') . '-' . str_pad($numero, 6, '0', STR_PAD_LEFT);
+
+        return 'V-'.now()->format('y').'-'.str_pad($numero, 6, '0', STR_PAD_LEFT);
     }
 
     private function registrarLog($venta, $user, $accion)
@@ -821,6 +842,7 @@ class VentaController extends Controller
             ]);
         }
     }
+
     /**
      * Obtener venta pendiente del usuario
      */
@@ -829,23 +851,81 @@ class VentaController extends Controller
         $user = $request->user();
         $empresaId = $user->empresa_id;
 
-        $venta = Venta::where('empresa_id', $empresaId)
-            ->where('usuario_id', $user->id)
-            ->where('estado', 'pendiente')
-            ->with(['detalles.producto', 'pagos', 'cliente'])
-            ->first();
+        $query = Venta::where('empresa_id', $empresaId)->where('estado', 'pendiente');
+        if ($request->filled('mesa_id')) {
+            $query->where('mesa_id', $request->mesa_id);
+        } else {
+            $query->where('usuario_id', $user->id)->whereNull('mesa_id');
+        }
+        $venta = $query->with(['detalles.producto', 'pagos', 'cliente', 'mesa', 'caja'])->first();
 
-        if (!$venta) {
+        if (! $venta) {
             return response()->json([
                 'success' => false,
-                'message' => 'No hay venta pendiente'
+                'message' => 'No hay venta pendiente',
             ], 404);
         }
 
         return response()->json([
             'success' => true,
-            'data' => $venta
+            'data' => $venta,
         ]);
+    }
+
+    /** Cobrar una venta guardada y dejarla como pagada. */
+    public function pagar(Request $request, $id)
+    {
+        $request->validate([
+            'caja_id' => 'nullable|integer',
+            'pagos' => 'required|array|min:1',
+            'pagos.*.forma_pago' => 'required|in:Efectivo,Tarjeta CrÃ©dito,Tarjeta DÃ©bito,Transferencia,CrÃ©dito,Otro',
+            'pagos.*.monto' => 'required|numeric|min:0.01',
+            'pagos.*.referencia' => 'nullable|string|max:100',
+            'pagos.*.cambio' => 'nullable|numeric|min:0',
+        ]);
+        $user = $request->user();
+        $requiereCaja = $user->empresa?->usaCajas() ?? false;
+        if ($requiereCaja && ! $request->filled('caja_id')) {
+            return response()->json(['success' => false, 'message' => 'Debe indicar la caja abierta de la empresa.'], 422);
+        }
+
+        try {
+            $venta = DB::transaction(function () use ($request, $id, $user, $requiereCaja) {
+                $caja = null;
+                if ($requiereCaja) {
+                    $caja = Caja::where('empresa_id', $user->empresa_id)->where('fecha_comercial', today())
+                        ->where('estado', 'abierta')->lockForUpdate()->findOrFail($request->caja_id);
+                }
+                $venta = Venta::where('empresa_id', $user->empresa_id)->where('estado', 'pendiente')->with(['detalles', 'mesa'])->lockForUpdate()->findOrFail($id);
+                $pagado = round((float) collect($request->pagos)->sum('monto'), 2);
+                if (abs($pagado - round((float) $venta->total, 2)) > 0.009) {
+                    throw new \DomainException('La suma de los pagos debe coincidir exactamente con el total de la venta.');
+                }
+                foreach ($venta->detalles as $detalle) {
+                    $producto = Producto::where('empresa_id', $user->empresa_id)->lockForUpdate()->find($detalle->producto_id);
+                    if (! $producto || $producto->stock < $detalle->cantidad) {
+                        throw new \DomainException('Stock insuficiente para completar el cobro.');
+                    }
+                    $producto->decrement('stock', $detalle->cantidad);
+                }
+                $venta->pagos()->delete();
+                foreach ($request->pagos as $pago) {
+                    $venta->pagos()->create(['forma_pago' => $pago['forma_pago'], 'monto' => $pago['monto'], 'referencia' => $pago['referencia'] ?? null, 'cambio' => $pago['cambio'] ?? 0]);
+                }
+                $venta->update(['estado' => 'pagado', 'caja_id' => $caja?->id, 'fecha' => now()]);
+                if ($venta->mesa) {
+                    $venta->mesa->update(['estado' => 'libre']);
+                }
+
+                return $venta->fresh(['cliente', 'usuario', 'detalles.producto', 'pagos', 'mesa', 'caja']);
+            });
+        } catch (\DomainException $exception) {
+            return response()->json(['success' => false, 'message' => $exception->getMessage()], 422);
+        }
+
+        $this->registrarLog($venta, $user, 'cobrar_venta_pendiente');
+
+        return response()->json(['success' => true, 'message' => 'Venta cobrada correctamente.', 'data' => $venta]);
     }
 
     /**
@@ -868,17 +948,40 @@ class VentaController extends Controller
             'descuento_global' => 'nullable|numeric|min:0',
             'impuesto_global' => 'nullable|numeric|min:0|max:100',
             'notas' => 'nullable|string|max:500',
+            'mesa_id' => 'nullable|integer',
+            'caja_id' => 'nullable|integer',
         ]);
+
+        $empresa = $user->empresa;
+        $caja = null;
+        if ($empresa?->usaCajas()) {
+            $caja = Caja::where('empresa_id', $empresaId)->where('fecha_comercial', today())
+                ->where('estado', 'abierta')->first();
+            if (! $caja) {
+                return response()->json(['success' => false, 'message' => 'Debe abrirse la caja de la empresa antes de guardar ventas.'], 422);
+            }
+        }
+        $mesa = null;
+        if ($empresa->usaMesas()) {
+            $request->validate(['mesa_id' => 'required|integer']);
+            $mesa = Mesa::where('empresa_id', $empresaId)->where('activo', true)->findOrFail($request->mesa_id);
+        } elseif ($request->filled('mesa_id')) {
+            return response()->json(['success' => false, 'message' => 'Las mesas no están activas para esta empresa.'], 422);
+        }
+
+        if ($request->filled('caja_id')) {
+            $caja = Caja::where('empresa_id', $empresaId)->where('estado', 'abierta')->findOrFail($request->caja_id);
+        }
 
         DB::beginTransaction();
         try {
             // Buscar si ya existe una venta pendiente
-            $venta = Venta::where('empresa_id', $empresaId)
-                ->where('usuario_id', $user->id)
-                ->where('estado', 'pendiente')
-                ->first();
+            $ventaQuery = Venta::where('empresa_id', $empresaId)->where('estado', 'pendiente');
+            $venta = $mesa
+                ? $ventaQuery->where('mesa_id', $mesa->id)->first()
+                : $ventaQuery->where('usuario_id', $user->id)->whereNull('mesa_id')->first();
 
-            if (!$venta) {
+            if (! $venta) {
                 // Crear nueva venta pendiente
                 $folio = $this->generarFolio($empresaId);
                 $venta = Venta::create([
@@ -886,6 +989,8 @@ class VentaController extends Controller
                     'folio' => $folio,
                     'empresa_id' => $empresaId,
                     'usuario_id' => $user->id,
+                    'caja_id' => $caja?->id,
+                    'mesa_id' => $mesa?->id,
                     'cliente_id' => $request->cliente_id,
                     'fecha' => now(),
                     'subtotal' => 0,
@@ -942,24 +1047,31 @@ class VentaController extends Controller
             $venta->impuesto = $impuestoGlobal;
             $venta->total = $totalFinal;
             $venta->cliente_id = $request->cliente_id;
+            $venta->caja_id = $caja?->id ?? $venta->caja_id;
+            $venta->mesa_id = $mesa?->id;
             $venta->notas = $request->notas;
             $venta->save();
 
+            if ($mesa) {
+                $mesa->update(['estado' => 'ocupada']);
+            }
+
             DB::commit();
 
-            $venta->load(['detalles.producto', 'pagos', 'cliente']);
+            $venta->load(['detalles.producto', 'pagos', 'cliente', 'mesa', 'caja']);
 
             return response()->json([
                 'success' => true,
                 'message' => 'Venta guardada como pendiente',
-                'data' => $venta
+                'data' => $venta,
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Error al guardar venta pendiente: ' . $e->getMessage());
+            Log::error('Error al guardar venta pendiente: '.$e->getMessage());
+
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage()
+                'message' => $e->getMessage(),
             ], 422);
         }
     }
@@ -977,10 +1089,10 @@ class VentaController extends Controller
             ->where('estado', 'pendiente')
             ->first();
 
-        if (!$venta) {
+        if (! $venta) {
             return response()->json([
                 'success' => false,
-                'message' => 'No hay venta pendiente'
+                'message' => 'No hay venta pendiente',
             ], 404);
         }
 
@@ -988,7 +1100,7 @@ class VentaController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Venta pendiente eliminada'
+            'message' => 'Venta pendiente eliminada',
         ]);
     }
 }

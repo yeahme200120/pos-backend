@@ -59,6 +59,7 @@ class ProcessSyncQueue extends Command
 
                 // Registrar auditoría
                 LogAuditoria::create([
+                    'empresa_id' => $usuario->empresa_id,
                     'usuario_id' => $usuario->id,
                     'accion' => 'sync_offline_procesado',
                     'tabla' => 'ventas',

@@ -12,7 +12,7 @@ class LogAuditoria extends Model
     protected $table = 'logs_auditoria';
 
     protected $fillable = [
-        'usuario_id', 'accion', 'tabla', 'registro_id',
+        'empresa_id', 'usuario_id', 'accion', 'tabla', 'registro_id',
         'datos_antes', 'datos_despues', 'ip', 'user_agent'
     ];
 

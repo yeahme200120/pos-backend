@@ -5,11 +5,12 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 class Empresa extends Model
 {
     use HasFactory;
+
+    protected $table = 'empresas';
 
     protected $fillable = [
         'nombre',
@@ -23,7 +24,7 @@ class Empresa extends Model
         'razon_social',
         'leyenda_ticket',
         'whatsapp_numero',
-        'activo'
+        'activo',
     ];
 
     protected $casts = [
@@ -32,35 +33,72 @@ class Empresa extends Model
         'activo' => 'boolean',
     ];
 
-    protected $appends = ['logo_url'];
+    protected $appends = [
+        'logo_url',
+    ];
 
     public function users()
     {
-        return $this->hasMany(User::class);
+        return $this->hasMany(
+            User::class
+        );
     }
 
     public function configuracionTicket()
     {
-        return $this->hasOne(ConfiguracionTicket::class);
+        return $this->hasOne(
+            ConfiguracionTicket::class
+        );
     }
 
     public function productos()
     {
-        return $this->hasMany(Producto::class);
+        return $this->hasMany(
+            Producto::class
+        );
     }
 
     public function clientes()
     {
-        return $this->hasMany(Cliente::class);
+        return $this->hasMany(
+            Cliente::class
+        );
     }
 
     public function ventas()
     {
-        return $this->hasMany(Venta::class);
+        return $this->hasMany(
+            Venta::class
+        );
+    }
+
+    public function mesas()
+    {
+        return $this->hasMany(
+            Mesa::class
+        );
+    }
+
+    public function usaMesas(): bool
+    {
+        return (bool) (
+            $this->configuracion[
+                'mesas_activas'
+            ] ?? false
+        );
+    }
+
+    public function usaCajas(): bool
+    {
+        return (bool) (
+            $this->configuracion[
+                'cajas_activas'
+            ] ?? false
+        );
     }
 
     /**
-     * Obtener URL completa del logo
+     * URL completa del logo.
      */
     public function getLogoUrlAttribute()
     {
@@ -68,49 +106,93 @@ class Empresa extends Model
             return null;
         }
 
-        // Si ya es una URL completa, devolverla directamente
-        if (filter_var($this->logo, FILTER_VALIDATE_URL)) {
+        if (
+            filter_var(
+                $this->logo,
+                FILTER_VALIDATE_URL
+            )
+        ) {
             return $this->logo;
         }
 
-        // Construir URL usando la URL base de la aplicación
-        $baseUrl = config('app.url', 'http://localhost:8000');
-        
-        // Asegurar que la URL base no tenga slash al final
-        $baseUrl = rtrim($baseUrl, '/');
-        
-        // Construir la URL completa del logo
-        $logoUrl = $baseUrl . '/storage/' . ltrim($this->logo, '/');
-        
-        // Log para debugging
-        Log::info('Logo URL generada:', [
-            'logo' => $this->logo,
-            'url' => $logoUrl,
-            'app_url' => config('app.url')
-        ]);
-        
+        $baseUrl = config(
+            'app.url',
+            'http://localhost:8000'
+        );
+
+        $baseUrl = rtrim(
+            $baseUrl,
+            '/'
+        );
+
+        $logoUrl =
+            $baseUrl .
+            '/storage/' .
+            ltrim(
+                $this->logo,
+                '/'
+            );
+
+        /*
+         * Evitamos hacer Log en cada serialización
+         * de Empresa en producción.
+         */
+        if (app()->environment('local')) {
+            Log::debug(
+                'Logo URL generada',
+                [
+                    'logo' => $this->logo,
+                    'url' => $logoUrl,
+                    'app_url' =>
+                        config('app.url'),
+                ]
+            );
+        }
+
         return $logoUrl;
     }
 
     /**
-     * Obtener colores como array
+     * Normalizar colores.
      */
-    public function getColoresAttribute($value)
-    {
+    public function getColoresAttribute(
+        $value
+    ) {
         if (is_string($value)) {
-            return json_decode($value, true) ?? [];
+            $decoded = json_decode(
+                $value,
+                true
+            );
+
+            return is_array($decoded)
+                ? $decoded
+                : [];
         }
-        return $value ?? [];
+
+        return is_array($value)
+            ? $value
+            : [];
     }
 
     /**
-     * Obtener configuración como array
+     * Normalizar configuración.
      */
-    public function getConfiguracionAttribute($value)
-    {
+    public function getConfiguracionAttribute(
+        $value
+    ) {
         if (is_string($value)) {
-            return json_decode($value, true) ?? [];
+            $decoded = json_decode(
+                $value,
+                true
+            );
+
+            return is_array($decoded)
+                ? $decoded
+                : [];
         }
-        return $value ?? [];
+
+        return is_array($value)
+            ? $value
+            : [];
     }
 }

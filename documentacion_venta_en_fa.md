@@ -1782,6 +1782,38 @@ Esta sección es una guía de decisión; no implica que se haya aplicado ninguna
 4. **Datos y rendimiento:** migrar índices multiempresa/FKs de manera controlada, limitar paginación y dividir bundle frontend.
 5. **Calidad continua:** pruebas Feature de todas las rutas críticas, pruebas de concurrencia para stock/número de usuario y pipeline CI.
 
+## Módulo de cajas diarias, mesas y ventas pendientes
+
+### Regla de negocio
+
+- La empresa activa mesas con `configuracion.mesas_activas = true`.
+- Con mesas activas, toda venta pendiente requiere una `mesa_id` activa de la misma empresa; la mesa queda `ocupada` hasta cobrar y después vuelve a `libre`.
+- Sin mesas activas, la venta es directa y no acepta `mesa_id`, pero puede guardarse como `pendiente` y recuperarse en el carrito.
+- Una venta pendiente no descuenta inventario, no suma ventas ni caja. El descuento de stock y el registro del pago suceden al cobrar, dentro de una transacción.
+
+### Cajas del día y API
+
+Cada usuario puede abrir una caja por empresa y día comercial. El cierre calcula `efectivo esperado = apertura + pagos en efectivo de ventas pagadas`; la diferencia es `declarado - esperado`.
+
+| Acción | Endpoint | Datos mínimos |
+|---|---|---|
+| Caja actual | `GET /api/v1/cajas/actual` | — |
+| Abrir | `POST /api/v1/cajas/abrir` | `monto_apertura`, `notas?` |
+| Cerrar | `POST /api/v1/cajas/{id}/cerrar` | `monto_cierre_declarado`, `notas?` |
+| Mesas | `GET/POST /api/v1/mesas` | `nombre`, `capacidad?`, `notas?` |
+| Editar mesa | `PUT /api/v1/mesas/{id}` | `nombre?`, `capacidad?`, `activo?` |
+
+| Acción | Endpoint | Nota |
+|---|---|---|
+| Guardar pendiente | `POST /api/v1/ventas/pendiente/guardar` | Incluye `mesa_id` solo con mesas activas. |
+| Recuperar carrito | `GET /api/v1/ventas/pendiente/actual?mesa_id={id}` | Sin parámetro recupera la venta directa del usuario. |
+| Listar para cobro | `GET /api/v1/ventas/pendientes?para_cobro=1` | Puede filtrarse por mesa. |
+| Cobrar | `POST /api/v1/ventas/{id}/pagar` | Exige caja abierta y pagos iguales al total. |
+
+```json
+{"caja_id": 12, "pagos": [{"forma_pago": "Efectivo", "monto": 250.00, "cambio": 0}]}
+```
+
 ### Criterios de aceptación mínimos
 
 - Una venta online y offline generan el mismo resultado contable, folio, auditoría y movimiento de stock.
@@ -1789,3 +1821,58 @@ Esta sección es una guía de decisión; no implica que se haya aplicado ninguna
 - Una devolución parcial conserva el total histórico, registra la devolución y no permite devolver más de lo vendido.
 - Un cupón/promoción no puede exceder límites ni reutilizarse por reintento de red.
 - Auditoría y sincronización funcionan con pruebas automatizadas y sin errores SQL.
+
+## Anexo sincronizado: cajas, mesas, permisos y auditoría (2026-08-31)
+
+Esta sección es normativa y se mantiene con el mismo contenido en `punto_venta_flutter/documentacion_venta_en_fa.md` y `pos-backend/documentacion_venta_en_fa.md`.
+
+### 9.1 Reglas nuevas
+
+- La funcionalidad de caja es opcional por empresa. Se habilita exclusivamente con `empresa.configuracion.cajas_activas = true`. Si está deshabilitada, el POS conserva el flujo de venta normal y no exige ni muestra una caja.
+- Si `empresa.configuracion.mesas_activas = true`, la aplicación muestra los apartados **Caja** y **Mesas**. Mesas requiere también que cajas esté activa; si la configuración heredada activa mesas sin cajas, el backend la rechaza como inválida y la UI muestra el motivo.
+- Con cajas activas, ninguna venta puede confirmarse ni cobrarse hasta que exista una única caja abierta para la empresa y fecha comercial. La caja no pertenece al vendedor: todos los vendedores de esa empresa usan la misma caja abierta.
+- Solo un usuario con rol `cajero` (o un rol explícitamente autorizado por la política de la empresa) puede abrir o cerrar caja. Cualquier vendedor puede crear, cobrar y consultar ventas propias y de otros vendedores de su empresa.
+- Los cambios sobre una venta creada por otro vendedor requieren motivo y generan auditoría inmutable: empresa, venta, actor, propietario original, acción, antes/después, motivo, fecha y UUID/idempotency key.
+- Una venta puede dividirse en cuentas a petición del cliente. Las cuentas hijas conservan el vínculo con la venta raíz, sus productos y pagos; la suma de sus importes no puede superar el total de la raíz. Cada cuenta se cobra, anula o audita independientemente.
+- Con mesas activas, una venta pendiente se asocia a una mesa activa de la misma empresa y la mesa pasa a `ocupada`; al liquidar o cancelar la última cuenta pendiente vuelve a `libre`. Sin mesas activas, `mesa_id` se rechaza y el flujo de pendientes directo sigue disponible.
+- Las validaciones se aplican en servidor y en cliente, pero el servidor es la autoridad final. En modo offline no se permite eludir una caja requerida: se necesita una instantánea válida de caja abierta para la fecha comercial y la sincronización vuelve a validar su estado.
+
+### 9.2 Contrato mínimo de API
+
+| Necesidad | Endpoint | Regla |
+|---|---|---|
+| Estado operativo | `GET /api/v1/operacion/estado` | Devuelve configuración efectiva, rol y caja abierta de empresa. |
+| Abrir/cerrar caja | `POST /api/v1/cajas/abrir`, `POST /api/v1/cajas/{id}/cerrar` | Solo cajero autorizado; una caja abierta por empresa/día. |
+| Mesas | `GET/POST/PUT /api/v1/mesas` | Solo disponibles con mesas activas; aislamiento por empresa. |
+| Cobrar venta | `POST /api/v1/ventas/{id}/pagar` | Exige caja abierta solo si cajas está activa. |
+| Separar cuentas | `POST /api/v1/ventas/{id}/separar-cuentas` | Idempotente; valida productos/importes no asignados. |
+| Auditoría de cambios | `POST /api/v1/ventas/{id}/cambios` | Requiere motivo si actor y vendedor original difieren. |
+
+### 9.3 Observaciones detectadas antes de corregir
+
+| ID | Severidad | Hallazgo y por qué importa | Resolución prevista |
+|---|---|---|---|
+| CA-01 | Crítica | El backend abre, consulta y cierra caja por `usuario_id`; por ello pueden existir varias cajas abiertas para la misma empresa y día. | Consultar/bloquear por empresa y fecha, añadir índice único de caja abierta y asignar `abierta_por_usuario_id` solo como auditoría. |
+| CA-02 | Crítica | Cajas y mesas están expuestas aunque la empresa no las haya activado; el cobro no exige caja. | Crear estado operativo basado en configuración y proteger rutas/servicios; el cobro validará caja únicamente cuando `cajas_activas` sea verdadero. |
+| CA-03 | Alta | Abrir/cerrar caja no valida el rol de cajero y los endpoints de mesas tampoco verifican que la funcionalidad esté habilitada. | Policy/middleware de operación por empresa y rol, con respuestas 403/422 claras. |
+| CA-04 | Alta | El cliente Flutter no descarga configuración efectiva, no muestra caja/mesas y permite cobrar sin validar caja. | Incorporar cliente de operación, estado de sesión y UI condicional; deshabilitar cobro cuando aplique. |
+| VE-01 | Alta | No hay modelo, transacción ni API para separar cuentas; intentar hacerlo en el cliente produciría totales e inventario inconsistentes. | Modelar relación venta raíz/cuentas, asignación de partidas y pagos; implementar servicio transaccional e idempotente. |
+| AU-01 | Alta | No existe una regla de motivo y auditoría inmutable para cambios de un vendedor sobre venta ajena. | Centralizar mutaciones en servicio de ventas y registrar diff/auditoría con actor y propietario. |
+| FL-01 | Alta | El diálogo de configuración de ticket libera `TextEditingController` inmediatamente después de `showDialog`; durante la animación de salida aún puede haber dependientes de widgets heredados y se dispara `'_dependents.isEmpty'`. | Mantener el estado/controladores dentro de un `StatefulWidget` de diálogo y liberarlos en `dispose`, una vez desmontado el árbol. |
+| FL-02 | Media | `HomeShell` conserva páginas en una lista estática; el POS no puede reaccionar con seguridad a cambios de empresa/configuración/rol. | Construir las páginas desde el estado de sesión/operación y refrescar el estado al iniciar y al volver a primer plano. |
+| DO-01 | Media | Los dos archivos `documentacion_venta_en_fa.md` tenían alcance y detalle distintos. | Mantener este anexo idéntico en ambos; la documentación general del backend continúa en `documentacion_app_movil_flutter.md`. |
+
+### 9.4 Criterios de aceptación
+
+1. Una empresa sin `cajas_activas` vende sin caja y no ve módulos de caja/mesas.
+2. Una empresa con `cajas_activas` no permite cobrar sin la caja única abierta de ese día; solo el cajero autorizado puede abrir/cerrar.
+3. Con `mesas_activas`, Caja y Mesas aparecen y no se puede cobrar antes de abrir caja.
+4. Vendedores de la misma empresa pueden consultar y vender; toda modificación de venta ajena deja auditoría con motivo.
+5. Las cuentas separadas nunca duplican artículos, pagos, stock ni total, incluso al reintentar la solicitud.
+6. La edición de ticket no produce la aserción de Flutter y conserva el guardado local/offline.
+
+### 9.5 Rol de cajero
+
+- `cajero` es un rol persistido en la tabla `users`; puede abrir y cerrar la caja de su empresa, pero no adquiere permisos administrativos de catálogo, empresas o usuarios.
+- `admin` y `superadmin` conservan capacidad operativa de caja para no bloquear la administración. `vendedor` puede vender y cobrar según la caja abierta, pero no abrirla ni cerrarla.
+- La migración `2026_08_31_150000_add_cajero_role_to_users_table.php` actualiza instalaciones existentes. Las validaciones del API de usuarios aceptan el nuevo valor y el login devuelve la configuración de empresa necesaria para que Flutter determine si debe mostrar caja o mesas.

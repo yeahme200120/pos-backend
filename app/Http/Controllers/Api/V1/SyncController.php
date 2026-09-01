@@ -108,6 +108,7 @@ class SyncController extends Controller
                 // Registrar auditoría
                 if ($registroId) {
                     LogAuditoria::create([
+                        'empresa_id' => $empresaId,
                         'usuario_id' => $userId,
                         'accion' => $registro['operacion'],
                         'tabla' => $tabla,
@@ -259,6 +260,7 @@ class SyncController extends Controller
 
                     // Registrar auditoría de recepción
                     LogAuditoria::create([
+                        'empresa_id' => $empresaId,
                         'usuario_id' => $user->id,
                         'accion' => 'sync_offline_recibido',
                         'tabla' => 'sync_queue',
@@ -279,6 +281,7 @@ class SyncController extends Controller
 
                     // Auditoría de éxito
                     LogAuditoria::create([
+                        'empresa_id' => $empresaId,
                         'usuario_id' => $user->id,
                         'accion' => 'sync_offline_exito',
                         'tabla' => 'ventas',
@@ -306,6 +309,7 @@ class SyncController extends Controller
 
                     // Auditoría de error
                     LogAuditoria::create([
+                        'empresa_id' => $empresaId,
                         'usuario_id' => $user->id,
                         'accion' => 'sync_offline_error',
                         'tabla' => 'sync_queue',
@@ -473,6 +477,7 @@ class SyncController extends Controller
 
                 // Auditoría
                 LogAuditoria::create([
+                    'empresa_id' => $empresaId,
                     'usuario_id' => $item->usuario_id,
                     'accion' => 'sync_offline_procesado_cola',
                     'tabla' => 'ventas',
@@ -491,6 +496,7 @@ class SyncController extends Controller
                 ]);
 
                 LogAuditoria::create([
+                    'empresa_id' => $empresaId,
                     'usuario_id' => $item->usuario_id,
                     'accion' => 'sync_offline_error_cola',
                     'tabla' => 'sync_queue',
