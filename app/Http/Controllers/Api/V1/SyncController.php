@@ -25,8 +25,7 @@ class SyncController extends Controller
 {
     public function __construct(
         private readonly AuditoriaService $auditoriaService
-    ) {
-    }
+    ) {}
 
     /**
      * Sincronización:
@@ -557,7 +556,7 @@ class SyncController extends Controller
                     'deleted_at',
                 ])
                 ->map(
-                    static fn ($item) => [
+                    static fn($item) => [
                         'id' => $item->id,
                         'deleted_at' => $item->deleted_at,
                     ]
@@ -590,6 +589,11 @@ class SyncController extends Controller
 
     /**
      * Recibir ventas registradas sin conexión.
+     *
+     * La sincronización vacía se considera una operación válida:
+     * no hay ventas pendientes que procesar y se devuelve 200.
+     *
+     * Cuando existen ventas, se mantiene la validación completa.
      */
     public function syncOffline(Request $request)
     {
@@ -608,8 +612,73 @@ class SyncController extends Controller
         }
 
         /*
-         * Validación completa antes de iniciar cualquier transacción.
-         */
+     * Obtener ventas del request.
+     *
+     * Si Flutter ejecuta una sincronización automática sin ventas
+     * pendientes, el payload puede llegar vacío.
+     */
+        $ventas = $request->input('ventas', []);
+
+        /*
+     * Normalizar null a arreglo vacío.
+     */
+        if ($ventas === null) {
+            $ventas = [];
+        }
+
+        /*
+     * Validar que ventas siempre sea un arreglo.
+     *
+     * Aquí NO usamos required|min:1 porque una sincronización sin
+     * ventas pendientes es una operación válida.
+     */
+        if (!is_array($ventas)) {
+            return response()->json([
+                'message' => 'El campo ventas debe ser un arreglo válido.',
+                'errors' => [
+                    'ventas' => [
+                        'El campo ventas debe ser un arreglo válido.',
+                    ],
+                ],
+            ], 422);
+        }
+
+        /*
+     * Limitar tamaño máximo del lote.
+     */
+        if (count($ventas) > 100) {
+            return response()->json([
+                'message' => 'El campo ventas no puede contener más de 100 registros.',
+                'errors' => [
+                    'ventas' => [
+                        'El campo ventas no puede contener más de 100 registros.',
+                    ],
+                ],
+            ], 422);
+        }
+
+        /*
+     * Sin ventas pendientes:
+     *
+     * Esta situación es normal cuando el sincronizador automático
+     * se ejecuta y no existen operaciones offline pendientes.
+     *
+     * Se responde 200 para evitar los 422 repetitivos.
+     */
+        if (count($ventas) === 0) {
+            return response()->json([
+                'message' => 'No hay ventas offline pendientes de sincronización.',
+                'procesadas' => [],
+                'errores' => [],
+                'total_recibidas' => 0,
+                'total_procesadas' => 0,
+                'total_errores' => 0,
+            ], 200);
+        }
+
+        /*
+     * Validación completa de ventas cuando sí existen.
+     */
         $validated = $request->validate([
             'ventas' => [
                 'required',
@@ -741,21 +810,15 @@ class SyncController extends Controller
         $errores = [];
 
         /*
-         * IMPORTANTE:
-         *
-         * No existe una transacción global para todo el lote.
-         *
-         * Cada venta se procesa de manera independiente. Esto evita
-         * que una venta posterior con error provoque rollback de ventas
-         * anteriores y genere una respuesta inconsistente.
-         */
+     * Cada venta se procesa independientemente.
+     */
         foreach ($validated['ventas'] as $ventaData) {
             $syncRecord = null;
 
             try {
                 /*
-                 * Validar cliente dentro de la empresa.
-                 */
+             * Validar cliente dentro de la empresa.
+             */
                 if (
                     !empty($ventaData['cliente_id'])
                     && !Cliente::where(
@@ -774,8 +837,8 @@ class SyncController extends Controller
                 }
 
                 /*
-                 * Idempotencia por UUID.
-                 */
+             * Idempotencia por UUID.
+             */
                 $ventaExistente = Venta::where(
                     'empresa_id',
                     $empresaId
@@ -811,8 +874,8 @@ class SyncController extends Controller
                 }
 
                 /*
-                 * Buscar registro existente de cola.
-                 */
+             * Buscar registro existente en cola.
+             */
                 $syncRecord = SyncQueue::where(
                     'empresa_id',
                     $empresaId
@@ -824,8 +887,8 @@ class SyncController extends Controller
                     ->first();
 
                 /*
-                 * Crear o preparar cola.
-                 */
+             * Crear o actualizar cola.
+             */
                 if (!$syncRecord) {
                     $syncRecord = SyncQueue::create([
                         'empresa_id' => $empresaId,
@@ -843,35 +906,37 @@ class SyncController extends Controller
                         'sync_queue',
                         $syncRecord->id,
                         null,
-                        $this->datosAuditoria(
-                            $ventaData
-                        ),
+                        $this->datosAuditoria($ventaData),
                         $empresaId,
                         $usuarioId
                     );
                 } elseif ($syncRecord->estado === 'enviado') {
-                    throw new \RuntimeException(
-                        'La operación offline ya fue procesada anteriormente.'
-                    );
+                    /*
+                 * Si la venta ya fue procesada, no volver a crearla.
+                 */
+                    $ventasProcesadas[] = [
+                        'uuid_local' => $ventaData['uuid_local'],
+                        'venta_id' => null,
+                        'folio' => null,
+                        'idempotente' => true,
+                        'mensaje' => 'La operación offline ya fue procesada anteriormente.',
+                    ];
+
+                    continue;
                 } elseif ($syncRecord->estado === 'error') {
                     $syncRecord->update([
                         'datos' => $ventaData,
                         'estado' => 'pendiente',
                     ]);
                 } else {
-                    /*
-                     * Si está pendiente, actualizar los datos recibidos.
-                     */
                     $syncRecord->update([
                         'datos' => $ventaData,
                     ]);
                 }
 
                 /*
-                 * Procesar la venta.
-                 *
-                 * Este método administra su propia transacción.
-                 */
+             * Procesar venta.
+             */
                 $venta = $this->procesarVentaOffline(
                     $ventaData,
                     $user,
@@ -879,9 +944,9 @@ class SyncController extends Controller
                 );
 
                 /*
-                 * Marcar cola como enviada solamente después de crear
-                 * correctamente la venta.
-                 */
+             * Marcar cola como enviada únicamente después
+             * de procesar correctamente la venta.
+             */
                 $syncRecord->update([
                     'estado' => 'enviado',
                     'fecha_sync' => now(),
@@ -906,8 +971,8 @@ class SyncController extends Controller
                 ];
             } catch (Throwable $e) {
                 /*
-                 * Marcar la cola como error.
-                 */
+             * Intentar registrar el error en la cola.
+             */
                 try {
                     if (!$syncRecord) {
                         $syncRecord = SyncQueue::where(
@@ -935,6 +1000,7 @@ class SyncController extends Controller
                             'usuario_id' => $usuarioId,
                             'uuid_local' => $ventaData['uuid_local'],
                             'error' => $queueException->getMessage(),
+                            'exception' => get_class($queueException),
                         ]
                     );
                 }
@@ -973,9 +1039,13 @@ class SyncController extends Controller
         }
 
         return response()->json([
+            'message' => 'Sincronización offline procesada.',
             'procesadas' => $ventasProcesadas,
             'errores' => $errores,
-        ]);
+            'total_recibidas' => count($validated['ventas']),
+            'total_procesadas' => count($ventasProcesadas),
+            'total_errores' => count($errores),
+        ], 200);
     }
 
     /**
@@ -1113,10 +1183,10 @@ class SyncController extends Controller
 
             $totalFinal = round(
                 $totalConDescuento
-                + (
-                    $totalConDescuento
-                    * ($impuestoGlobal / 100)
-                ),
+                    + (
+                        $totalConDescuento
+                        * ($impuestoGlobal / 100)
+                    ),
                 2
             );
 
@@ -1140,7 +1210,7 @@ class SyncController extends Controller
 
             $totalPagos = round(
                 collect($pagos)->sum(
-                    static fn ($pago) => (float) $pago['monto']
+                    static fn($pago) => (float) $pago['monto']
                 ),
                 2
             );
