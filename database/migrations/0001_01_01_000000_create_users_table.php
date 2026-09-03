@@ -18,9 +18,6 @@ return new class extends Migration
             $table->string('password');
             $table->unsignedBigInteger('empresa_id')->nullable();
             $table->enum('rol', ['superadmin', 'admin', 'cajero', 'vendedor'])->default('vendedor');
-            $table->enum('licencia_tipo', ['dia', 'semana', 'quincena', 'mes', 'bimestre', 'trimestre', 'semestre', 'anual', 'permanente'])->nullable();
-            $table->timestamp('licencia_fecha_inicio')->nullable();
-            $table->timestamp('licencia_fecha_fin')->nullable();
             $table->string('logo')->nullable();
             $table->boolean('activo')->default(true);
             $table->rememberToken();

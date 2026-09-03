@@ -2,20 +2,18 @@
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
-use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Laravel\Sanctum\HasApiTokens;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Laravel\Sanctum\HasApiTokens;
 
 class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
 
     /**
-     * The attributes that are mass assignable.
+     * Atributos asignables masivamente.
      *
      * @var list<string>
      */
@@ -27,14 +25,11 @@ class User extends Authenticatable
         'numero_usuario',
         'empresa_id',
         'rol',
-        'licencia_tipo',
-        'licencia_fecha_inicio',
-        'licencia_fecha_fin',
         'activo',
     ];
 
     /**
-     * The attributes that should be hidden for serialization.
+     * Atributos ocultos.
      *
      * @var list<string>
      */
@@ -44,7 +39,7 @@ class User extends Authenticatable
     ];
 
     /**
-     * Get the attributes that should be cast.
+     * Casts.
      *
      * @return array<string, string>
      */
@@ -54,56 +49,136 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'activo' => 'boolean',
-            'licencia_fecha_inicio' => 'datetime',
-            'licencia_fecha_fin' => 'datetime',
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Relaciones
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Relación con la empresa.
+     * Empresa a la que pertenece el usuario.
      */
     public function empresa()
     {
-        return $this->belongsTo(Empresa::class);
+        return $this->belongsTo(
+            Empresa::class,
+            'empresa_id'
+        );
     }
 
     /**
-     * Relación con las ventas (como vendedor/usuario que registró).
+     * Ventas realizadas por el usuario.
      */
     public function ventas()
     {
-        return $this->hasMany(Venta::class, 'usuario_id');
+        return $this->hasMany(
+            Venta::class,
+            'usuario_id'
+        );
     }
 
     /**
-     * Relación con metadatos de sincronización.
+     * Metadatos de sincronización.
      */
     public function syncMetadata()
     {
-        return $this->hasMany(SyncMetadata::class);
+        return $this->hasMany(
+            SyncMetadata::class
+        );
     }
 
     /**
-     * Relación con logs de auditoría.
+     * Logs de auditoría.
      */
     public function logsAuditoria()
     {
-        return $this->hasMany(LogAuditoria::class);
+        return $this->hasMany(
+            LogAuditoria::class
+        );
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Licencia
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Verificar si la licencia está activa.
+     * Determinar si el usuario puede operar con la licencia
+     * de su empresa.
+     *
+     * La licencia pertenece EXCLUSIVAMENTE a empresas.
      */
     public function hasActiveLicense(): bool
     {
-        if ($this->licencia_tipo === 'permanente') {
-            return true;
+        if (!$this->empresa) {
+            return false;
         }
-        return $this->licencia_fecha_fin && now()->lessThanOrEqualTo($this->licencia_fecha_fin);
+
+        return $this->empresa->canOperateWithLicense();
     }
 
     /**
-     * Verificar si el usuario es superadmin.
+     * Obtener el estado completo de la licencia
+     * de la empresa del usuario.
+     */
+    public function licenseStatus(): array
+    {
+        if (!$this->empresa) {
+            return [
+                'empresa_id' => null,
+                'activa' => false,
+                'vigente' => false,
+                'en_gracia' => false,
+                'permanente' => false,
+                'puede_operar' => false,
+                'tipo' => null,
+                'fecha_inicio' => null,
+                'fecha_fin' => null,
+                'dias_restantes' => null,
+                'dias_vencidos' => 0,
+                'licencia_activa' => false,
+                'ultima_validacion' => null,
+            ];
+        }
+
+        return $this->empresa->licenseStatus();
+    }
+
+    /**
+     * Compatibilidad con código anterior.
+     *
+     * Devuelve:
+     *
+     * - permanente
+     * - vigente
+     * - gracia
+     * - vencida
+     * - inactiva
+     * - sin_empresa
+     * - no_iniciada
+     * - invalida
+     */
+    public function licenciaEstado(): string
+    {
+        if (!$this->empresa) {
+            return 'sin_empresa';
+        }
+
+        return $this->empresa->licenseState();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Roles
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Verificar si es superadmin.
      */
     public function isSuperAdmin(): bool
     {
@@ -111,7 +186,7 @@ class User extends Authenticatable
     }
 
     /**
-     * Verificar si el usuario es admin de empresa.
+     * Verificar si es administrador.
      */
     public function isAdmin(): bool
     {
@@ -119,37 +194,53 @@ class User extends Authenticatable
     }
 
     /**
-     * Verificar si el usuario es vendedor.
+     * Verificar si es vendedor.
      */
     public function isVendedor(): bool
     {
         return $this->rol === 'vendedor';
     }
 
+    /**
+     * Verificar si puede operar como cajero.
+     */
     public function isCajero(): bool
     {
-        return in_array($this->rol, ['cajero', 'admin', 'superadmin'], true);
+        return in_array(
+            $this->rol,
+            [
+                'cajero',
+                'admin',
+                'superadmin',
+            ],
+            true
+        );
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Número de usuario
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Generar un número de usuario único basado en el ID + prefijo.
-     * Formato: 1000000001, 1000000002, etc.
-     * Usa el ID del usuario como base para garantizar unicidad.
+     * Generar número de usuario.
+     *
+     * Ejemplo:
+     *
+     * 1000000001
+     * 1000000002
+     * 1000000003
      */
     public static function generarNumeroUsuario(): int
     {
-        // Obtener el próximo ID disponible
         $nextId = self::withTrashed()->max('id') + 1;
-        
-        // El número de usuario será el ID + 1000000000
-        // Así siempre será único y coincidirá con el ID
-        $numero = 1000000000 + $nextId;
-        
-        return $numero;
+
+        return 1000000000 + $nextId;
     }
 
     /**
-     * Boot del modelo - Asigna el número de usuario automáticamente.
+     * Boot del modelo.
      */
     protected static function boot()
     {
@@ -157,15 +248,24 @@ class User extends Authenticatable
 
         static::creating(function ($user) {
             if (empty($user->numero_usuario)) {
-                // Calcular el próximo ID antes de guardar
                 $nextId = self::withTrashed()->max('id') + 1;
-                $user->numero_usuario = 1000000000 + $nextId;
+
+                $user->numero_usuario =
+                    1000000000 + $nextId;
             }
         });
     }
 
+    /**
+     * Número de usuario formateado.
+     */
     public function getNumeroUsuarioFormateadoAttribute(): string
     {
-        return str_pad($this->numero_usuario, 10, '0', STR_PAD_LEFT);
+        return str_pad(
+            (string) $this->numero_usuario,
+            10,
+            '0',
+            STR_PAD_LEFT
+        );
     }
 }

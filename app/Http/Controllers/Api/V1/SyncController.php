@@ -68,7 +68,7 @@ class SyncController extends Controller
             ],
         ]);
 
-        $empresaId = (int) $user->empresa_id;
+        $empresaId = $this->obtenerEmpresaIdUsuario($user);
         $usuarioId = (int) $user->id;
 
         $cambiosCliente = $validated['cambios'] ?? [];
@@ -179,7 +179,7 @@ class SyncController extends Controller
             ],
         ]);
 
-        $empresaId = (int) $user->empresa_id;
+        $empresaId = $this->obtenerEmpresaIdUsuario($user);       
 
         $cursor = $validated['cursor']
             ?? '1970-01-01 00:00:00';
@@ -225,58 +225,110 @@ class SyncController extends Controller
         }
     }
 
-    /**
-     * Obtener ventas creadas o modificadas desde el cursor.
-     */
     protected function obtenerVentasServidor(
         int $empresaId,
         string $cursor
     ): array {
+        $inicioHoy = now()->startOfDay();
+        $finHoy = now()->endOfDay();
+
         $ventas = Venta::query()
             ->where('empresa_id', $empresaId)
-            ->where('updated_at', '>', $cursor)
+            ->where(function ($query) use (
+                $cursor,
+                $inicioHoy,
+                $finHoy
+            ) {
+                /*
+             * Cambios incrementales.
+             */
+                $query->where(
+                    'updated_at',
+                    '>',
+                    $cursor
+                )
+
+                    /*
+             * Todas las ventas del día actual.
+             *
+             * Esto evita depender del cursor para
+             * reconstruir "Ventas del día".
+             */
+                    ->orWhereBetween(
+                        'created_at',
+                        [
+                            $inicioHoy,
+                            $finHoy,
+                        ]
+                    );
+            })
             ->with([
                 'cliente',
                 'usuario',
                 'detalles.producto',
                 'pagos',
             ])
-            ->orderBy('updated_at')
-            ->orderBy('id')
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc')
             ->get();
 
         /*
-     * Una venta se identifica por UUID.
-     *
-     * Esto evita enviar dos veces la misma venta
-     * si por alguna razón existen registros repetidos
-     * en la colección obtenida.
+     * DEDUPLICACIÓN POR UUID.
      */
         $ventasUnicas = $ventas
-            ->filter(fn($venta) => !empty($venta->uuid))
-            ->keyBy(fn($venta) => (string) $venta->uuid)
+            ->filter(
+                fn($venta) =>
+                !empty($venta->uuid)
+            )
+            ->keyBy(
+                fn($venta) =>
+                (string) $venta->uuid
+            )
             ->values();
 
         return $ventasUnicas
             ->map(function ($venta) {
                 return [
                     'id' => $venta->id,
-                    'uuid' => $venta->uuid,
-                    'folio' => $venta->folio,
-                    'empresa_id' => $venta->empresa_id,
-                    'usuario_id' => $venta->usuario_id,
-                    'cliente_id' => $venta->cliente_id,
 
-                    'fecha' => $venta->fecha,
-                    'subtotal' => (float) $venta->subtotal,
-                    'total' => (float) $venta->total,
-                    'descuento' => (float) $venta->descuento,
-                    'impuesto' => (float) $venta->impuesto,
+                    'uuid' =>
+                    (string) $venta->uuid,
 
-                    'estado' => $venta->estado,
+                    'folio' =>
+                    $venta->folio,
 
-                    'dispositivo_id' => $venta->dispositivo_id,
-                    'sincronizado' => (bool) $venta->sincronizado,
+                    'empresa_id' =>
+                    $venta->empresa_id,
+
+                    'usuario_id' =>
+                    $venta->usuario_id,
+
+                    'cliente_id' =>
+                    $venta->cliente_id,
+
+                    'fecha' =>
+                    $venta->fecha,
+
+                    'subtotal' =>
+                    (float) $venta->subtotal,
+
+                    'total' =>
+                    (float) $venta->total,
+
+                    'descuento' =>
+                    (float) $venta->descuento,
+
+                    'impuesto' =>
+                    (float) $venta->impuesto,
+
+                    'estado' =>
+                    $venta->estado,
+
+                    'dispositivo_id' =>
+                    $venta->dispositivo_id,
+
+                    'sincronizado' =>
+                    (bool) $venta->sincronizado,
 
                     'fecha_sincronizacion' =>
                     $venta->fecha_sincronizacion,
@@ -287,71 +339,92 @@ class SyncController extends Controller
                     'updated_at' =>
                     $venta->updated_at?->toIso8601String(),
 
-                    'cliente' => $venta->cliente
+                    'cliente' =>
+                    $venta->cliente
                         ? $venta->cliente->toArray()
                         : null,
 
-                    'usuario' => $venta->usuario
+                    'usuario' =>
+                    $venta->usuario
                         ? $venta->usuario->toArray()
                         : null,
 
-                    'detalles' => $venta->detalles
+                    'detalles' =>
+                    $venta->detalles
                         ->map(function ($detalle) {
                             return [
-                                'id' => $detalle->id,
+                                'id' =>
+                                $detalle->id,
 
                                 'producto_id' =>
                                 $detalle->producto_id,
 
                                 'cantidad' =>
-                                (float) $detalle->cantidad,
+                                (float)
+                                $detalle->cantidad,
 
                                 'precio' =>
-                                (float) $detalle->precio,
+                                (float)
+                                $detalle->precio,
 
                                 'descuento' =>
-                                (float) (
-                                    $detalle->descuento ?? 0
+                                (float)
+                                (
+                                    $detalle->descuento
+                                    ?? 0
                                 ),
 
                                 'impuesto' =>
-                                (float) (
-                                    $detalle->impuesto ?? 0
+                                (float)
+                                (
+                                    $detalle->impuesto
+                                    ?? 0
                                 ),
 
                                 'subtotal' =>
-                                (float) (
-                                    $detalle->subtotal ?? 0
+                                (float)
+                                (
+                                    $detalle->subtotal
+                                    ?? 0
                                 ),
 
                                 'total' =>
-                                (float) (
-                                    $detalle->total ?? 0
+                                (float)
+                                (
+                                    $detalle->total
+                                    ?? 0
                                 ),
 
                                 'producto' =>
                                 $detalle->producto
-                                    ? $detalle->producto->toArray()
+                                    ? $detalle
+                                    ->producto
+                                    ->toArray()
                                     : null,
                             ];
                         })
                         ->values()
                         ->toArray(),
 
-                    'pagos' => $venta->pagos
+                    'pagos' =>
+                    $venta->pagos
                         ->map(function ($pago) {
                             return [
-                                'id' => $pago->id,
+                                'id' =>
+                                $pago->id,
 
                                 'forma_pago' =>
                                 $pago->forma_pago,
 
                                 'monto' =>
-                                (float) $pago->monto,
+                                (float)
+                                $pago->monto,
 
                                 'cambio' =>
-                                (float) (
-                                    $pago->cambio ?? 0
+                                (float)
+                                (
+                                    $pago->cambio
+                                    ?? 0
                                 ),
 
                                 'referencia' =>
@@ -1896,5 +1969,15 @@ class SyncController extends Controller
         );
 
         return $datos;
+    }
+    private function obtenerEmpresaIdUsuario(User $user): int
+    {
+        if (!$user->empresa_id || !$user->empresa) {
+            throw new \RuntimeException(
+                'El usuario no tiene una empresa asociada.'
+            );
+        }
+
+        return (int) $user->empresa_id;
     }
 }

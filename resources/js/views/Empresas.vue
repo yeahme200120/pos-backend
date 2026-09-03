@@ -52,6 +52,10 @@
                             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Teléfono</th>
                             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
                             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Estado</th>
+                            <th v-if="esSuperadmin"
+                                class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                                Licencia
+                            </th>
                             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Acciones</th>
                         </tr>
                     </thead>
@@ -75,9 +79,31 @@
                                     {{ empresa.activo ? 'Activa' : 'Inactiva' }}
                                 </span>
                             </td>
+                            <td v-if="esSuperadmin" class="px-4 py-3 text-sm text-center">
+                                <div class="flex flex-col items-center gap-1">
+
+                                    <span class="px-2 py-1 text-xs rounded-full" :class="claseEstadoLicencia(empresa)">
+                                        {{ textoEstadoLicencia(empresa) }}
+                                    </span>
+
+                                    <span v-if="empresa.licencia_tipo" class="text-xs text-gray-500">
+                                        {{ nombreTipoLicencia(empresa.licencia_tipo) }}
+                                    </span>
+
+                                    <span v-if="empresa.licencia_fecha_fin && empresa.licencia_tipo !== 'permanente'"
+                                        class="text-xs text-gray-400">
+                                        {{ formatearFecha(empresa.licencia_fecha_fin) }}
+                                    </span>
+
+                                </div>
+                            </td>
                             <td class="px-4 py-3 text-sm text-center">
                                 <button @click="abrirModal(empresa)" class="text-blue-600 hover:text-blue-800 mr-2">
                                     ✏️
+                                </button>
+                                <button @click="abrirModalLicencia(empresa)"
+                                    class="text-purple-600 hover:text-purple-800 mr-2" title="Administrar licencia">
+                                    🔑
                                 </button>
                                 <button v-if="esSuperadmin" @click="eliminarEmpresa(empresa.id)"
                                     class="text-red-600 hover:text-red-800">
@@ -329,6 +355,240 @@
                 </form>
             </div>
         </div>
+        <!-- ============================================ -->
+        <!-- MODAL ADMINISTRACIÓN DE LICENCIA             -->
+        <!-- SOLO SUPERADMIN                              -->
+        <!-- ============================================ -->
+
+        <div v-if="modalLicenciaVisible && esSuperadmin"
+            class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+            <div class="bg-white rounded-lg p-6 w-full max-w-lg">
+
+                <div class="flex items-center justify-between mb-5">
+
+                    <div>
+                        <h2 class="text-xl font-bold text-gray-800">
+                            Administrar licencia
+                        </h2>
+
+                        <p class="text-sm text-gray-500 mt-1">
+                            {{ empresaLicencia?.nombre || '' }}
+                        </p>
+                    </div>
+
+                    <button type="button" @click="cerrarModalLicencia"
+                        class="text-gray-400 hover:text-gray-700 text-xl">
+                        ✕
+                    </button>
+
+                </div>
+
+                <form @submit.prevent="guardarLicencia">
+
+                    <!-- Tipo -->
+                    <div class="mb-4">
+
+                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                            Tipo de licencia
+                        </label>
+
+                        <select v-model="formLicencia.licencia_tipo"
+                            class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            required>
+
+                            <option value="dia">
+                                Día
+                            </option>
+
+                            <option value="semana">
+                                Semana
+                            </option>
+
+                            <option value="quincena">
+                                Quincena
+                            </option>
+
+                            <option value="mes">
+                                Mes
+                            </option>
+
+                            <option value="bimestre">
+                                Bimestre
+                            </option>
+
+                            <option value="trimestre">
+                                Trimestre
+                            </option>
+
+                            <option value="semestre">
+                                Semestre
+                            </option>
+
+                            <option value="anual">
+                                Anual
+                            </option>
+
+                            <option value="permanente">
+                                Permanente
+                            </option>
+
+                        </select>
+
+                    </div>
+
+                    <!-- Fecha inicio -->
+                    <div class="mb-4">
+
+                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                            Fecha de inicio
+                        </label>
+
+                        <input v-model="formLicencia.licencia_fecha_inicio" type="datetime-local"
+                            class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            :disabled="formLicencia.licencia_tipo === 'permanente'" />
+
+                    </div>
+
+                    <!-- Fecha fin -->
+                    <div v-if="formLicencia.licencia_tipo !== 'permanente'" class="mb-4">
+
+                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                            Fecha de vencimiento
+                        </label>
+
+                        <input v-model="formLicencia.licencia_fecha_fin" type="datetime-local"
+                            class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            required />
+
+                    </div>
+
+                    <!-- Permanente -->
+                    <div v-if="formLicencia.licencia_tipo === 'permanente'"
+                        class="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+                        <div class="flex items-center gap-2">
+
+                            <span class="text-green-600 text-lg">
+                                ✓
+                            </span>
+
+                            <div>
+                                <p class="text-sm font-semibold text-green-800">
+                                    Licencia permanente
+                                </p>
+
+                                <p class="text-xs text-green-700">
+                                    No tendrá fecha de vencimiento.
+                                </p>
+                            </div>
+
+                        </div>
+                    </div>
+
+                    <!-- Activa -->
+                    <div class="mb-5">
+
+                        <label class="flex items-center gap-2 cursor-pointer">
+
+                            <input v-model="formLicencia.licencia_activa" type="checkbox"
+                                class="w-4 h-4 text-purple-600 rounded" />
+
+                            <span class="text-sm font-medium text-gray-700">
+                                Licencia activa
+                            </span>
+
+                        </label>
+
+                        <p class="text-xs text-gray-500 mt-1 ml-6">
+                            Desactivar la licencia impedirá que la empresa utilice el POS.
+                        </p>
+
+                    </div>
+
+                    <!-- Resumen -->
+                    <div v-if="empresaLicencia" class="mb-5 p-4 bg-gray-50 rounded-lg border">
+
+                        <p class="text-xs font-semibold text-gray-500 uppercase mb-2">
+                            Estado actual
+                        </p>
+
+                        <div class="grid grid-cols-2 gap-3 text-sm">
+
+                            <div>
+                                <span class="text-gray-500">
+                                    Empresa:
+                                </span>
+
+                                <div class="font-medium">
+                                    {{ empresaLicencia.nombre }}
+                                </div>
+                            </div>
+
+                            <div>
+                                <span class="text-gray-500">
+                                    Estado:
+                                </span>
+
+                                <div class="font-medium" :class="formLicencia.licencia_activa
+                                    ? 'text-green-600'
+                                    : 'text-red-600'">
+                                    {{ formLicencia.licencia_activa ? 'Activa' : 'Desactivada' }}
+                                </div>
+                            </div>
+
+                            <div>
+                                <span class="text-gray-500">
+                                    Tipo:
+                                </span>
+
+                                <div class="font-medium">
+                                    {{ nombreTipoLicencia(formLicencia.licencia_tipo) }}
+                                </div>
+                            </div>
+
+                            <div v-if="formLicencia.licencia_tipo !== 'permanente'">
+                                <span class="text-gray-500">
+                                    Vencimiento:
+                                </span>
+
+                                <div class="font-medium">
+                                    {{ formLicencia.licencia_fecha_fin
+                                        ? formatearFecha(formLicencia.licencia_fecha_fin)
+                                        : '-' }}
+                                </div>
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                    <!-- Error -->
+                    <div v-if="errorLicencia" class="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
+                        {{ errorLicencia }}
+                    </div>
+
+                    <!-- Botones -->
+                    <div class="flex justify-end gap-2">
+
+                        <button type="button" @click="cerrarModalLicencia"
+                            class="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">
+                            Cancelar
+                        </button>
+
+                        <button type="submit" :disabled="guardandoLicencia"
+                            class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50">
+                            {{
+                                guardandoLicencia
+                                    ? 'Guardando...'
+                                    : 'Guardar licencia'
+                            }}
+                        </button>
+
+                    </div>
+
+                </form>
+
+            </div>
+        </div>
     </div>
 </template>
 
@@ -384,7 +644,17 @@ export default {
             imagenInfo: {
                 ancho: 0,
                 alto: 0
-            }
+            },
+            modalLicenciaVisible: false,
+            empresaLicencia: null,
+            formLicencia: {
+                licencia_tipo: 'mes',
+                licencia_fecha_inicio: null,
+                licencia_fecha_fin: null,
+                licencia_activa: true
+            },
+            guardandoLicencia: false,
+            errorLicencia: null
         };
     },
     mounted() {
@@ -837,9 +1107,92 @@ export default {
 
             // Disparar evento para que App.vue actualice sus refs
             window.dispatchEvent(new CustomEvent('recargar-colores'));
+        },
+        abrirModalLicencia(empresa) {
+            this.empresaLicencia = empresa;
+            this.formLicencia = {
+                licencia_tipo: empresa.licencia_tipo || 'mes',
+                licencia_fecha_inicio: empresa.licencia_fecha_inicio || null,
+                licencia_fecha_fin: empresa.licencia_fecha_fin || null,
+                licencia_activa: empresa.licencia_activa !== undefined ? empresa.licencia_activa : true
+            };
+            this.modalLicenciaVisible = true;
+            this.errorLicencia = null;
+        },
+
+        cerrarModalLicencia() {
+            this.modalLicenciaVisible = false;
+            this.empresaLicencia = null;
+        },
+
+        async guardarLicencia() {
+            this.guardandoLicencia = true;
+            this.errorLicencia = null;
+            try {
+                await api.put(`/admin/empresas/${this.empresaLicencia.id}/licencia`, this.formLicencia);
+                this.cerrarModalLicencia();
+                await this.cargarEmpresas();
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Licencia actualizada',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
+            } catch (error) {
+                this.errorLicencia = error.response?.data?.message || 'Error al guardar licencia';
+            } finally {
+                this.guardandoLicencia = false;
+            }
+        },
+
+        licenciaActiva(empresa) {
+            if (!empresa.licencia_tipo) return false;
+            if (empresa.licencia_tipo === 'permanente') return true;
+            if (!empresa.licencia_fecha_fin) return false;
+            return new Date(empresa.licencia_fecha_fin) > new Date();
+        },
+
+        claseEstadoLicencia(empresa) {
+            return this.licenciaActiva(empresa) ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
+        },
+
+        textoEstadoLicencia(empresa) {
+            return this.licenciaActiva(empresa) ? 'Activa' : 'Vencida';
+        },
+
+        nombreTipoLicencia(tipo) {
+            const map = {
+                dia: '1 día',
+                semana: '7 días',
+                quincena: '15 días',
+                mes: '30 días',
+                bimestre: '2 meses',
+                trimestre: '3 meses',
+                semestre: '6 meses',
+                anual: '1 año',
+                permanente: 'Permanente'
+            };
+            return map[tipo] || tipo;
+        },
+
+        formatearFecha(fecha) {
+            if (!fecha) return '-';
+            return new Date(fecha).toLocaleDateString('es-MX');
+        },
+        verificarRol() {
+            const userData = localStorage.getItem('user');
+            if (userData) {
+                try {
+                    const user = JSON.parse(userData);
+                    this.esSuperadmin = user.rol === 'superadmin';
+                    console.log('esSuperadmin:', this.esSuperadmin); // para depuración
+                } catch (e) {
+                    console.error('Error parsing user:', e);
+                }
+            }
         }
     }
-};
+}
 </script>
 
 <style scoped>

@@ -18,6 +18,8 @@ class AuthController extends Controller
      * Permite:
      * - numero_usuario
      * - email
+     *
+     * La licencia SIEMPRE se obtiene desde empresas.
      */
     public function login(Request $request)
     {
@@ -35,18 +37,14 @@ class AuthController extends Controller
         ]);
 
         $identificador = trim(
-            (string) $request->input(
-                'identificador'
-            )
+            (string) $request->input('identificador')
         );
 
         /*
          * IMPORTANTE:
          * Nunca aplicar trim() a la contraseña.
          */
-        $password = (string) $request->input(
-            'password'
-        );
+        $password = (string) $request->input('password');
 
         if ($identificador === '') {
             throw ValidationException::withMessages([
@@ -64,31 +62,36 @@ class AuthController extends Controller
             ]);
         }
 
-        $esEmail =
-            filter_var(
-                $identificador,
-                FILTER_VALIDATE_EMAIL
-            ) !== false;
+        /*
+         * Detectar si el identificador es correo.
+         */
+        $esEmail = filter_var(
+            $identificador,
+            FILTER_VALIDATE_EMAIL
+        ) !== false;
 
         /*
          * Buscar usuario.
+         *
+         * IMPORTANTE:
+         * No aplicar strtolower directamente al campo de BD.
+         * LOWER(email) permite mantener el login por correo
+         * independientemente de mayúsculas/minúsculas.
          */
         if ($esEmail) {
             $user = User::query()
                 ->whereRaw(
                     'LOWER(email) = ?',
                     [
-                        strtolower(
-                            $identificador
-                        ),
+                        strtolower($identificador),
                     ]
                 )
                 ->first();
         } else {
             $user = User::query()
-                ->whereRaw(
-                    'CAST(numero_usuario AS CHAR) = ?',
-                    [$identificador]
+                ->where(
+                    'numero_usuario',
+                    $identificador
                 )
                 ->first();
         }
@@ -161,7 +164,10 @@ class AuthController extends Controller
         }
 
         /*
-         * Empresa.
+         * Obtener empresa.
+         *
+         * La empresa es ahora la propietaria
+         * de la licencia.
          */
         $empresa = $user->empresa;
 
@@ -213,7 +219,7 @@ class AuthController extends Controller
                         'identificador' =>
                             $identificador,
                     ],
-                    $user->empresa_id,
+                    $empresa->id,
                     $user->id,
                     $request
                 );
@@ -253,7 +259,7 @@ class AuthController extends Controller
                         'identificador' =>
                             $identificador,
                     ],
-                    $user->empresa_id,
+                    $empresa->id,
                     $user->id,
                     $request
                 );
@@ -266,10 +272,24 @@ class AuthController extends Controller
         }
 
         /*
-         * Revocar tokens anteriores.
+         * ==========================================================
+         * LICENCIA DE EMPRESA
+         * ==========================================================
          *
-         * Se conserva el comportamiento actual:
-         * una sola sesión/token activo por usuario.
+         * NO se bloquea el login por licencia vencida.
+         *
+         * Esto es intencional:
+         *
+         * Flutter necesita poder iniciar sesión para posteriormente
+         * consultar /licencia/estado.
+         *
+         * Las operaciones del POS serán protegidas por CheckLicense.
+         */
+
+        $licencia = $this->buildLicenseData($empresa);
+
+        /*
+         * Revocar tokens anteriores.
          */
         $user->tokens()->delete();
 
@@ -277,9 +297,7 @@ class AuthController extends Controller
          * Crear nuevo token Sanctum.
          */
         $token = $user
-            ->createToken(
-                'pos-mobile'
-            )
+            ->createToken('pos-mobile')
             ->plainTextToken;
 
         /*
@@ -301,34 +319,29 @@ class AuthController extends Controller
         $empresaData = [
             'id' =>
                 $empresa->id,
+
             'nombre' =>
                 $empresa->nombre,
+
             'logo_url' =>
                 $empresa->logo_url,
+
             'colores' =>
                 $this->decodeJson(
                     $empresa->colores
                 ),
+
             'configuracion' =>
                 $this->decodeJson(
                     $empresa->configuracion
                 ),
+
+            'activo' =>
+                (bool) $empresa->activo,
         ];
 
         /*
-         * Licencia.
-         */
-        $licenciaData = [
-            'tipo' =>
-                $user->licencia_tipo,
-            'fecha_inicio' =>
-                $user->licencia_fecha_inicio,
-            'fecha_fin' =>
-                $user->licencia_fecha_fin,
-        ];
-
-        /*
-         * Auditoría login exitoso.
+         * Auditoría.
          */
         app(AuditoriaService::class)->registrar(
             $request,
@@ -339,27 +352,43 @@ class AuthController extends Controller
             [
                 'identificador' =>
                     $identificador,
+
                 'tipo_identificador' =>
                     $esEmail
                         ? 'email'
                         : 'numero_usuario',
+
+                'empresa_id' =>
+                    $empresa->id,
+
+                'licencia_tipo' =>
+                    $empresa->licencia_tipo,
             ],
-            $user->empresa_id,
+            $empresa->id,
             $user->id
         );
 
         return response()->json([
             'success' => true,
+
             'access_token' =>
                 $token,
+
             'token_type' =>
                 'Bearer',
+
             'user' =>
                 $userData,
+
             'empresa' =>
                 $empresaData,
+
+            /*
+             * Se conserva exactamente la estructura
+             * "licencia" para no romper Flutter.
+             */
             'licencia' =>
-                $licenciaData,
+                $licencia,
         ], 200);
     }
 
@@ -385,8 +414,7 @@ class AuthController extends Controller
                 $user->id
             );
 
-            $token =
-                $user->currentAccessToken();
+            $token = $user->currentAccessToken();
 
             if ($token) {
                 $token->delete();
@@ -402,6 +430,9 @@ class AuthController extends Controller
 
     /**
      * Obtener usuario autenticado.
+     *
+     * IMPORTANTE:
+     * La respuesta incluye la empresa y licencia.
      */
     public function user(Request $request)
     {
@@ -415,6 +446,8 @@ class AuthController extends Controller
             ], 401);
         }
 
+        $empresa = $user->empresa;
+
         app(AuditoriaService::class)->registrar(
             $request,
             'usuario.consultado',
@@ -426,9 +459,58 @@ class AuthController extends Controller
             $user->id
         );
 
+        if (!$empresa) {
+            return response()->json([
+                'success' => false,
+                'error' =>
+                    'empresa_no_asignada',
+                'message' =>
+                    'El usuario no tiene una empresa asignada.',
+            ], 403);
+        }
+
+        $userData = $user->only([
+            'id',
+            'name',
+            'email',
+            'telefono',
+            'numero_usuario',
+            'rol',
+            'activo',
+        ]);
+
         return response()->json([
             'success' => true,
-            'user' => $user,
+
+            'user' =>
+                $userData,
+
+            'empresa' => [
+                'id' =>
+                    $empresa->id,
+
+                'nombre' =>
+                    $empresa->nombre,
+
+                'logo_url' =>
+                    $empresa->logo_url,
+
+                'colores' =>
+                    $this->decodeJson(
+                        $empresa->colores
+                    ),
+
+                'configuracion' =>
+                    $this->decodeJson(
+                        $empresa->configuracion
+                    ),
+
+                'activo' =>
+                    (bool) $empresa->activo,
+            ],
+
+            'licencia' =>
+                $this->buildLicenseData($empresa),
         ], 200);
     }
 
@@ -576,10 +658,6 @@ class AuthController extends Controller
             ]);
         }
 
-        /*
-         * No permitir reutilizar exactamente la misma
-         * contraseña.
-         */
         if (
             Hash::check(
                 $data['password_nueva'],
@@ -600,10 +678,6 @@ class AuthController extends Controller
                 ),
         ])->save();
 
-        /*
-         * Mantener comportamiento existente:
-         * invalidar sesiones anteriores.
-         */
         $user->tokens()->delete();
 
         app(AuditoriaService::class)->registrar(
@@ -641,22 +715,16 @@ class AuthController extends Controller
             ],
         ]);
 
-        Password::sendResetLink(
-            [
-                'email' =>
-                    strtolower(
-                        trim(
-                            (string) $request->input(
-                                'email'
-                            )
-                        )
-                    ),
-            ]
+        $email = strtolower(
+            trim(
+                (string) $request->input('email')
+            )
         );
 
-        /*
-         * No revelar si el correo existe.
-         */
+        Password::sendResetLink([
+            'email' => $email,
+        ]);
+
         app(AuditoriaService::class)
             ->registrarSistema(
                 'password.recuperacion.solicitada',
@@ -664,14 +732,7 @@ class AuthController extends Controller
                 null,
                 null,
                 [
-                    'email' =>
-                        strtolower(
-                            trim(
-                                (string) $request->input(
-                                    'email'
-                                )
-                            )
-                        ),
+                    'email' => $email,
                 ],
                 null,
                 null,
@@ -732,14 +793,9 @@ class AuthController extends Controller
 
                 $user->forceFill([
                     'password' =>
-                        Hash::make(
-                            $password
-                        ),
+                        Hash::make($password),
                 ])->save();
 
-                /*
-                 * Invalidar todas las sesiones.
-                 */
                 $user->tokens()->delete();
             }
         );
@@ -879,6 +935,101 @@ class AuthController extends Controller
                     $cajero,
             ],
         ], 200);
+    }
+
+    /**
+     * Construir información de licencia.
+     *
+     * LA FUENTE SIEMPRE ES empresas.
+     */
+    private function buildLicenseData($empresa): array
+    {
+        $tipo = $empresa->licencia_tipo;
+
+        $inicio = $empresa->licencia_fecha_inicio;
+        $fin = $empresa->licencia_fecha_fin;
+
+        $permanente = $tipo === 'permanente';
+
+        $vigente = false;
+        $enGracia = false;
+        $diasRestantes = null;
+        $diasVencidos = 0;
+
+        if ($empresa->licencia_activa) {
+            if ($permanente) {
+                $vigente = true;
+                $diasRestantes = null;
+            } elseif ($inicio && $fin) {
+                $ahora = now();
+
+                if ($ahora->lt($inicio)) {
+                    $vigente = false;
+                    $diasRestantes = $ahora->diffInDays(
+                        $fin,
+                        false
+                    );
+                } elseif ($ahora->lte($fin)) {
+                    $vigente = true;
+                    $diasRestantes = $ahora->diffInDays(
+                        $fin,
+                        false
+                    );
+                } else {
+                    $diasVencidos = $fin->diffInDays(
+                        $ahora
+                    );
+
+                    $enGracia = $diasVencidos <= 3;
+
+                    if ($enGracia) {
+                        $vigente = false;
+                    }
+                }
+            }
+        }
+
+        return [
+            /*
+             * Campos originales para compatibilidad
+             * con Flutter.
+             */
+            'tipo' =>
+                $tipo,
+
+            'fecha_inicio' =>
+                $inicio,
+
+            'fecha_fin' =>
+                $fin,
+
+            /*
+             * Estado ampliado.
+             */
+            'activa' =>
+                $vigente || $enGracia,
+
+            'vigente' =>
+                $vigente,
+
+            'en_gracia' =>
+                $enGracia,
+
+            'permanente' =>
+                $permanente,
+
+            'dias_restantes' =>
+                $diasRestantes,
+
+            'dias_vencidos' =>
+                $diasVencidos,
+
+            'licencia_activa' =>
+                (bool) $empresa->licencia_activa,
+
+            'empresa_id' =>
+                $empresa->id,
+        ];
     }
 
     /**
