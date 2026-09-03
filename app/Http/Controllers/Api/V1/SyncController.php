@@ -156,12 +156,6 @@ class SyncController extends Controller
         }
     }
 
-    /**
-     * Obtener únicamente cambios del servidor.
-     *
-     * Este endpoint es de lectura y no genera auditoría
-     * para evitar llenar innecesariamente logs_auditoria.
-     */
     public function pull(Request $request)
     {
         $user = $request->user();
@@ -193,11 +187,18 @@ class SyncController extends Controller
         try {
             $cursorFinal = now()->toIso8601String();
 
+            $cambios = $this->obtenerCambiosServidor(
+                $empresaId,
+                $cursor
+            );
+
+            $cambios['ventas'] = $this->obtenerVentasServidor(
+                $empresaId,
+                $cursor
+            );
+
             return response()->json([
-                'cambios' => $this->obtenerCambiosServidor(
-                    $empresaId,
-                    $cursor
-                ),
+                'cambios' => $cambios,
 
                 'tombstones' => $this->obtenerTombstones(
                     $empresaId,
@@ -212,6 +213,7 @@ class SyncController extends Controller
                 [
                     'empresa_id' => $empresaId,
                     'usuario_id' => $user->id,
+                    'cursor' => $cursor,
                     'error' => $e->getMessage(),
                     'exception' => get_class($e),
                 ]
@@ -221,6 +223,147 @@ class SyncController extends Controller
                 'message' => 'No fue posible obtener los cambios.',
             ], 500);
         }
+    }
+
+    /**
+     * Obtener ventas creadas o modificadas desde el cursor.
+     */
+    protected function obtenerVentasServidor(
+        int $empresaId,
+        string $cursor
+    ): array {
+        $ventas = Venta::query()
+            ->where('empresa_id', $empresaId)
+            ->where('updated_at', '>', $cursor)
+            ->with([
+                'cliente',
+                'usuario',
+                'detalles.producto',
+                'pagos',
+            ])
+            ->orderBy('updated_at')
+            ->orderBy('id')
+            ->get();
+
+        /*
+     * Una venta se identifica por UUID.
+     *
+     * Esto evita enviar dos veces la misma venta
+     * si por alguna razón existen registros repetidos
+     * en la colección obtenida.
+     */
+        $ventasUnicas = $ventas
+            ->filter(fn($venta) => !empty($venta->uuid))
+            ->keyBy(fn($venta) => (string) $venta->uuid)
+            ->values();
+
+        return $ventasUnicas
+            ->map(function ($venta) {
+                return [
+                    'id' => $venta->id,
+                    'uuid' => $venta->uuid,
+                    'folio' => $venta->folio,
+                    'empresa_id' => $venta->empresa_id,
+                    'usuario_id' => $venta->usuario_id,
+                    'cliente_id' => $venta->cliente_id,
+
+                    'fecha' => $venta->fecha,
+                    'subtotal' => (float) $venta->subtotal,
+                    'total' => (float) $venta->total,
+                    'descuento' => (float) $venta->descuento,
+                    'impuesto' => (float) $venta->impuesto,
+
+                    'estado' => $venta->estado,
+
+                    'dispositivo_id' => $venta->dispositivo_id,
+                    'sincronizado' => (bool) $venta->sincronizado,
+
+                    'fecha_sincronizacion' =>
+                    $venta->fecha_sincronizacion,
+
+                    'created_at' =>
+                    $venta->created_at?->toIso8601String(),
+
+                    'updated_at' =>
+                    $venta->updated_at?->toIso8601String(),
+
+                    'cliente' => $venta->cliente
+                        ? $venta->cliente->toArray()
+                        : null,
+
+                    'usuario' => $venta->usuario
+                        ? $venta->usuario->toArray()
+                        : null,
+
+                    'detalles' => $venta->detalles
+                        ->map(function ($detalle) {
+                            return [
+                                'id' => $detalle->id,
+
+                                'producto_id' =>
+                                $detalle->producto_id,
+
+                                'cantidad' =>
+                                (float) $detalle->cantidad,
+
+                                'precio' =>
+                                (float) $detalle->precio,
+
+                                'descuento' =>
+                                (float) (
+                                    $detalle->descuento ?? 0
+                                ),
+
+                                'impuesto' =>
+                                (float) (
+                                    $detalle->impuesto ?? 0
+                                ),
+
+                                'subtotal' =>
+                                (float) (
+                                    $detalle->subtotal ?? 0
+                                ),
+
+                                'total' =>
+                                (float) (
+                                    $detalle->total ?? 0
+                                ),
+
+                                'producto' =>
+                                $detalle->producto
+                                    ? $detalle->producto->toArray()
+                                    : null,
+                            ];
+                        })
+                        ->values()
+                        ->toArray(),
+
+                    'pagos' => $venta->pagos
+                        ->map(function ($pago) {
+                            return [
+                                'id' => $pago->id,
+
+                                'forma_pago' =>
+                                $pago->forma_pago,
+
+                                'monto' =>
+                                (float) $pago->monto,
+
+                                'cambio' =>
+                                (float) (
+                                    $pago->cambio ?? 0
+                                ),
+
+                                'referencia' =>
+                                $pago->referencia,
+                            ];
+                        })
+                        ->values()
+                        ->toArray(),
+                ];
+            })
+            ->values()
+            ->toArray();
     }
 
     /**

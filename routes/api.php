@@ -179,14 +179,14 @@ Route::prefix('v1')->group(function () {
 
         // PRODUCTOS
         Route::get('/productos', [ProductoController::class, 'index']);
-        Route::get('/productos/{id}', [ProductoController::class, 'show']);
         Route::post('/productos', [ProductoController::class, 'store']);
-        Route::put('/productos/{id}', [ProductoController::class, 'update']);
-        Route::delete('/productos/{id}', [ProductoController::class, 'destroy']);
         Route::post('/productos/{id}/restore', [ProductoController::class, 'restore']);
         Route::get('/productos/stock/bajo', [ProductoController::class, 'stockBajo']);
         Route::get('/productos/stock/agotados', [ProductoController::class, 'agotados']);
         Route::post('/productos/{id}/stock', [ProductoController::class, 'ajustarStock']);
+        Route::put('/productos/{id}', [ProductoController::class, 'update']);
+        Route::delete('/productos/{id}', [ProductoController::class, 'destroy']);
+        Route::get('/productos/{id}', [ProductoController::class, 'show']);
 
         // CLIENTES
         Route::get('/clientes', [ClienteController::class, 'index']);
