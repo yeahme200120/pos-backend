@@ -359,8 +359,11 @@ class ProductoController extends Controller
                 'min:0',
             ],
 
+            // CAMBIO:
+            // La categoría ahora es obligatoria,
+            // pertenece a la empresa y debe estar activa.
             'categoria_id' => [
-                'nullable',
+                'required',
                 'integer',
                 'min:1',
                 Rule::exists('categorias', 'id')
@@ -369,6 +372,9 @@ class ProductoController extends Controller
                         $query->where(
                             'empresa_id',
                             $empresaId
+                        )->where(
+                            'activo',
+                            true
                         )
                     ),
             ],
@@ -398,6 +404,18 @@ class ProductoController extends Controller
                 'mimes:jpeg,png,jpg,gif,svg',
                 'max:2048',
             ],
+        ], [
+            'categoria_id.required' =>
+                'Debes seleccionar una categoría.',
+
+            'categoria_id.integer' =>
+                'La categoría seleccionada no es válida.',
+
+            'categoria_id.min' =>
+                'La categoría seleccionada no es válida.',
+
+            'categoria_id.exists' =>
+                'La categoría seleccionada no existe o está inactiva.',
         ]);
 
         $validated['codigo'] = trim(
@@ -436,7 +454,10 @@ class ProductoController extends Controller
                 'impuesto' => $validated['impuesto'] ?? null,
                 'stock' => $validated['stock'] ?? 0,
                 'stock_minimo' => $validated['stock_minimo'] ?? 0,
-                'categoria_id' => $validated['categoria_id'] ?? null,
+
+                // CAMBIO:
+                'categoria_id' => $validated['categoria_id'],
+
                 'unidad_medida_id' => $validated['unidad_medida_id'] ?? null,
                 'activo' => $validated['activo'] ?? true,
                 'imagen' => $imagenPath,
@@ -579,8 +600,10 @@ class ProductoController extends Controller
                 'min:0',
             ],
 
+            // CAMBIO:
+            // También es obligatoria al actualizar.
             'categoria_id' => [
-                'nullable',
+                'required',
                 'integer',
                 'min:1',
                 Rule::exists('categorias', 'id')
@@ -589,6 +612,9 @@ class ProductoController extends Controller
                         $query->where(
                             'empresa_id',
                             $empresaId
+                        )->where(
+                            'activo',
+                            true
                         )
                     ),
             ],
@@ -618,6 +644,18 @@ class ProductoController extends Controller
                 'mimes:jpeg,png,jpg,gif,svg',
                 'max:2048',
             ],
+        ], [
+            'categoria_id.required' =>
+                'Debes seleccionar una categoría.',
+
+            'categoria_id.integer' =>
+                'La categoría seleccionada no es válida.',
+
+            'categoria_id.min' =>
+                'La categoría seleccionada no es válida.',
+
+            'categoria_id.exists' =>
+                'La categoría seleccionada no existe o está inactiva.',
         ]);
 
         $validated['codigo'] = trim(
@@ -635,6 +673,7 @@ class ProductoController extends Controller
         }
 
         $datosAntes = $producto->toArray();
+
         $imagenAnterior = $producto->imagen;
         $imagenNueva = null;
 
@@ -656,7 +695,10 @@ class ProductoController extends Controller
                 'costo' => $validated['costo'] ?? null,
                 'impuesto' => $validated['impuesto'] ?? null,
                 'stock_minimo' => $validated['stock_minimo'] ?? 0,
-                'categoria_id' => $validated['categoria_id'] ?? null,
+
+                // CAMBIO:
+                'categoria_id' => $validated['categoria_id'],
+
                 'unidad_medida_id' => $validated['unidad_medida_id'] ?? null,
             ];
 
@@ -709,7 +751,8 @@ class ProductoController extends Controller
                 'unidadMedida',
             ]);
 
-            $datosDespues = $producto->toArray();
+            $datosDespues =
+                $producto->toArray();
 
             $this->registrarAuditoria(
                 $request,
@@ -910,7 +953,10 @@ class ProductoController extends Controller
     public function stockBajo(Request $request)
     {
         try {
-            $empresaId = $this->obtenerEmpresaId($request);
+            $empresaId =
+                $this->obtenerEmpresaId(
+                    $request
+                );
 
             if (!$empresaId) {
                 return response()->json([
@@ -920,13 +966,20 @@ class ProductoController extends Controller
             }
 
             $productos = Producto::query()
-                ->where('empresa_id', $empresaId)
+                ->where(
+                    'empresa_id',
+                    $empresaId
+                )
                 ->whereColumn(
                     'stock',
                     '<=',
                     'stock_minimo'
                 )
-                ->where('stock', '>', 0)
+                ->where(
+                    'stock',
+                    '>',
+                    0
+                )
                 ->with([
                     'categoria',
                     'unidadMedida',
@@ -942,9 +995,12 @@ class ProductoController extends Controller
             Log::error(
                 'Error al obtener productos con stock bajo',
                 [
-                    'usuario_id' => $request->user()?->id,
-                    'empresa_id' => $request->user()?->empresa_id,
-                    'error' => $e->getMessage(),
+                    'usuario_id' =>
+                        $request->user()?->id,
+                    'empresa_id' =>
+                        $request->user()?->empresa_id,
+                    'error' =>
+                        $e->getMessage(),
                 ]
             );
 
@@ -961,7 +1017,10 @@ class ProductoController extends Controller
     public function agotados(Request $request)
     {
         try {
-            $empresaId = $this->obtenerEmpresaId($request);
+            $empresaId =
+                $this->obtenerEmpresaId(
+                    $request
+                );
 
             if (!$empresaId) {
                 return response()->json([
@@ -971,8 +1030,14 @@ class ProductoController extends Controller
             }
 
             $productos = Producto::query()
-                ->where('empresa_id', $empresaId)
-                ->where('stock', 0)
+                ->where(
+                    'empresa_id',
+                    $empresaId
+                )
+                ->where(
+                    'stock',
+                    0
+                )
                 ->with([
                     'categoria',
                     'unidadMedida',
@@ -988,9 +1053,12 @@ class ProductoController extends Controller
             Log::error(
                 'Error al obtener productos agotados',
                 [
-                    'usuario_id' => $request->user()?->id,
-                    'empresa_id' => $request->user()?->empresa_id,
-                    'error' => $e->getMessage(),
+                    'usuario_id' =>
+                        $request->user()?->id,
+                    'empresa_id' =>
+                        $request->user()?->empresa_id,
+                    'error' =>
+                        $e->getMessage(),
                 ]
             );
 
@@ -1009,7 +1077,10 @@ class ProductoController extends Controller
         int $id
     ) {
         $usuario = $request->user();
-        $empresaId = $this->obtenerEmpresaId($request);
+        $empresaId =
+            $this->obtenerEmpresaId(
+                $request
+            );
 
         if (!$empresaId) {
             return response()->json([
@@ -1034,12 +1105,16 @@ class ProductoController extends Controller
         ]);
 
         if (
-            array_key_exists('motivo', $validated)
+            array_key_exists(
+                'motivo',
+                $validated
+            )
             && $validated['motivo'] !== null
         ) {
-            $validated['motivo'] = trim(
-                $validated['motivo']
-            );
+            $validated['motivo'] =
+                trim(
+                    $validated['motivo']
+                );
         }
 
         try {
@@ -1049,14 +1124,15 @@ class ProductoController extends Controller
                     $id,
                     $validated
                 ) {
-                    $producto = Producto::query()
-                        ->where(
-                            'empresa_id',
-                            $empresaId
-                        )
-                        ->whereKey($id)
-                        ->lockForUpdate()
-                        ->first();
+                    $producto =
+                        Producto::query()
+                            ->where(
+                                'empresa_id',
+                                $empresaId
+                            )
+                            ->whereKey($id)
+                            ->lockForUpdate()
+                            ->first();
 
                     if (!$producto) {
                         throw new \RuntimeException(
@@ -1064,16 +1140,19 @@ class ProductoController extends Controller
                         );
                     }
 
-                    $stockAnterior = (int) (
-                        $producto->stock ?? 0
-                    );
+                    $stockAnterior =
+                        (int) (
+                            $producto->stock ?? 0
+                        );
 
-                    $cantidad = (int) (
-                        $validated['cantidad']
-                    );
+                    $cantidad =
+                        (int) (
+                            $validated['cantidad']
+                        );
 
                     $stockNuevo =
-                        $stockAnterior + $cantidad;
+                        $stockAnterior +
+                        $cantidad;
 
                     if ($stockNuevo < 0) {
                         throw new \RuntimeException(
@@ -1081,19 +1160,25 @@ class ProductoController extends Controller
                         );
                     }
 
-                    $producto->stock = $stockNuevo;
+                    $producto->stock =
+                        $stockNuevo;
+
                     $producto->save();
 
                     return [
                         'producto' => $producto,
-                        'stock_anterior' => $stockAnterior,
-                        'cantidad' => $cantidad,
-                        'stock_nuevo' => $stockNuevo,
+                        'stock_anterior' =>
+                            $stockAnterior,
+                        'cantidad' =>
+                            $cantidad,
+                        'stock_nuevo' =>
+                            $stockNuevo,
                     ];
                 }
             );
 
-            $producto = $resultado['producto'];
+            $producto =
+                $resultado['producto'];
 
             $this->registrarAuditoria(
                 $request,
@@ -1101,12 +1186,21 @@ class ProductoController extends Controller
                 'productos',
                 (int) $producto->id,
                 [
-                    'stock' => $resultado['stock_anterior'],
+                    'stock' =>
+                        $resultado[
+                            'stock_anterior'
+                        ],
                 ],
                 [
-                    'stock' => $resultado['stock_nuevo'],
-                    'cantidad_ajuste' => $resultado['cantidad'],
-                    'motivo' => $validated['motivo'] ?? null,
+                    'stock' =>
+                        $resultado[
+                            'stock_nuevo'
+                        ],
+                    'cantidad_ajuste' =>
+                        $resultado['cantidad'],
+                    'motivo' =>
+                        $validated['motivo']
+                            ?? null,
                 ]
             );
 
@@ -1114,15 +1208,21 @@ class ProductoController extends Controller
                 'success' => true,
                 'message' => 'Stock ajustado correctamente.',
                 'data' => [
-                    'producto_id' => $producto->id,
+                    'producto_id' =>
+                        $producto->id,
                     'stock_anterior' =>
-                        $resultado['stock_anterior'],
+                        $resultado[
+                            'stock_anterior'
+                        ],
                     'cantidad_ajuste' =>
                         $resultado['cantidad'],
                     'stock_nuevo' =>
-                        $resultado['stock_nuevo'],
+                        $resultado[
+                            'stock_nuevo'
+                        ],
                     'motivo' =>
-                        $validated['motivo'] ?? null,
+                        $validated['motivo']
+                            ?? null,
                 ],
             ]);
         } catch (Throwable $e) {
@@ -1146,14 +1246,22 @@ class ProductoController extends Controller
                 ], 422);
             }
 
-            Log::error('Error al ajustar stock', [
-                'producto_id' => $id,
-                'usuario_id' => $usuario->id,
-                'empresa_id' => $empresaId,
-                'cantidad' =>
-                    $validated['cantidad'] ?? null,
-                'error' => $e->getMessage(),
-            ]);
+            Log::error(
+                'Error al ajustar stock',
+                [
+                    'producto_id' => $id,
+                    'usuario_id' =>
+                        $usuario->id,
+                    'empresa_id' =>
+                        $empresaId,
+                    'cantidad' =>
+                        $validated[
+                            'cantidad'
+                        ] ?? null,
+                    'error' =>
+                        $e->getMessage(),
+                ]
+            );
 
             return response()->json([
                 'success' => false,

@@ -133,7 +133,7 @@ class Empresa extends Model
         return (bool) data_get(
             $this->configuracion,
             'usa_cajas',
-            true
+            false
         );
     }
 

@@ -257,6 +257,29 @@
                             </div>
                         </div>
 
+                        <!-- ========================================== -->
+                        <!-- NUEVA SECCIÓN: MÓDULOS DEL SISTEMA          -->
+                        <!-- ========================================== -->
+                        <div class="md:col-span-2 border-t pt-4 mt-2">
+                            <h3 class="text-md font-semibold mb-3">Módulos del sistema</h3>
+                            <div class="flex flex-col gap-2">
+                                <div class="flex items-center gap-3">
+                                    <input type="checkbox" id="edit_usa_mesas" v-model="form.configuracion.usa_mesas"
+                                           class="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                    <label for="edit_usa_mesas" class="text-sm font-medium text-gray-700">
+                                        Activar módulo de mesas (restaurante / comandas)
+                                    </label>
+                                </div>
+                                <div class="flex items-center gap-3">
+                                    <input type="checkbox" id="edit_usa_cajas" v-model="form.configuracion.usa_cajas"
+                                           class="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                    <label for="edit_usa_cajas" class="text-sm font-medium text-gray-700">
+                                        Activar módulo de cajas (múltiples puntos de venta)
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- LOGO CON EDITOR -->
                         <div class="md:col-span-2 border-t pt-4 mt-2">
                             <label class="block text-sm font-medium text-gray-700">Logo</label>
@@ -629,6 +652,10 @@ export default {
                     text_navbar: '#FFFFFF',
                     menu_hover: '#2d3748'
                 },
+                configuracion: {
+                    usa_mesas: false,
+                    usa_cajas: false
+                },
                 activo: true
             },
             // Variables del editor de imagen
@@ -905,9 +932,25 @@ export default {
                     text_navbar: coloresEmpresa?.text_navbar || '#FFFFFF',
                     menu_hover: coloresEmpresa?.menu_hover || '#2d3748'
                 };
+
+                // Cargar configuración de módulos
+                let config = empresa.configuracion || {};
+                if (typeof config === 'string') {
+                    try {
+                        config = JSON.parse(config);
+                    } catch (e) {
+                        config = {};
+                    }
+                }
+                const configForm = {
+                    usa_mesas: config.usa_mesas ?? false,
+                    usa_cajas: config.usa_cajas ?? false
+                };
+
                 this.form = {
                     ...empresa,
-                    colores: coloresForm
+                    colores: coloresForm,
+                    configuracion: configForm
                 };
                 this.logoPreview = empresa.logo_url || null;
                 this.logoFile = null;
@@ -930,6 +973,10 @@ export default {
                         text: '#FFFFFF',
                         text_navbar: '#FFFFFF',
                         menu_hover: '#2d3748'
+                    },
+                    configuracion: {
+                        usa_mesas: false,
+                        usa_cajas: false
                     },
                     activo: true
                 };
@@ -963,7 +1010,7 @@ export default {
                     leyenda_ticket: this.form.leyenda_ticket || '',
                     whatsapp_numero: this.form.whatsapp_numero || '',
                     activo: this.form.activo === true || this.form.activo === '1' || this.form.activo === 1,
-                    // No incluimos 'logo' aquí
+                    configuracion: JSON.stringify(this.form.configuracion) // <-- NUEVO
                 };
 
                 // Colores

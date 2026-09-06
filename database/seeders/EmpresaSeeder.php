@@ -27,7 +27,11 @@ class EmpresaSeeder extends Seeder
                     'accent' => '#3B82F6',
                 ],
 
-                'configuracion' => [],
+                // ✅ NUEVA ESTRUCTURA UNIFICADA
+                'configuracion' => [
+                    'usa_mesas' => false,
+                    'usa_cajas' => false,
+                ],
 
                 'direccion' => 'Calle Falsa 123, Ciudad',
                 'telefono' => '555-1234',
@@ -64,7 +68,10 @@ class EmpresaSeeder extends Seeder
                     'accent' => '#3B82F6',
                 ],
 
-                'configuracion' => [],
+                'configuracion' => [
+                    'usa_mesas' => false,
+                    'usa_cajas' => false,
+                ],
 
                 'direccion' => 'prueba',
                 'telefono' => '9879879877',
@@ -101,7 +108,10 @@ class EmpresaSeeder extends Seeder
                     'accent' => '#3B82F6',
                 ],
 
-                'configuracion' => [],
+                'configuracion' => [
+                    'usa_mesas' => false,
+                    'usa_cajas' => false,
+                ],
 
                 'direccion' => null,
                 'telefono' => null,
