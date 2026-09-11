@@ -179,7 +179,7 @@ class SyncController extends Controller
             ],
         ]);
 
-        $empresaId = $this->obtenerEmpresaIdUsuario($user);       
+        $empresaId = $this->obtenerEmpresaIdUsuario($user);
 
         $cursor = $validated['cursor']
             ?? '1970-01-01 00:00:00';
@@ -827,27 +827,12 @@ class SyncController extends Controller
             ], 403);
         }
 
-        /*
-     * Obtener ventas del request.
-     *
-     * Si Flutter ejecuta una sincronización automática sin ventas
-     * pendientes, el payload puede llegar vacío.
-     */
         $ventas = $request->input('ventas', []);
 
-        /*
-     * Normalizar null a arreglo vacío.
-     */
         if ($ventas === null) {
             $ventas = [];
         }
 
-        /*
-     * Validar que ventas siempre sea un arreglo.
-     *
-     * Aquí NO usamos required|min:1 porque una sincronización sin
-     * ventas pendientes es una operación válida.
-     */
         if (!is_array($ventas)) {
             return response()->json([
                 'message' => 'El campo ventas debe ser un arreglo válido.',
@@ -859,9 +844,6 @@ class SyncController extends Controller
             ], 422);
         }
 
-        /*
-     * Limitar tamaño máximo del lote.
-     */
         if (count($ventas) > 100) {
             return response()->json([
                 'message' => 'El campo ventas no puede contener más de 100 registros.',
@@ -873,28 +855,18 @@ class SyncController extends Controller
             ], 422);
         }
 
-        /*
-     * Sin ventas pendientes:
-     *
-     * Esta situación es normal cuando el sincronizador automático
-     * se ejecuta y no existen operaciones offline pendientes.
-     *
-     * Se responde 200 para evitar los 422 repetitivos.
-     */
         if (count($ventas) === 0) {
             return response()->json([
                 'message' => 'No hay ventas offline pendientes de sincronización.',
                 'procesadas' => [],
                 'errores' => [],
+                'productos_sincronizados' => [],
                 'total_recibidas' => 0,
                 'total_procesadas' => 0,
                 'total_errores' => 0,
             ], 200);
         }
 
-        /*
-     * Validación completa de ventas cuando sí existen.
-     */
         $validated = $request->validate([
             'ventas' => [
                 'required',
@@ -922,10 +894,44 @@ class SyncController extends Controller
                 'max:500',
             ],
 
-            'ventas.*.productos.*.producto_id' => [
+            /*
+         * producto_local_id:
+         * ID interno de SQLite.
+         */
+            'ventas.*.productos.*.producto_local_id' => [
                 'required',
                 'integer',
                 'min:1',
+            ],
+
+            /*
+         * producto_id:
+         * ID real del servidor.
+         *
+         * Puede venir vacío cuando todavía no existe
+         * la relación local -> servidor.
+         */
+            'ventas.*.productos.*.producto_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'ventas.*.productos.*.codigo' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'ventas.*.productos.*.nombre' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'ventas.*.productos.*.descripcion' => [
+                'nullable',
+                'string',
             ],
 
             'ventas.*.productos.*.cantidad' => [
@@ -938,6 +944,34 @@ class SyncController extends Controller
                 'required',
                 'numeric',
                 'min:0',
+            ],
+
+            'ventas.*.productos.*.costo' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'ventas.*.productos.*.impuesto' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'ventas.*.productos.*.stock' => [
+                'nullable',
+                'numeric',
+            ],
+
+            'ventas.*.productos.*.stock_minimo' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'ventas.*.productos.*.activo' => [
+                'nullable',
+                'boolean',
             ],
 
             'ventas.*.productos.*.descuento' => [
@@ -1024,10 +1058,8 @@ class SyncController extends Controller
 
         $ventasProcesadas = [];
         $errores = [];
+        $productosSincronizados = [];
 
-        /*
-     * Cada venta se procesa independientemente.
-     */
         foreach ($validated['ventas'] as $ventaData) {
             $syncRecord = null;
 
@@ -1066,6 +1098,30 @@ class SyncController extends Controller
                     ->first();
 
                 if ($ventaExistente) {
+                    /*
+                 * Aunque la venta ya exista, devolvemos nuevamente
+                 * los mapeos producto local -> servidor.
+                 *
+                 * Esto permite recuperarse de un escenario donde:
+                 *
+                 * 1. el servidor creó la venta,
+                 * 2. Flutter perdió la respuesta,
+                 * 3. Flutter reintenta.
+                 */
+                    $mappingsExistentes =
+                        $this->obtenerMapeosProductosVentaExistente(
+                            $ventaExistente,
+                            $ventaData['productos'] ?? [],
+                            $empresaId
+                        );
+
+                    foreach ($mappingsExistentes as $mapping) {
+                        $this->agregarMapeoProducto(
+                            $productosSincronizados,
+                            $mapping
+                        );
+                    }
+
                     $ventasProcesadas[] = [
                         'uuid_local' => $ventaData['uuid_local'],
                         'venta_id' => $ventaExistente->id,
@@ -1128,15 +1184,51 @@ class SyncController extends Controller
                     );
                 } elseif ($syncRecord->estado === 'enviado') {
                     /*
-                 * Si la venta ya fue procesada, no volver a crearla.
+                 * La cola ya se marcó como enviada.
+                 *
+                 * Intentamos localizar la venta real y devolver
+                 * sus mapeos si existen.
                  */
-                    $ventasProcesadas[] = [
-                        'uuid_local' => $ventaData['uuid_local'],
-                        'venta_id' => null,
-                        'folio' => null,
-                        'idempotente' => true,
-                        'mensaje' => 'La operación offline ya fue procesada anteriormente.',
-                    ];
+                    $ventaDeCola = Venta::where(
+                        'empresa_id',
+                        $empresaId
+                    )
+                        ->where(
+                            'uuid',
+                            $ventaData['uuid_local']
+                        )
+                        ->first();
+
+                    if ($ventaDeCola) {
+                        $mappingsExistentes =
+                            $this->obtenerMapeosProductosVentaExistente(
+                                $ventaDeCola,
+                                $ventaData['productos'] ?? [],
+                                $empresaId
+                            );
+
+                        foreach ($mappingsExistentes as $mapping) {
+                            $this->agregarMapeoProducto(
+                                $productosSincronizados,
+                                $mapping
+                            );
+                        }
+
+                        $ventasProcesadas[] = [
+                            'uuid_local' => $ventaData['uuid_local'],
+                            'venta_id' => $ventaDeCola->id,
+                            'folio' => $ventaDeCola->folio,
+                            'idempotente' => true,
+                        ];
+                    } else {
+                        $ventasProcesadas[] = [
+                            'uuid_local' => $ventaData['uuid_local'],
+                            'venta_id' => null,
+                            'folio' => null,
+                            'idempotente' => true,
+                            'mensaje' => 'La operación offline ya fue procesada anteriormente.',
+                        ];
+                    }
 
                     continue;
                 } elseif ($syncRecord->estado === 'error') {
@@ -1151,13 +1243,23 @@ class SyncController extends Controller
                 }
 
                 /*
-             * Procesar venta.
+             * Procesar venta y obtener los mapeos generados.
              */
-                $venta = $this->procesarVentaOffline(
+                $resultado = $this->procesarVentaOffline(
                     $ventaData,
                     $user,
                     $empresaId
                 );
+
+                $venta = $resultado['venta'];
+                $mapeos = $resultado['productos'];
+
+                foreach ($mapeos as $mapping) {
+                    $this->agregarMapeoProducto(
+                        $productosSincronizados,
+                        $mapping
+                    );
+                }
 
                 /*
              * Marcar cola como enviada únicamente después
@@ -1186,9 +1288,6 @@ class SyncController extends Controller
                     'idempotente' => false,
                 ];
             } catch (Throwable $e) {
-                /*
-             * Intentar registrar el error en la cola.
-             */
                 try {
                     if (!$syncRecord) {
                         $syncRecord = SyncQueue::where(
@@ -1258,9 +1357,15 @@ class SyncController extends Controller
             'message' => 'Sincronización offline procesada.',
             'procesadas' => $ventasProcesadas,
             'errores' => $errores,
+            'productos_sincronizados' => array_values(
+                $productosSincronizados
+            ),
             'total_recibidas' => count($validated['ventas']),
             'total_procesadas' => count($ventasProcesadas),
             'total_errores' => count($errores),
+            'total_productos_sincronizados' => count(
+                $productosSincronizados
+            ),
         ], 200);
     }
 
@@ -1271,35 +1376,58 @@ class SyncController extends Controller
         array $data,
         User $user,
         int $empresaId
-    ): Venta {
+    ): array {
         return DB::transaction(function () use (
             $data,
             $user,
             $empresaId
         ) {
             $total = 0;
+
             $detalles = [];
 
-            /*
-             * PRODUCTOS Y STOCK
-             */
-            foreach ($data['productos'] as $item) {
-                $producto = Producto::where(
-                    'id',
-                    $item['producto_id']
-                )
-                    ->where(
-                        'empresa_id',
-                        $empresaId
-                    )
-                    ->lockForUpdate()
-                    ->first();
+            $productosSincronizados = [];
 
-                if (!$producto) {
+            foreach ($data['productos'] as $item) {
+                /*
+             * ----------------------------------------------------
+             * DATOS DEL PRODUCTO LOCAL
+             * ----------------------------------------------------
+             */
+
+                $productoLocalId = (int) (
+                    $item['producto_local_id'] ?? 0
+                );
+
+                if ($productoLocalId <= 0) {
                     throw new \RuntimeException(
-                        "Producto no encontrado (ID: {$item['producto_id']})"
+                        'El producto no contiene un producto_local_id válido.'
                     );
                 }
+
+                /*
+             * ----------------------------------------------------
+             * RESOLVER PRODUCTO REAL DEL SERVIDOR
+             * ----------------------------------------------------
+             */
+
+                $resuelto = $this->resolverProductoOffline(
+                    $item,
+                    $empresaId
+                );
+
+                /** @var Producto $producto */
+                $producto = $resuelto['producto'];
+
+                $productoCreado = (bool) (
+                    $resuelto['creado'] ?? false
+                );
+
+                /*
+             * ----------------------------------------------------
+             * CANTIDAD
+             * ----------------------------------------------------
+             */
 
                 $cantidad = (float) $item['cantidad'];
 
@@ -1308,6 +1436,17 @@ class SyncController extends Controller
                         'La cantidad del producto debe ser mayor a cero.'
                     );
                 }
+
+                /*
+             * ----------------------------------------------------
+             * STOCK
+             * ----------------------------------------------------
+             *
+             * Si el producto fue creado durante la sincronización,
+             * resolverProductoOffline prepara el stock para que
+             * después de descontar la venta quede igual al stock
+             * local informado.
+             */
 
                 if (
                     $producto->stock !== null
@@ -1319,19 +1458,48 @@ class SyncController extends Controller
                 }
 
                 /*
-                 * Descontar stock.
-                 */
+             * ----------------------------------------------------
+             * DESCONTAR STOCK
+             * ----------------------------------------------------
+             */
+
                 if ($producto->stock !== null) {
-                    $producto->stock = (float) $producto->stock
-                        - $cantidad;
+                    $producto->stock = round(
+                        (float) $producto->stock - $cantidad,
+                        2
+                    );
 
                     $producto->save();
                 }
 
                 /*
-                 * Calcular subtotal.
-                 */
-                $precioUnitario = (float) $item['precio_unitario'];
+             * ----------------------------------------------------
+             * PRECIO
+             * ----------------------------------------------------
+             */
+
+                $precioUnitario = (float) (
+                    $item['precio_unitario'] ?? 0
+                );
+
+                /*
+             * No sustituimos el precio de la venta por el
+             * precio actual del catálogo.
+             *
+             * La venta debe conservar el precio con el cual
+             * fue realizada localmente.
+             */
+                if ($precioUnitario < 0) {
+                    throw new \RuntimeException(
+                        'El precio unitario no puede ser negativo.'
+                    );
+                }
+
+                /*
+             * ----------------------------------------------------
+             * DESCUENTO DEL ITEM
+             * ----------------------------------------------------
+             */
 
                 $descuentoItem = (float) (
                     $item['descuento'] ?? 0
@@ -1343,9 +1511,14 @@ class SyncController extends Controller
                     );
                 }
 
+                /*
+             * ----------------------------------------------------
+             * SUBTOTAL
+             * ----------------------------------------------------
+             */
+
                 $subtotal = (
-                    $cantidad
-                    * $precioUnitario
+                    $cantidad * $precioUnitario
                 ) - $descuentoItem;
 
                 if ($subtotal < 0) {
@@ -1356,18 +1529,47 @@ class SyncController extends Controller
 
                 $total += $subtotal;
 
+                /*
+             * ----------------------------------------------------
+             * DETALLE REAL DE LA VENTA
+             * ----------------------------------------------------
+             *
+             * IMPORTANTE:
+             *
+             * Aquí SIEMPRE guardamos el ID del servidor.
+             */
                 $detalles[] = [
-                    'producto_id' => $producto->id,
+                    'producto_id' => (int) $producto->id,
                     'cantidad' => $cantidad,
                     'precio_unitario' => $precioUnitario,
                     'descuento' => $descuentoItem,
                     'subtotal' => round($subtotal, 2),
                 ];
+
+                /*
+             * ----------------------------------------------------
+             * MAPEO LOCAL -> SERVIDOR
+             * ----------------------------------------------------
+             */
+
+                $this->agregarMapeoProducto(
+                    $productosSincronizados,
+                    [
+                        'producto_local_id' => $productoLocalId,
+                        'producto_server_id' => (int) $producto->id,
+                        'codigo' => $producto->codigo,
+                        'nombre' => $producto->nombre,
+                        'creado' => $productoCreado,
+                    ]
+                );
             }
 
             /*
-             * DESCUENTOS E IMPUESTOS
-             */
+         * --------------------------------------------------------
+         * DESCUENTOS E IMPUESTOS
+         * --------------------------------------------------------
+         */
+
             $descuentoGlobal = (float) (
                 $data['descuento_global'] ?? 0
             );
@@ -1388,8 +1590,8 @@ class SyncController extends Controller
                 );
             }
 
-            $totalConDescuento = $total
-                - $descuentoGlobal;
+            $totalConDescuento =
+                $total - $descuentoGlobal;
 
             if ($totalConDescuento < 0) {
                 throw new \RuntimeException(
@@ -1407,18 +1609,30 @@ class SyncController extends Controller
             );
 
             /*
-             * PAGOS
-             */
+         * --------------------------------------------------------
+         * PAGOS
+         * --------------------------------------------------------
+         */
+
             $pagos = $data['pagos'] ?? [
                 [
-                    'forma_pago' => $data['forma_pago'],
-                    'monto' => $data['monto_pagado'],
-                    'referencia' => $data['referencia'] ?? null,
+                    'forma_pago' =>
+                    $data['forma_pago'] ?? 'Efectivo',
+
+                    'monto' =>
+                    $data['monto_pagado'] ?? $totalFinal,
+
+                    'referencia' =>
+                    $data['referencia'] ?? null,
+
                     'cambio' => 0,
                 ],
             ];
 
-            if (!is_array($pagos) || count($pagos) === 0) {
+            if (
+                !is_array($pagos)
+                || count($pagos) === 0
+            ) {
                 throw new \RuntimeException(
                     'La venta debe contener al menos un pago.'
                 );
@@ -1426,57 +1640,117 @@ class SyncController extends Controller
 
             $totalPagos = round(
                 collect($pagos)->sum(
-                    static fn($pago) => (float) $pago['monto']
+                    static fn($pago) =>
+                    (float) ($pago['monto'] ?? 0)
                 ),
                 2
             );
 
-            if (abs($totalPagos - $totalFinal) > 0.009) {
+            if (
+                abs($totalPagos - $totalFinal) > 0.009
+            ) {
                 throw new \RuntimeException(
                     'La suma de los pagos debe coincidir exactamente con el total de la venta.'
                 );
             }
 
             /*
-             * CREAR VENTA
-             */
+         * --------------------------------------------------------
+         * CREAR VENTA
+         * --------------------------------------------------------
+         */
+
             $venta = Venta::create([
-                'uuid' => $data['uuid_local'],
-                'folio' => $this->generarFolio($empresaId),
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'cliente_id' => $data['cliente_id'] ?? null,
-                'fecha' => $data['fecha_venta'],
-                'subtotal' => round($total, 2),
-                'total' => $totalFinal,
-                'descuento' => $descuentoGlobal,
-                'impuesto' => $impuestoGlobal,
-                'estado' => 'pagado',
-                'dispositivo_id' => $data['dispositivo_id'] ?? null,
-                'sincronizado' => true,
-                'fecha_sincronizacion' => now(),
+                'uuid' =>
+                $data['uuid_local'],
+
+                'folio' =>
+                $this->generarFolio(
+                    $empresaId
+                ),
+
+                'empresa_id' =>
+                $empresaId,
+
+                'usuario_id' =>
+                $user->id,
+
+                'cliente_id' =>
+                $data['cliente_id'] ?? null,
+
+                'fecha' =>
+                $data['fecha_venta'],
+
+                'subtotal' =>
+                round($total, 2),
+
+                'total' =>
+                $totalFinal,
+
+                'descuento' =>
+                $descuentoGlobal,
+
+                'impuesto' =>
+                $impuestoGlobal,
+
+                'estado' =>
+                'pagado',
+
+                'dispositivo_id' =>
+                $data['dispositivo_id'] ?? null,
+
+                'sincronizado' =>
+                true,
+
+                'fecha_sincronizacion' =>
+                now(),
             ]);
 
             /*
-             * DETALLES
-             */
+         * --------------------------------------------------------
+         * DETALLES
+         * --------------------------------------------------------
+         */
+
             foreach ($detalles as $detalle) {
-                $venta->detalles()->create($detalle);
+                $venta->detalles()->create(
+                    $detalle
+                );
             }
 
             /*
-             * PAGOS
-             */
+         * --------------------------------------------------------
+         * PAGOS
+         * --------------------------------------------------------
+         */
+
             foreach ($pagos as $pago) {
                 $venta->pagos()->create([
-                    'forma_pago' => $pago['forma_pago'],
-                    'monto' => $pago['monto'],
-                    'referencia' => $pago['referencia'] ?? null,
-                    'cambio' => $pago['cambio'] ?? 0,
+                    'forma_pago' =>
+                    $pago['forma_pago'],
+
+                    'monto' =>
+                    (float) $pago['monto'],
+
+                    'referencia' =>
+                    $pago['referencia'] ?? null,
+
+                    'cambio' =>
+                    (float) (
+                        $pago['cambio'] ?? 0
+                    ),
                 ]);
             }
 
-            return $venta->fresh();
+            return [
+                'venta' =>
+                $venta->fresh(),
+
+                'productos' =>
+                array_values(
+                    $productosSincronizados
+                ),
+            ];
         });
     }
 
@@ -1979,5 +2253,444 @@ class SyncController extends Controller
         }
 
         return (int) $user->empresa_id;
+    }
+    private function resolverProductoOffline(
+        array $item,
+        int $empresaId
+    ): array {
+        $productoId = (int) (
+            $item['producto_id'] ?? 0
+        );
+
+        $codigo = trim(
+            (string) (
+                $item['codigo'] ?? ''
+            )
+        );
+
+        $nombre = trim(
+            (string) (
+                $item['nombre'] ?? ''
+            )
+        );
+
+        $descripcion = $item['descripcion'] ?? null;
+
+        $precio = (float) (
+            $item['precio_unitario'] ?? 0
+        );
+
+        $costo = (float) (
+            $item['costo'] ?? 0
+        );
+
+        $impuesto = (float) (
+            $item['impuesto'] ?? 0
+        );
+
+        $stockLocal = (float) (
+            $item['stock'] ?? 0
+        );
+
+        $stockMinimo = (int) (
+            $item['stock_minimo'] ?? 0
+        );
+
+        $activo = array_key_exists(
+            'activo',
+            $item
+        )
+            ? (bool) $item['activo']
+            : true;
+
+        $cantidad = (float) (
+            $item['cantidad'] ?? 0
+        );
+
+        if ($cantidad <= 0) {
+            throw new \RuntimeException(
+                'La cantidad del producto debe ser mayor a cero.'
+            );
+        }
+
+        /*
+     * ------------------------------------------------------------
+     * 1. BUSCAR POR ID DEL SERVIDOR
+     * ------------------------------------------------------------
+     *
+     * Solo es válido si pertenece a la empresa actual.
+     */
+
+        if ($productoId > 0) {
+            $producto = Producto::where(
+                'id',
+                $productoId
+            )
+                ->where(
+                    'empresa_id',
+                    $empresaId
+                )
+                ->lockForUpdate()
+                ->first();
+
+            if ($producto) {
+                return [
+                    'producto' => $producto,
+                    'creado' => false,
+                ];
+            }
+        }
+
+        /*
+     * ------------------------------------------------------------
+     * 2. BUSCAR POR CÓDIGO
+     * ------------------------------------------------------------
+     */
+
+        if ($codigo !== '') {
+            $producto = Producto::where(
+                'codigo',
+                $codigo
+            )
+                ->where(
+                    'empresa_id',
+                    $empresaId
+                )
+                ->lockForUpdate()
+                ->first();
+
+            if ($producto) {
+                return [
+                    'producto' => $producto,
+                    'creado' => false,
+                ];
+            }
+        }
+
+        /*
+     * ------------------------------------------------------------
+     * 3. CREAR PRODUCTO
+     * ------------------------------------------------------------
+     */
+
+        if ($nombre === '') {
+            throw new \RuntimeException(
+                'No se puede crear el producto porque no contiene nombre.'
+            );
+        }
+
+        /*
+     * La migración actual tiene `codigo` como UNIQUE global,
+     * no solamente por empresa.
+     *
+     * Por ello, si no viene código generamos uno estable.
+     */
+        if ($codigo === '') {
+            $codigo = $this->generarCodigoProductoOffline(
+                $empresaId,
+                (int) (
+                    $item['producto_local_id'] ?? 0
+                )
+            );
+        } else {
+            /*
+         * Si el código existe en otra empresa, no podemos usarlo
+         * porque la restricción UNIQUE es global.
+         */
+            $codigoExistente = Producto::where(
+                'codigo',
+                $codigo
+            )->lockForUpdate()->first();
+
+            if ($codigoExistente) {
+                /*
+             * Si pertenece a la empresa actual,
+             * deberíamos haberlo encontrado arriba.
+             */
+                if (
+                    (int) $codigoExistente->empresa_id
+                    !== $empresaId
+                ) {
+                    $codigo = $this->generarCodigoProductoOffline(
+                        $empresaId,
+                        (int) (
+                            $item['producto_local_id'] ?? 0
+                        )
+                    );
+                }
+            }
+        }
+
+        /*
+     * ------------------------------------------------------------
+     * STOCK INICIAL
+     * ------------------------------------------------------------
+     *
+     * El stock recibido desde el dispositivo representa el stock
+     * que había localmente DESPUÉS de efectuar la venta.
+     *
+     * Por eso:
+     *
+     * stock inicial servidor = stock local + cantidad vendida
+     *
+     * luego procesarVentaOffline() descuenta cantidad.
+     */
+        $stockInicial = round(
+            max(0, $stockLocal) + $cantidad,
+            2
+        );
+
+        $producto = Producto::create([
+            'empresa_id' =>
+            $empresaId,
+
+            /*
+         * No enviamos categoria_id ni unidad_medida_id desde
+         * Flutter porque sus IDs locales pueden no coincidir con
+         * los del servidor.
+         */
+            'categoria_id' =>
+            null,
+
+            'unidad_medida_id' =>
+            null,
+
+            'codigo' =>
+            $codigo,
+
+            'nombre' =>
+            $nombre,
+
+            'descripcion' =>
+            $descripcion,
+
+            'precio' =>
+            round(
+                $precio,
+                2
+            ),
+
+            'costo' =>
+            round(
+                $costo,
+                2
+            ),
+
+            'impuesto' =>
+            round(
+                $impuesto,
+                2
+            ),
+
+            'stock' =>
+            $stockInicial,
+
+            'stock_minimo' =>
+            max(
+                0,
+                $stockMinimo
+            ),
+
+            'imagen' =>
+            $item['imagen'] ?? null,
+
+            'activo' =>
+            $activo,
+        ]);
+
+        return [
+            'producto' =>
+            $producto->fresh(),
+
+            'creado' =>
+            true,
+        ];
+    }
+    private function generarCodigoProductoOffline(
+        int $empresaId,
+        int $productoLocalId
+    ): string {
+        $base = 'OFF-'
+            . $empresaId
+            . '-'
+            . $productoLocalId;
+
+        $codigo = $base;
+
+        $contador = 1;
+
+        while (
+            Producto::where(
+                'codigo',
+                $codigo
+            )->exists()
+        ) {
+            $codigo = $base . '-' . $contador;
+            $contador++;
+        }
+
+        return $codigo;
+    }
+    private function agregarMapeoProducto(
+        array &$mapeos,
+        array $mapping
+    ): void {
+        $localId = (int) (
+            $mapping['producto_local_id'] ?? 0
+        );
+
+        $serverId = (int) (
+            $mapping['producto_server_id'] ?? 0
+        );
+
+        if ($localId <= 0 || $serverId <= 0) {
+            return;
+        }
+
+        /*
+     * Un mismo producto puede aparecer más de una vez
+     * en una venta. No queremos mandar duplicados.
+     */
+        foreach ($mapeos as $index => $existente) {
+            if (
+                (int) (
+                    $existente['producto_local_id'] ?? 0
+                ) === $localId
+            ) {
+                $mapeos[$index] = array_merge(
+                    $existente,
+                    $mapping
+                );
+
+                return;
+            }
+        }
+
+        $mapeos[] = $mapping;
+    }
+    private function obtenerMapeosProductosVentaExistente(
+        Venta $venta,
+        array $productosRequest,
+        int $empresaId
+    ): array {
+        $resultado = [];
+
+        $venta->loadMissing(
+            'detalles.producto'
+        );
+
+        foreach ($productosRequest as $item) {
+            $productoLocalId = (int) (
+                $item['producto_local_id'] ?? 0
+            );
+
+            if ($productoLocalId <= 0) {
+                continue;
+            }
+
+            $productoIdRequest = (int) (
+                $item['producto_id'] ?? 0
+            );
+
+            $codigoRequest = trim(
+                (string) (
+                    $item['codigo'] ?? ''
+                )
+            );
+
+            $productoServidor = null;
+
+            /*
+         * Primero intentar por producto_id que ya venía
+         * asociado en el payload.
+         */
+            if ($productoIdRequest > 0) {
+                $productoServidor = Producto::where(
+                    'id',
+                    $productoIdRequest
+                )
+                    ->where(
+                        'empresa_id',
+                        $empresaId
+                    )
+                    ->first();
+            }
+
+            /*
+         * Después intentar por código.
+         */
+            if (
+                !$productoServidor
+                && $codigoRequest !== ''
+            ) {
+                $productoServidor = Producto::where(
+                    'codigo',
+                    $codigoRequest
+                )
+                    ->where(
+                        'empresa_id',
+                        $empresaId
+                    )
+                    ->first();
+            }
+
+            /*
+         * Finalmente revisar los detalles de la venta existente.
+         */
+            if (!$productoServidor) {
+                foreach ($venta->detalles as $detalle) {
+                    $producto = $detalle->producto;
+
+                    if (!$producto) {
+                        continue;
+                    }
+
+                    if (
+                        $codigoRequest !== ''
+                        && (string) $producto->codigo
+                        === $codigoRequest
+                    ) {
+                        $productoServidor =
+                            $producto;
+
+                        break;
+                    }
+
+                    if (
+                        $productoIdRequest > 0
+                        && (int) $producto->id
+                        === $productoIdRequest
+                    ) {
+                        $productoServidor =
+                            $producto;
+
+                        break;
+                    }
+                }
+            }
+
+            if (!$productoServidor) {
+                continue;
+            }
+
+            $resultado[] = [
+                'producto_local_id' =>
+                $productoLocalId,
+
+                'producto_server_id' =>
+                (int) $productoServidor->id,
+
+                'codigo' =>
+                $productoServidor->codigo,
+
+                'nombre' =>
+                $productoServidor->nombre,
+
+                'creado' =>
+                false,
+            ];
+        }
+
+        return $resultado;
     }
 }

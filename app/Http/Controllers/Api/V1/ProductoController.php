@@ -450,8 +450,8 @@ class ProductoController extends Controller
                 'nombre' => $validated['nombre'],
                 'descripcion' => $validated['descripcion'] ?? null,
                 'precio' => $validated['precio'],
-                'costo' => $validated['costo'] ?? null,
-                'impuesto' => $validated['impuesto'] ?? null,
+                'costo' => $validated['costo'] ?? 0,
+                'impuesto' => $validated['impuesto'] ?? 0,
                 'stock' => $validated['stock'] ?? 0,
                 'stock_minimo' => $validated['stock_minimo'] ?? 0,
 
@@ -692,8 +692,8 @@ class ProductoController extends Controller
                 'nombre' => $validated['nombre'],
                 'descripcion' => $validated['descripcion'] ?? null,
                 'precio' => $validated['precio'],
-                'costo' => $validated['costo'] ?? null,
-                'impuesto' => $validated['impuesto'] ?? null,
+                'costo' => $validated['costo'] ?? 0,
+                'impuesto' => $validated['impuesto'] ?? 0,
                 'stock_minimo' => $validated['stock_minimo'] ?? 0,
 
                 // CAMBIO:
