@@ -4,11 +4,13 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Caja;
+use App\Models\MovimientoCaja;
 use App\Models\Venta;
 use App\Services\AuditoriaService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class CajaController extends Controller
@@ -23,8 +25,7 @@ class CajaController extends Controller
         if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Usuario no autenticado.',
+                'message' => 'Usuario no autenticado.',
             ], 401);
         }
 
@@ -55,7 +56,7 @@ class CajaController extends Controller
                     'empresa_id',
                     $user->empresa_id
                 )
-                ->where(
+                ->whereDate(
                     'fecha_comercial',
                     today()
                 )
@@ -72,8 +73,7 @@ class CajaController extends Controller
                 $caja?->id,
                 null,
                 [
-                    'caja_abierta' =>
-                        (bool) $caja,
+                    'caja_abierta' => (bool) $caja,
                 ],
                 $user->empresa_id,
                 $user->id
@@ -92,8 +92,478 @@ class CajaController extends Controller
 
             return response()->json([
                 'success' => false,
+                'message' => 'Error al consultar la caja.',
+            ], 500);
+        }
+    }
+
+    /**
+     * Obtener operaciones/movimientos de caja.
+     *
+     * Compatible con:
+     * GET /api/v1/cajas/operaciones
+     * GET /api/v1/caja/operaciones
+     * GET /api/v1/cajas/{id}/operaciones
+     */
+    public function operaciones(
+        Request $request,
+        $id = null
+    ) {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Usuario no autenticado.',
+            ], 401);
+        }
+
+        if (!$user->empresa?->usaCajas()) {
+            return response()->json([
+                'success' => true,
+                'data' => [],
+                'movimientos' => [],
+                'operaciones' => [],
+                'cajas_activas' => false,
+            ]);
+        }
+
+        try {
+            /*
+             * Si se recibe un ID, consultamos esa caja.
+             * Si no se recibe, usamos la caja abierta actual.
+             */
+            if ($id !== null) {
+                $caja = Caja::query()
+                    ->where(
+                        'empresa_id',
+                        $user->empresa_id
+                    )
+                    ->where(
+                        'id',
+                        $id
+                    )
+                    ->first();
+
+                if (!$caja) {
+                    return response()->json([
+                        'success' => false,
+                        'message' =>
+                            'La caja no existe o no pertenece a tu empresa.',
+                    ], 404);
+                }
+            } else {
+                $caja = Caja::query()
+                    ->where(
+                        'empresa_id',
+                        $user->empresa_id
+                    )
+                    ->whereDate(
+                        'fecha_comercial',
+                        today()
+                    )
+                    ->where(
+                        'estado',
+                        'abierta'
+                    )
+                    ->first();
+
+                /*
+                 * Si no existe una caja abierta, devolvemos una
+                 * respuesta válida y vacía. Esto evita que el APK
+                 * falle cuando todavía no se ha abierto caja.
+                 */
+                if (!$caja) {
+                    return response()->json([
+                        'success' => true,
+                        'data' => [],
+                        'movimientos' => [],
+                        'operaciones' => [],
+                        'caja' => null,
+                        'message' =>
+                            'No hay una caja abierta actualmente.',
+                    ]);
+                }
+            }
+
+            $movimientos = MovimientoCaja::query()
+                ->where(
+                    'empresa_id',
+                    $user->empresa_id
+                )
+                ->where(
+                    'caja_id',
+                    $caja->id
+                )
+                ->with([
+                    'usuario:id,name',
+                ])
+                ->orderByDesc(
+                    'fecha_movimiento'
+                )
+                ->orderByDesc(
+                    'id'
+                )
+                ->get();
+
+            /*
+             * Agregamos "importe" para compatibilidad con clientes
+             * que esperan ese nombre en lugar de "monto".
+             */
+            $data = $movimientos
+                ->map(function ($movimiento) {
+                    $item = $movimiento->toArray();
+
+                    $item['importe'] =
+                        $movimiento->monto;
+
+                    return $item;
+                })
+                ->values();
+
+            app(AuditoriaService::class)->registrar(
+                $request,
+                'caja.movimientos.consulta',
+                'movimientos_caja',
+                $caja->id,
+                null,
+                [
+                    'caja_id' => $caja->id,
+                    'cantidad' => $data->count(),
+                ],
+                $user->empresa_id,
+                $user->id
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => $data,
+                'movimientos' => $data,
+                'operaciones' => $data,
+                'caja' => $caja,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error(
+                '❌ Error al consultar movimientos de caja: ' .
+                $e->getMessage(),
+                [
+                    'usuario_id' => $user->id,
+                    'empresa_id' => $user->empresa_id,
+                    'caja_id' => $id,
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
                 'message' =>
-                    'Error al consultar la caja.',
+                    'Error al consultar los movimientos de caja.',
+            ], 500);
+        }
+    }
+
+    /**
+     * Registrar un movimiento de caja.
+     *
+     * Compatible con:
+     * POST /api/v1/cajas/movimientos
+     * POST /api/v1/cajas/{id}/movimientos
+     */
+    public function registrarMovimiento(
+        Request $request,
+        $id = null
+    ) {
+        $request->validate([
+            'tipo' => [
+                'required',
+                'string',
+                Rule::in([
+                    'ingreso',
+                    'egreso',
+                    'retiro',
+                    'devolucion',
+                    'ajuste',
+                ]),
+            ],
+
+            'concepto' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+
+            'monto' => [
+                'required',
+                'numeric',
+                'min:0.01',
+            ],
+
+            'referencia' => [
+                'nullable',
+                'string',
+                'max:150',
+            ],
+
+            'notas' => [
+                'nullable',
+                'string',
+                'max:2000',
+            ],
+        ]);
+
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Usuario no autenticado.',
+            ], 401);
+        }
+
+        if (!$user->empresa?->usaCajas()) {
+            app(AuditoriaService::class)->registrar(
+                $request,
+                'caja.movimiento_rechazado',
+                'movimientos_caja',
+                null,
+                null,
+                [
+                    'motivo' =>
+                        'cajas_no_activas',
+                ],
+                $user->empresa_id,
+                $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    'Las cajas no están activas para esta empresa.',
+            ], 422);
+        }
+
+        if (!$user->isCajero()) {
+            app(AuditoriaService::class)->registrar(
+                $request,
+                'caja.movimiento_rechazado',
+                'movimientos_caja',
+                null,
+                null,
+                [
+                    'motivo' =>
+                        'usuario_no_autorizado',
+                ],
+                $user->empresa_id,
+                $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    'Solo un cajero autorizado puede registrar movimientos.',
+            ], 403);
+        }
+
+        try {
+            $movimiento = DB::transaction(
+                function () use (
+                    $request,
+                    $user,
+                    $id
+                ) {
+                    /*
+                     * Si llega caja_id usamos esa caja.
+                     * De lo contrario buscamos la caja abierta actual.
+                     */
+                    if ($id !== null) {
+                        $caja = Caja::query()
+                            ->where(
+                                'empresa_id',
+                                $user->empresa_id
+                            )
+                            ->where(
+                                'id',
+                                $id
+                            )
+                            ->lockForUpdate()
+                            ->first();
+
+                        if (!$caja) {
+                            throw new \DomainException(
+                                'La caja no existe o no pertenece a tu empresa.'
+                            );
+                        }
+                    } else {
+                        $caja = Caja::query()
+                            ->where(
+                                'empresa_id',
+                                $user->empresa_id
+                            )
+                            ->whereDate(
+                                'fecha_comercial',
+                                today()
+                            )
+                            ->where(
+                                'estado',
+                                'abierta'
+                            )
+                            ->lockForUpdate()
+                            ->first();
+
+                        if (!$caja) {
+                            throw new \DomainException(
+                                'No existe una caja abierta actualmente.'
+                            );
+                        }
+                    }
+
+                    if (
+                        $caja->estado !==
+                        'abierta'
+                    ) {
+                        throw new \DomainException(
+                            'No se pueden registrar movimientos en una caja cerrada.'
+                        );
+                    }
+
+                    $movimiento = MovimientoCaja::create([
+                        'empresa_id' =>
+                            $user->empresa_id,
+
+                        'caja_id' =>
+                            $caja->id,
+
+                        'usuario_id' =>
+                            $user->id,
+
+                        'tipo' =>
+                            $request->input(
+                                'tipo'
+                            ),
+
+                        'concepto' =>
+                            $request->input(
+                                'concepto'
+                            ),
+
+                        'monto' =>
+                            round(
+                                (float) $request->input(
+                                    'monto'
+                                ),
+                                2
+                            ),
+
+                        'referencia' =>
+                            $request->input(
+                                'referencia'
+                            ),
+
+                        'notas' =>
+                            $request->input(
+                                'notas'
+                            ),
+
+                        'fecha_movimiento' =>
+                            now(),
+                    ]);
+
+                    $movimiento->load([
+                        'usuario:id,name',
+                    ]);
+
+                    return [
+                        'caja' => $caja,
+                        'movimiento' => $movimiento,
+                    ];
+                }
+            );
+
+            $movimiento =
+                $resultado = $movimiento ?? null;
+
+            /*
+             * La transacción anterior retorna un arreglo.
+             * Lo normalizamos aquí para mantener el código
+             * claro y evitar modificar la lógica existente.
+             */
+            if (is_array($movimiento)) {
+                $caja =
+                    $movimiento['caja'];
+
+                $registro =
+                    $movimiento['movimiento'];
+            } else {
+                /*
+                 * Esta rama no debería ejecutarse, pero evita
+                 * respuestas inválidas ante cambios futuros.
+                 */
+                throw new \RuntimeException(
+                    'No fue posible obtener el movimiento registrado.'
+                );
+            }
+
+            $datosDespues =
+                $registro->toArray();
+
+            $datosDespues['importe'] =
+                $registro->monto;
+
+            app(AuditoriaService::class)->registrar(
+                $request,
+                'caja.movimiento.registrado',
+                'movimientos_caja',
+                $registro->id,
+                null,
+                $datosDespues,
+                $user->empresa_id,
+                $user->id
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' =>
+                    'Movimiento registrado correctamente.',
+                'data' => $datosDespues,
+                'movimiento' => $datosDespues,
+                'caja' => $caja,
+            ], 201);
+        } catch (\DomainException $exception) {
+            app(AuditoriaService::class)->registrar(
+                $request,
+                'caja.movimiento_rechazado',
+                'movimientos_caja',
+                $id !== null
+                    ? (int) $id
+                    : null,
+                null,
+                [
+                    'motivo' =>
+                        $exception->getMessage(),
+                ],
+                $user->empresa_id,
+                $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    $exception->getMessage(),
+            ], 422);
+        } catch (\Throwable $e) {
+            Log::error(
+                '❌ Error al registrar movimiento de caja: ' .
+                $e->getMessage(),
+                [
+                    'usuario_id' => $user->id,
+                    'empresa_id' => $user->empresa_id,
+                    'caja_id' => $id,
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    'Error al registrar el movimiento de caja.',
             ], 500);
         }
     }
@@ -121,8 +591,7 @@ class CajaController extends Controller
         if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Usuario no autenticado.',
+                'message' => 'Usuario no autenticado.',
             ], 401);
         }
 
@@ -181,7 +650,7 @@ class CajaController extends Controller
                             'empresa_id',
                             $user->empresa_id
                         )
-                        ->where(
+                        ->whereDate(
                             'fecha_comercial',
                             today()
                         )
@@ -210,10 +679,9 @@ class CajaController extends Controller
 
                         'monto_apertura' =>
                             round(
-                                (float) $request
-                                    ->input(
-                                        'monto_apertura'
-                                    ),
+                                (float) $request->input(
+                                    'monto_apertura'
+                                ),
                                 2
                             ),
 
@@ -307,8 +775,7 @@ class CajaController extends Controller
         if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Usuario no autenticado.',
+                'message' => 'Usuario no autenticado.',
             ], 401);
         }
 
@@ -433,18 +900,67 @@ class CajaController extends Controller
                             }
                         );
 
+                    /*
+                     * Calcular movimientos manuales de caja.
+                     *
+                     * ingreso     -> suma efectivo
+                     * egreso      -> resta efectivo
+                     * retiro      -> resta efectivo
+                     * devolucion  -> resta efectivo
+                     * ajuste      -> suma efectivo
+                     *
+                     * El monto siempre se guarda positivo y el
+                     * tipo determina su efecto sobre la caja.
+                     */
+                    $movimientos = MovimientoCaja::query()
+                        ->where(
+                            'empresa_id',
+                            $user->empresa_id
+                        )
+                        ->where(
+                            'caja_id',
+                            $caja->id
+                        )
+                        ->get();
+
+                    $ingresos = $movimientos
+                        ->where(
+                            'tipo',
+                            'ingreso'
+                        )
+                        ->sum('monto');
+
+                    $egresos = $movimientos
+                        ->whereIn(
+                            'tipo',
+                            [
+                                'egreso',
+                                'retiro',
+                                'devolucion',
+                            ]
+                        )
+                        ->sum('monto');
+
+                    $ajustes = $movimientos
+                        ->where(
+                            'tipo',
+                            'ajuste'
+                        )
+                        ->sum('monto');
+
                     $esperado = round(
-                        (float)
-                            $caja->monto_apertura +
-                        (float) $efectivo,
+                        (float) $caja->monto_apertura +
+                        (float) $efectivo +
+                        (float) $ingresos +
+                        (float) $ajustes -
+                        (float) $egresos,
                         2
                     );
 
                     $declarado = round(
-                        (float)
-                            $request->input(
-                                'monto_cierre_declarado'
-                            ),
+                        (float) $request->input(
+                            'monto_cierre_declarado'
+                        ),
                         2
                     );
 
@@ -482,6 +998,32 @@ class CajaController extends Controller
                         'caja' => $caja,
                         'datos_antes' =>
                             $datosAntes,
+
+                        'resumen_movimientos' => [
+                            'efectivo_ventas' =>
+                                round(
+                                    (float) $efectivo,
+                                    2
+                                ),
+
+                            'ingresos' =>
+                                round(
+                                    (float) $ingresos,
+                                    2
+                                ),
+
+                            'egresos' =>
+                                round(
+                                    (float) $egresos,
+                                    2
+                                ),
+
+                            'ajustes' =>
+                                round(
+                                    (float) $ajustes,
+                                    2
+                                ),
+                        ],
                     ];
                 }
             );
@@ -498,7 +1040,15 @@ class CajaController extends Controller
                 'cajas',
                 $caja->id,
                 $datosAntes,
-                $caja->toArray(),
+                array_merge(
+                    $caja->toArray(),
+                    [
+                        'resumen_movimientos' =>
+                            $resultado[
+                                'resumen_movimientos'
+                            ],
+                    ]
+                ),
                 $user->empresa_id,
                 $user->id
             );
@@ -508,6 +1058,10 @@ class CajaController extends Controller
                 'message' =>
                     'Caja cerrada correctamente.',
                 'data' => $caja,
+                'resumen_movimientos' =>
+                    $resultado[
+                        'resumen_movimientos'
+                    ],
             ]);
         } catch (\DomainException $exception) {
             app(AuditoriaService::class)->registrar(
@@ -529,7 +1083,10 @@ class CajaController extends Controller
                 'message' =>
                     $exception->getMessage(),
             ], 422);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $exception) {
+        } catch (
+            \Illuminate\Database\Eloquent\ModelNotFoundException
+            $exception
+        ) {
             return response()->json([
                 'success' => false,
                 'message' =>

@@ -693,7 +693,7 @@ class SyncController extends Controller
         $cambios = [];
 
         foreach ($tablas as $nombre => $clase) {
-            $cambios[$nombre] = $clase::where(
+            $registros = $clase::where(
                 'empresa_id',
                 $empresaId
             )
@@ -703,6 +703,32 @@ class SyncController extends Controller
                     $fechaSync
                 )
                 ->get();
+
+            /*
+         * Productos:
+         *
+         * is_inventariable debe viajar siempre
+         * como booleano hacia Flutter.
+         */
+            if ($nombre === 'productos') {
+                $cambios[$nombre] = $registros
+                    ->map(function (Producto $producto) {
+                        $datos = $producto->toArray();
+
+                        $datos['is_inventariable'] =
+                            $producto->is_inventariable === null
+                            ? true
+                            : (bool) $producto->is_inventariable;
+
+                        return $datos;
+                    })
+                    ->values()
+                    ->all();
+
+                continue;
+            }
+
+            $cambios[$nombre] = $registros;
         }
 
         return $cambios;
@@ -1336,8 +1362,7 @@ class SyncController extends Controller
                             'estado' =>
                             'error',
 
-                            'intentos' =>
-                            ((int) $syncRecord->intentos) + 1,
+                            'intentos' => ((int) $syncRecord->intentos) + 1,
                         ]);
                     }
                 } catch (Throwable $queueException) {

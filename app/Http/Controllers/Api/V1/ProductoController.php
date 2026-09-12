@@ -359,9 +359,6 @@ class ProductoController extends Controller
                 'min:0',
             ],
 
-            // CAMBIO:
-            // La categoría ahora es obligatoria,
-            // pertenece a la empresa y debe estar activa.
             'categoria_id' => [
                 'required',
                 'integer',
@@ -394,6 +391,15 @@ class ProductoController extends Controller
             ],
 
             'activo' => [
+                'sometimes',
+                'boolean',
+            ],
+
+            /*
+             * IMPORTANTE:
+             * false debe conservarse como false.
+             */
+            'is_inventariable' => [
                 'sometimes',
                 'boolean',
             ],
@@ -455,11 +461,23 @@ class ProductoController extends Controller
                 'stock' => $validated['stock'] ?? 0,
                 'stock_minimo' => $validated['stock_minimo'] ?? 0,
 
-                // CAMBIO:
                 'categoria_id' => $validated['categoria_id'],
 
-                'unidad_medida_id' => $validated['unidad_medida_id'] ?? null,
-                'activo' => $validated['activo'] ?? true,
+                'unidad_medida_id' =>
+                    $validated['unidad_medida_id'] ?? null,
+
+                'activo' =>
+                    $validated['activo'] ?? true,
+
+                /*
+                 * IMPORTANTE:
+                 * Si viene false, se guarda false.
+                 * Si no viene, se mantiene el comportamiento
+                 * anterior: producto inventariable por defecto.
+                 */
+                'is_inventariable' =>
+                    $validated['is_inventariable'] ?? true,
+
                 'imagen' => $imagenPath,
             ];
 
@@ -600,8 +618,6 @@ class ProductoController extends Controller
                 'min:0',
             ],
 
-            // CAMBIO:
-            // También es obligatoria al actualizar.
             'categoria_id' => [
                 'required',
                 'integer',
@@ -634,6 +650,15 @@ class ProductoController extends Controller
             ],
 
             'activo' => [
+                'sometimes',
+                'boolean',
+            ],
+
+            /*
+             * CORRECCIÓN PRINCIPAL:
+             * Antes este campo ni siquiera se validaba.
+             */
+            'is_inventariable' => [
                 'sometimes',
                 'boolean',
             ],
@@ -696,15 +721,36 @@ class ProductoController extends Controller
                 'impuesto' => $validated['impuesto'] ?? 0,
                 'stock_minimo' => $validated['stock_minimo'] ?? 0,
 
-                // CAMBIO:
                 'categoria_id' => $validated['categoria_id'],
 
-                'unidad_medida_id' => $validated['unidad_medida_id'] ?? null,
+                'unidad_medida_id' =>
+                    $validated['unidad_medida_id'] ?? null,
             ];
 
             if (array_key_exists('activo', $validated)) {
                 $datosActualizar['activo'] =
-                    $validated['activo'];
+                    (bool) $validated['activo'];
+            }
+
+            /*
+             * CORRECCIÓN PRINCIPAL:
+             *
+             * array_key_exists() es intencional.
+             * Permite guardar false correctamente.
+             *
+             * NO usar:
+             *
+             * if (isset($validated['is_inventariable']))
+             *
+             * porque queremos distinguir entre:
+             *
+             *   false = actualizar a 0
+             *   true  = actualizar a 1
+             *   ausente = no modificar
+             */
+            if (array_key_exists('is_inventariable', $validated)) {
+                $datosActualizar['is_inventariable'] =
+                    (bool) $validated['is_inventariable'];
             }
 
             if ($imagenNueva !== null) {
@@ -749,6 +795,19 @@ class ProductoController extends Controller
             $producto->load([
                 'categoria',
                 'unidadMedida',
+            ]);
+
+            /*
+             * Log temporal útil para verificar directamente
+             * que el servidor recibió y persistió el cambio.
+             */
+            Log::info('Producto actualizado', [
+                'producto_id' => $producto->id,
+                'codigo' => $producto->codigo,
+                'is_inventariable' =>
+                    (bool) $producto->is_inventariable,
+                'is_inventariable_db' =>
+                    $producto->getRawOriginal('is_inventariable'),
             ]);
 
             $datosDespues =

@@ -468,28 +468,15 @@ Route::prefix('v1')->group(function () {
             'index'
         ]);
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | CAJAS
-        |--------------------------------------------------------------------------
-        */
-
-        Route::get('/cajas/actual', [
-            CajaController::class,
-            'actual'
-        ]);
-
-        Route::post('/cajas/abrir', [
-            CajaController::class,
-            'abrir'
-        ]);
-
-        Route::post('/cajas/{id}/cerrar', [
-            CajaController::class,
-            'cerrar'
-        ]);
-
+        /* |-------------------------------------------------------------------------- | CAJAS Y MOVIMIENTOS DE CAJA |-------------------------------------------------------------------------- | | IMPORTANTE: | Las rutas específicas deben estar antes de las rutas | que utilizan parámetros dinámicos. | */
+        Route::get('/cajas/actual', [CajaController::class, 'actual',]); /* |-------------------------------------------------------------------------- | CONSULTA DE OPERACIONES / MOVIMIENTOS |-------------------------------------------------------------------------- | | Se mantienen las dos variantes: | | /cajas/operaciones | /caja/operaciones | | porque el APK actual intenta ambas. | */
+        Route::get('/cajas/operaciones', [CajaController::class, 'operaciones',]);
+        Route::get('/caja/operaciones', [CajaController::class, 'operaciones',]);
+        Route::get('/cajas/{id}/operaciones', [CajaController::class, 'operaciones',]); /* |-------------------------------------------------------------------------- | MOVIMIENTOS |-------------------------------------------------------------------------- */
+        Route::post('/cajas/movimientos', [CajaController::class, 'registrarMovimiento',]);
+        Route::post('/cajas/{id}/movimientos', [CajaController::class, 'registrarMovimiento',]); /* |-------------------------------------------------------------------------- | APERTURA Y CIERRE |-------------------------------------------------------------------------- */
+        Route::post('/cajas/abrir', [CajaController::class, 'abrir',]);
+        Route::post('/cajas/{id}/cerrar', [CajaController::class, 'cerrar',]);
 
         /*
         |--------------------------------------------------------------------------
