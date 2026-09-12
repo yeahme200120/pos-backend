@@ -705,11 +705,11 @@ class SyncController extends Controller
                 ->get();
 
             /*
-         * Productos:
-         *
-         * is_inventariable debe viajar siempre
-         * como booleano hacia Flutter.
-         */
+             * Productos:
+             *
+             * is_inventariable debe viajar siempre
+             * como booleano hacia Flutter.
+             */
             if ($nombre === 'productos') {
                 $cambios[$nombre] = $registros
                     ->map(function (Producto $producto) {
@@ -899,18 +899,12 @@ class SyncController extends Controller
                 'max:500',
             ],
 
-            /*
-             * ID interno de SQLite.
-             */
             'ventas.*.productos.*.producto_local_id' => [
                 'required',
                 'integer',
                 'min:1',
             ],
 
-            /*
-             * ID real del servidor.
-             */
             'ventas.*.productos.*.producto_id' => [
                 'nullable',
                 'integer',
@@ -974,16 +968,6 @@ class SyncController extends Controller
                 'boolean',
             ],
 
-            /*
-             * NUEVO:
-             * Indica si el producto controla inventario.
-             *
-             * Para productos existentes el servidor utiliza
-             * el valor almacenado en la base de datos.
-             *
-             * Para productos nuevos este valor se utiliza
-             * al crearlos.
-             */
             'ventas.*.productos.*.is_inventariable' => [
                 'nullable',
                 'boolean',
@@ -1551,16 +1535,19 @@ class SyncController extends Controller
                  * INVENTARIO
                  * ----------------------------------------------------
                  *
-                 * IMPORTANTE:
+                 * Para productos existentes, resolverProductoOffline()
+                 * ya sincronizó is_inventariable cuando Flutter lo envió.
                  *
-                 * Para productos existentes, el valor almacenado
-                 * en servidor es la fuente de verdad.
+                 * Si Flutter envía false:
+                 *   BD = false
+                 *   no se valida stock.
                  *
-                 * No confiamos en que el cliente pueda cambiar
-                 * is_inventariable para evitar una validación.
+                 * Si Flutter envía true:
+                 *   BD = true
+                 *   sí se valida y descuenta.
                  *
-                 * Si el campo todavía no existe o viene NULL,
-                 * se conserva compatibilidad usando true.
+                 * Si Flutter no envía el campo:
+                 *   se conserva el valor actual de BD.
                  */
 
                 $isInventariable = $producto->is_inventariable === null
@@ -1647,8 +1634,6 @@ class SyncController extends Controller
                  * ----------------------------------------------------
                  * DETALLE REAL DE LA VENTA
                  * ----------------------------------------------------
-                 *
-                 * Siempre guardamos el ID real del servidor.
                  */
 
                 $detalles[] = [
@@ -1900,9 +1885,6 @@ class SyncController extends Controller
     ) {
         $user = $request?->user();
 
-        /*
-         * Cuando se ejecuta HTTP, validar autenticación y empresa.
-         */
         if ($request !== null) {
             if (!$user) {
                 return response()->json([
@@ -1939,9 +1921,6 @@ class SyncController extends Controller
             )
             ->limit(50);
 
-        /*
-         * Aislamiento por empresa.
-         */
         if ($empresaId !== null) {
             $query->where(
                 'empresa_id',
@@ -1949,10 +1928,6 @@ class SyncController extends Controller
             );
         }
 
-        /*
-         * En ejecución HTTP se mantiene
-         * el aislamiento por usuario.
-         */
         if ($userId !== null) {
             $query->where(
                 'usuario_id',
@@ -1978,9 +1953,6 @@ class SyncController extends Controller
                         );
                     }
 
-                    /*
-                     * Usuario original.
-                     */
                     $usuario = User::find(
                         $item->usuario_id
                     );
@@ -1991,9 +1963,6 @@ class SyncController extends Controller
                         );
                     }
 
-                    /*
-                     * Aislamiento de empresa.
-                     */
                     if (
                         (int) $usuario->empresa_id
                         !== (int) $item->empresa_id
@@ -2003,9 +1972,6 @@ class SyncController extends Controller
                         );
                     }
 
-                    /*
-                     * Idempotencia.
-                     */
                     $ventaExistente = Venta::where(
                         'empresa_id',
                         $item->empresa_id
@@ -2039,16 +2005,6 @@ class SyncController extends Controller
                         return;
                     }
 
-                    /*
-                     * Procesar venta.
-                     *
-                     * procesarVentaOffline() devuelve:
-                     *
-                     * [
-                     *   'venta' => Venta,
-                     *   'productos' => [...]
-                     * ]
-                     */
                     $resultado = $this->procesarVentaOffline(
                         $datos,
                         $usuario,
@@ -2057,9 +2013,6 @@ class SyncController extends Controller
 
                     $venta = $resultado['venta'];
 
-                    /*
-                     * Marcar cola.
-                     */
                     $item->update([
                         'estado' =>
                         'enviado',
@@ -2068,9 +2021,6 @@ class SyncController extends Controller
                         now(),
                     ]);
 
-                    /*
-                     * Auditoría.
-                     */
                     $this->registrarAuditoriaUsuario(
                         $usuario,
                         'sync_offline_procesado_cola',
@@ -2083,9 +2033,6 @@ class SyncController extends Controller
                     $procesadas++;
                 });
             } catch (Throwable $e) {
-                /*
-                 * La transacción de la venta ya fue revertida.
-                 */
                 try {
                     $item->refresh();
 
@@ -2110,9 +2057,6 @@ class SyncController extends Controller
                     );
                 }
 
-                /*
-                 * Buscar usuario original.
-                 */
                 $usuario = User::find(
                     $item->usuario_id
                 );
@@ -2483,10 +2427,15 @@ class SyncController extends Controller
      * 3. creación del producto.
      *
      * Para productos existentes:
-     * is_inventariable del servidor es la fuente de verdad.
+     *
+     * - Si Flutter envía is_inventariable, se sincroniza
+     *   inmediatamente con la BD.
+     * - Si Flutter NO envía is_inventariable, se conserva
+     *   el valor existente en servidor.
      *
      * Para productos nuevos:
-     * se utiliza is_inventariable enviado por Flutter.
+     *
+     * - Se utiliza is_inventariable enviado por Flutter.
      */
     private function resolverProductoOffline(
         array $item,
@@ -2539,13 +2488,15 @@ class SyncController extends Controller
             : true;
 
         /*
-         * NUEVO:
+         * IMPORTANTE:
          *
-         * Para productos nuevos el cliente puede indicar
-         * si controla inventario.
+         * array_key_exists() permite distinguir:
          *
-         * Si no viene el campo, mantenemos compatibilidad
-         * y asumimos true.
+         *   is_inventariable = false
+         *
+         * de:
+         *
+         *   is_inventariable no enviado.
          */
         $isInventariable = array_key_exists(
             'is_inventariable',
@@ -2583,6 +2534,80 @@ class SyncController extends Controller
                 ->first();
 
             if ($producto) {
+                /*
+                 * ----------------------------------------------------
+                 * SINCRONIZAR is_inventariable
+                 * ----------------------------------------------------
+                 *
+                 * Este era el punto que faltaba.
+                 *
+                 * Si Flutter manda:
+                 *
+                 *   false
+                 *
+                 * debemos guardar:
+                 *
+                 *   false
+                 *
+                 * en la BD antes de que
+                 * procesarVentaOffline() evalúe el stock.
+                 *
+                 * NO usamos:
+                 *
+                 *   $item['is_inventariable'] ?? ...
+                 *
+                 * porque false es un valor válido.
+                 */
+                if (array_key_exists(
+                    'is_inventariable',
+                    $item
+                )) {
+                    $valorInventariableCliente =
+                        (bool) $item['is_inventariable'];
+
+                    $valorInventariableServidor =
+                        $producto->is_inventariable === null
+                        ? true
+                        : (bool) $producto->is_inventariable;
+
+                    if (
+                        $valorInventariableServidor
+                        !== $valorInventariableCliente
+                    ) {
+                        Log::info(
+                            'Sincronizando is_inventariable de producto existente.',
+                            [
+                                'producto_id' =>
+                                $producto->id,
+
+                                'empresa_id' =>
+                                $empresaId,
+
+                                'valor_anterior' =>
+                                $valorInventariableServidor,
+
+                                'valor_cliente' =>
+                                $valorInventariableCliente,
+
+                                'stock_actual' =>
+                                $producto->stock,
+                            ]
+                        );
+
+                        $producto->is_inventariable =
+                            $valorInventariableCliente;
+
+                        $producto->save();
+
+                        /*
+                         * Refrescar el modelo para garantizar que
+                         * la siguiente validación utilice el valor
+                         * realmente almacenado.
+                         */
+                        $producto->refresh();
+                    }
+                }
+
                 return [
                     'producto' =>
                     $producto,
@@ -2612,6 +2637,66 @@ class SyncController extends Controller
                 ->first();
 
             if ($producto) {
+                /*
+                 * ----------------------------------------------------
+                 * SINCRONIZAR is_inventariable
+                 * ----------------------------------------------------
+                 *
+                 * También debemos hacerlo cuando el producto
+                 * fue resuelto por código y no por producto_id.
+                 */
+                if (array_key_exists(
+                    'is_inventariable',
+                    $item
+                )) {
+                    $valorInventariableCliente =
+                        (bool) $item['is_inventariable'];
+
+                    $valorInventariableServidor =
+                        $producto->is_inventariable === null
+                        ? true
+                        : (bool) $producto->is_inventariable;
+
+                    if (
+                        $valorInventariableServidor
+                        !== $valorInventariableCliente
+                    ) {
+                        Log::info(
+                            'Sincronizando is_inventariable de producto existente por código.',
+                            [
+                                'producto_id' =>
+                                $producto->id,
+
+                                'empresa_id' =>
+                                $empresaId,
+
+                                'codigo' =>
+                                $producto->codigo,
+
+                                'valor_anterior' =>
+                                $valorInventariableServidor,
+
+                                'valor_cliente' =>
+                                $valorInventariableCliente,
+
+                                'stock_actual' =>
+                                $producto->stock,
+                            ]
+                        );
+
+                        $producto->is_inventariable =
+                            $valorInventariableCliente;
+
+                        $producto->save();
+
+                        /*
+                         * Garantizar que el modelo tenga el valor
+                         * persistido en BD.
+                         */
+                        $producto->refresh();
+                    }
+                }
+
                 return [
                     'producto' =>
                     $producto,
@@ -2683,11 +2768,7 @@ class SyncController extends Controller
          *
          * Si NO es inventariable:
          *
-         *   no debemos fabricar stock artificialmente
-         *   sumando la cantidad vendida.
-         *
-         * Por lo tanto conservamos únicamente el stock local
-         * recibido, que normalmente será 0.
+         *   no debemos fabricar stock artificialmente.
          */
 
         $stockInicial = $isInventariable
@@ -2704,10 +2785,6 @@ class SyncController extends Controller
             'empresa_id' =>
             $empresaId,
 
-            /*
-             * Los IDs locales de categoría/unidad no se
-             * utilizan porque pueden no coincidir con servidor.
-             */
             'categoria_id' =>
             null,
 
@@ -2756,10 +2833,6 @@ class SyncController extends Controller
             'activo' =>
             $activo,
 
-            /*
-             * NUEVO:
-             * conservar la configuración de inventario.
-             */
             'is_inventariable' =>
             $isInventariable,
         ]);
