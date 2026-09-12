@@ -39,35 +39,6 @@ Route::prefix('v1')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | LOGO DE EMPRESA
-    |--------------------------------------------------------------------------
-    |
-    | Estas rutas son utilizadas principalmente por el frontend para
-    | mostrar y administrar el logo de la empresa.
-    |
-    */
-
-    Route::prefix('empresa')->group(function () {
-
-        Route::get('/logo', [
-            EmpresaController::class,
-            'logo'
-        ]);
-
-        Route::post('/logo', [
-            EmpresaController::class,
-            'uploadLogo'
-        ]);
-
-        Route::delete('/logo', [
-            EmpresaController::class,
-            'deleteLogo'
-        ]);
-    });
-
-
-    /*
-    |--------------------------------------------------------------------------
     | RUTAS PÚBLICAS
     |--------------------------------------------------------------------------
     */
@@ -159,7 +130,29 @@ Route::prefix('v1')->group(function () {
         'check.license'
     ])->group(function () {
 
+        /*
+    |--------------------------------------------------------------------------
+    | LOGO DE EMPRESA
+    |--------------------------------------------------------------------------
+    */
 
+        Route::prefix('empresa')->group(function () {
+
+            Route::get('/logo', [
+                EmpresaController::class,
+                'logo'
+            ]);
+
+            Route::post('/logo', [
+                EmpresaController::class,
+                'uploadLogo'
+            ]);
+
+            Route::delete('/logo', [
+                EmpresaController::class,
+                'deleteLogo'
+            ]);
+        });
         /*
         |--------------------------------------------------------------------------
         | AUTENTICACIÓN / USUARIO ACTUAL

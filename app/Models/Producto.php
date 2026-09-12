@@ -11,9 +11,20 @@ class Producto extends Model
     use HasFactory, SoftDeletes;
 
     protected $fillable = [
-        'empresa_id', 'categoria_id', 'unidad_medida_id', 'codigo', 'nombre',
-        'descripcion', 'precio', 'costo', 'impuesto', 'stock', 'stock_minimo',
-        'imagen', 'activo'
+        'empresa_id',
+        'categoria_id',
+        'unidad_medida_id',
+        'codigo',
+        'nombre',
+        'descripcion',
+        'precio',
+        'costo',
+        'impuesto',
+        'stock',
+        'stock_minimo',
+        'is_inventariable',
+        'imagen',
+        'activo'
     ];
 
     protected $casts = [
@@ -21,7 +32,16 @@ class Producto extends Model
         'precio' => 'decimal:2',
         'costo' => 'decimal:2',
         'impuesto' => 'decimal:2',
+        'is_inventariable' => 'boolean',
     ];
+    protected static function booted(): void
+    {
+        static::creating(function (Producto $producto) {
+            if ($producto->is_inventariable === null) {
+                $producto->is_inventariable = true;
+            }
+        });
+    }
 
     public function empresa()
     {

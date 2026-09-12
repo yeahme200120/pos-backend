@@ -108,13 +108,13 @@ class AuthController extends Controller
                     null,
                     [
                         'motivo' =>
-                            'usuario_no_encontrado',
+                        'usuario_no_encontrado',
                         'identificador' =>
-                            $identificador,
+                        $identificador,
                         'tipo_identificador' =>
-                            $esEmail
-                                ? 'email'
-                                : 'numero_usuario',
+                        $esEmail
+                            ? 'email'
+                            : 'numero_usuario',
                     ],
                     null,
                     null,
@@ -140,9 +140,9 @@ class AuthController extends Controller
                     null,
                     [
                         'motivo' =>
-                            'usuario_inactivo',
+                        'usuario_inactivo',
                         'identificador' =>
-                            $identificador,
+                        $identificador,
                     ],
                     $user->empresa_id,
                     $user->id,
@@ -152,9 +152,9 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'error' =>
-                    'usuario_inactivo',
+                'usuario_inactivo',
                 'message' =>
-                    'El usuario está inactivo.',
+                'El usuario está inactivo.',
                 'errors' => [
                     'identificador' => [
                         'El usuario está inactivo.',
@@ -180,9 +180,9 @@ class AuthController extends Controller
                     null,
                     [
                         'motivo' =>
-                            'empresa_no_asignada',
+                        'empresa_no_asignada',
                         'identificador' =>
-                            $identificador,
+                        $identificador,
                     ],
                     $user->empresa_id,
                     $user->id,
@@ -192,9 +192,9 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'error' =>
-                    'empresa_no_asignada',
+                'empresa_no_asignada',
                 'message' =>
-                    'El usuario no tiene una empresa asignada.',
+                'El usuario no tiene una empresa asignada.',
                 'errors' => [
                     'identificador' => [
                         'El usuario no tiene una empresa asignada.',
@@ -215,9 +215,9 @@ class AuthController extends Controller
                     null,
                     [
                         'motivo' =>
-                            'empresa_inactiva',
+                        'empresa_inactiva',
                         'identificador' =>
-                            $identificador,
+                        $identificador,
                     ],
                     $empresa->id,
                     $user->id,
@@ -227,9 +227,9 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'error' =>
-                    'empresa_inactiva',
+                'empresa_inactiva',
                 'message' =>
-                    'La empresa está inactiva.',
+                'La empresa está inactiva.',
                 'errors' => [
                     'identificador' => [
                         'La empresa está inactiva.',
@@ -255,9 +255,9 @@ class AuthController extends Controller
                     null,
                     [
                         'motivo' =>
-                            'password_incorrecta',
+                        'password_incorrecta',
                         'identificador' =>
-                            $identificador,
+                        $identificador,
                     ],
                     $empresa->id,
                     $user->id,
@@ -318,26 +318,26 @@ class AuthController extends Controller
          */
         $empresaData = [
             'id' =>
-                $empresa->id,
+            $empresa->id,
 
             'nombre' =>
-                $empresa->nombre,
+            $empresa->nombre,
 
             'logo_url' =>
-                $empresa->logo_url,
+            $empresa->logo_url,
 
             'colores' =>
-                $this->decodeJson(
-                    $empresa->colores
-                ),
+            $this->decodeJson(
+                $empresa->colores
+            ),
 
             'configuracion' =>
-                $this->decodeJson(
-                    $empresa->configuracion
-                ),
+            $this->decodeJson(
+                $empresa->configuracion
+            ),
 
             'activo' =>
-                (bool) $empresa->activo,
+            (bool) $empresa->activo,
         ];
 
         /*
@@ -351,18 +351,18 @@ class AuthController extends Controller
             null,
             [
                 'identificador' =>
-                    $identificador,
+                $identificador,
 
                 'tipo_identificador' =>
-                    $esEmail
-                        ? 'email'
-                        : 'numero_usuario',
+                $esEmail
+                    ? 'email'
+                    : 'numero_usuario',
 
                 'empresa_id' =>
-                    $empresa->id,
+                $empresa->id,
 
                 'licencia_tipo' =>
-                    $empresa->licencia_tipo,
+                $empresa->licencia_tipo,
             ],
             $empresa->id,
             $user->id
@@ -372,23 +372,19 @@ class AuthController extends Controller
             'success' => true,
 
             'access_token' =>
-                $token,
+            $token,
 
             'token_type' =>
-                'Bearer',
+            'Bearer',
 
             'user' =>
-                $userData,
+            $userData,
 
             'empresa' =>
-                $empresaData,
-
-            /*
-             * Se conserva exactamente la estructura
-             * "licencia" para no romper Flutter.
-             */
-            'licencia' =>
-                $licencia,
+            $empresaData,
+            /* * Fecha comercial oficial entregada por el servidor. * * Flutter debe utilizar esta fecha como business_date * para la operación del día actual. */
+            'fecha_comercial' => now()->toDateString(), /* * Se conserva exactamente la estructura * "licencia" para no romper Flutter. */
+            'licencia' => $licencia,
         ], 200);
     }
 
@@ -408,7 +404,7 @@ class AuthController extends Controller
                 null,
                 [
                     'resultado' =>
-                        'sesion_cerrada',
+                    'sesion_cerrada',
                 ],
                 $user->empresa_id,
                 $user->id
@@ -424,7 +420,7 @@ class AuthController extends Controller
         return response()->json([
             'success' => true,
             'message' =>
-                'Sesión cerrada correctamente.',
+            'Sesión cerrada correctamente.',
         ], 200);
     }
 
@@ -442,7 +438,7 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'Usuario no autenticado.',
+                'Usuario no autenticado.',
             ], 401);
         }
 
@@ -463,9 +459,9 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'error' =>
-                    'empresa_no_asignada',
+                'empresa_no_asignada',
                 'message' =>
-                    'El usuario no tiene una empresa asignada.',
+                'El usuario no tiene una empresa asignada.',
             ], 403);
         }
 
@@ -483,34 +479,34 @@ class AuthController extends Controller
             'success' => true,
 
             'user' =>
-                $userData,
+            $userData,
 
             'empresa' => [
                 'id' =>
-                    $empresa->id,
+                $empresa->id,
 
                 'nombre' =>
-                    $empresa->nombre,
+                $empresa->nombre,
 
                 'logo_url' =>
-                    $empresa->logo_url,
+                $empresa->logo_url,
 
                 'colores' =>
-                    $this->decodeJson(
-                        $empresa->colores
-                    ),
+                $this->decodeJson(
+                    $empresa->colores
+                ),
 
                 'configuracion' =>
-                    $this->decodeJson(
-                        $empresa->configuracion
-                    ),
+                $this->decodeJson(
+                    $empresa->configuracion
+                ),
 
                 'activo' =>
-                    (bool) $empresa->activo,
+                (bool) $empresa->activo,
             ],
 
             'licencia' =>
-                $this->buildLicenseData($empresa),
+            $this->buildLicenseData($empresa),
         ], 200);
     }
 
@@ -595,17 +591,17 @@ class AuthController extends Controller
         return response()->json([
             'success' => true,
             'message' =>
-                'Perfil actualizado correctamente.',
+            'Perfil actualizado correctamente.',
             'user' =>
-                $freshUser->only([
-                    'id',
-                    'name',
-                    'email',
-                    'telefono',
-                    'numero_usuario',
-                    'rol',
-                    'activo',
-                ]),
+            $freshUser->only([
+                'id',
+                'name',
+                'email',
+                'telefono',
+                'numero_usuario',
+                'rol',
+                'activo',
+            ]),
         ], 200);
     }
 
@@ -645,7 +641,7 @@ class AuthController extends Controller
                 null,
                 [
                     'motivo' =>
-                        'password_actual_incorrecta',
+                    'password_actual_incorrecta',
                 ],
                 $user->empresa_id,
                 $user->id
@@ -673,9 +669,9 @@ class AuthController extends Controller
 
         $user->forceFill([
             'password' =>
-                Hash::make(
-                    $data['password_nueva']
-                ),
+            Hash::make(
+                $data['password_nueva']
+            ),
         ])->save();
 
         $user->tokens()->delete();
@@ -688,7 +684,7 @@ class AuthController extends Controller
             null,
             [
                 'resultado' =>
-                    'correcto',
+                'correcto',
             ],
             $user->empresa_id,
             $user->id
@@ -697,7 +693,7 @@ class AuthController extends Controller
         return response()->json([
             'success' => true,
             'message' =>
-                'Contraseña actualizada correctamente.',
+            'Contraseña actualizada correctamente.',
         ], 200);
     }
 
@@ -742,7 +738,7 @@ class AuthController extends Controller
         return response()->json([
             'success' => true,
             'message' =>
-                'Si el correo existe, se enviaron instrucciones de recuperación.',
+            'Si el correo existe, se enviaron instrucciones de recuperación.',
         ], 200);
     }
 
@@ -793,7 +789,7 @@ class AuthController extends Controller
 
                 $user->forceFill([
                     'password' =>
-                        Hash::make($password),
+                    Hash::make($password),
                 ])->save();
 
                 $user->tokens()->delete();
@@ -812,9 +808,9 @@ class AuthController extends Controller
                     null,
                     [
                         'email' =>
-                            $email,
+                        $email,
                         'motivo' =>
-                            __($status),
+                        __($status),
                     ],
                     null,
                     null,
@@ -837,7 +833,7 @@ class AuthController extends Controller
                 null,
                 [
                     'resultado' =>
-                        'correcto',
+                    'correcto',
                 ],
                 $request
             );
@@ -845,7 +841,7 @@ class AuthController extends Controller
         return response()->json([
             'success' => true,
             'message' =>
-                'Contraseña restablecida correctamente.',
+            'Contraseña restablecida correctamente.',
         ], 200);
     }
 
@@ -861,7 +857,7 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'Usuario no autenticado.',
+                'Usuario no autenticado.',
             ], 401);
         }
 
@@ -908,31 +904,31 @@ class AuthController extends Controller
                 'catalog.read' => true,
 
                 'catalog.write' =>
-                    $admin,
+                $admin,
 
                 'reports.read' =>
-                    $admin,
+                $admin,
 
                 'reports.share' =>
-                    $admin,
+                $admin,
 
                 'users.manage' =>
-                    $role === 'superadmin',
+                $role === 'superadmin',
 
                 'companies.manage' =>
-                    $role === 'superadmin',
+                $role === 'superadmin',
 
                 'settings.manage' =>
-                    $admin,
+                $admin,
 
                 'cash.open' =>
-                    $cajero,
+                $cajero,
 
                 'cash.close' =>
-                    $cajero,
+                $cajero,
 
                 'tables.manage' =>
-                    $cajero,
+                $cajero,
             ],
         ], 200);
     }
@@ -995,40 +991,40 @@ class AuthController extends Controller
              * con Flutter.
              */
             'tipo' =>
-                $tipo,
+            $tipo,
 
             'fecha_inicio' =>
-                $inicio,
+            $inicio,
 
             'fecha_fin' =>
-                $fin,
+            $fin,
 
             /*
              * Estado ampliado.
              */
             'activa' =>
-                $vigente || $enGracia,
+            $vigente || $enGracia,
 
             'vigente' =>
-                $vigente,
+            $vigente,
 
             'en_gracia' =>
-                $enGracia,
+            $enGracia,
 
             'permanente' =>
-                $permanente,
+            $permanente,
 
             'dias_restantes' =>
-                $diasRestantes,
+            $diasRestantes,
 
             'dias_vencidos' =>
-                $diasVencidos,
+            $diasVencidos,
 
             'licencia_activa' =>
-                (bool) $empresa->licencia_activa,
+            (bool) $empresa->licencia_activa,
 
             'empresa_id' =>
-                $empresa->id,
+            $empresa->id,
         ];
     }
 
