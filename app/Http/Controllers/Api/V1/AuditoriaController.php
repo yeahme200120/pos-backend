@@ -9,12 +9,19 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Validation\Rule;
+use Throwable;
 
 class AuditoriaController extends Controller
 {
     /**
-     * Listar registros de auditoría.
+     * Listar auditoría.
+     *
+     * Usuario normal:
+     *   solamente ve su empresa.
+     *
+     * Superadmin:
+     *   puede consultar toda la auditoría o filtrar por empresa.
      */
     public function index(Request $request)
     {
@@ -22,35 +29,57 @@ class AuditoriaController extends Controller
 
         if (!$user) {
             return response()->json([
-                'message' => 'Usuario no autenticado.',
+                'message' => 'No autenticado.',
             ], 401);
         }
 
+        $esSuperAdmin = app(AuditoriaService::class)
+            ->esSuperAdmin($user);
+
         $request->validate([
+            'empresa_id' => [
+                'nullable',
+                'integer',
+                'exists:empresas,id',
+            ],
+
             'usuario_id' => [
                 'nullable',
                 'integer',
-                'exists:users,id',
+                Rule::exists('users', 'id')
+                    ->where(function ($query) use ($user, $esSuperAdmin) {
+                        if (!$esSuperAdmin) {
+                            $query->where(
+                                'empresa_id',
+                                $user->empresa_id
+                            );
+                        }
+                    }),
             ],
+
             'accion' => [
                 'nullable',
                 'string',
                 'max:100',
             ],
+
             'tabla' => [
                 'nullable',
                 'string',
                 'max:100',
             ],
+
             'fecha_desde' => [
                 'nullable',
                 'date',
             ],
+
             'fecha_hasta' => [
                 'nullable',
                 'date',
                 'after_or_equal:fecha_desde',
             ],
+
             'per_page' => [
                 'nullable',
                 'integer',
@@ -60,14 +89,32 @@ class AuditoriaController extends Controller
         ]);
 
         try {
-            $empresaId = (int) $user->empresa_id;
-
             $query = LogAuditoria::query()
-                ->where(
-                    'empresa_id',
-                    $empresaId
-                )
-                ->with('usuario');
+                ->with([
+                    'usuario:id,name,email,empresa_id,rol',
+                ]);
+
+            /*
+             * Aislamiento por empresa.
+             */
+            if ($esSuperAdmin) {
+                if ($request->filled('empresa_id')) {
+                    $query->where(
+                        'empresa_id',
+                        (int) $request->input('empresa_id')
+                    );
+                }
+            } else {
+                $empresaId = (int) $user->empresa_id;
+
+                if ($empresaId <= 0) {
+                    return response()->json([
+                        'message' => 'El usuario no tiene una empresa válida.',
+                    ], 403);
+                }
+
+                $query->where('empresa_id', $empresaId);
+            }
 
             if ($request->filled('usuario_id')) {
                 $query->where(
@@ -81,11 +128,13 @@ class AuditoriaController extends Controller
                     (string) $request->input('accion')
                 );
 
-                $query->where(
-                    'accion',
-                    'LIKE',
-                    "%{$accion}%"
-                );
+                if ($accion !== '') {
+                    $query->where(
+                        'accion',
+                        'LIKE',
+                        '%' . $accion . '%'
+                    );
+                }
             }
 
             if ($request->filled('tabla')) {
@@ -118,41 +167,47 @@ class AuditoriaController extends Controller
 
             $logs = $query
                 ->orderByDesc('created_at')
+                ->orderByDesc('id')
                 ->paginate($perPage)
                 ->appends($request->query());
 
             /*
              * Resumen.
              */
-            $baseQuery = LogAuditoria::query()
-                ->where(
+            $baseQuery = LogAuditoria::query();
+
+            if ($esSuperAdmin) {
+                if ($request->filled('empresa_id')) {
+                    $baseQuery->where(
+                        'empresa_id',
+                        (int) $request->input('empresa_id')
+                    );
+                }
+            } else {
+                $baseQuery->where(
                     'empresa_id',
-                    $empresaId
+                    (int) $user->empresa_id
                 );
+            }
 
             $resumen = [
-                'total' =>
-                    (clone $baseQuery)->count(),
+                'total' => (clone $baseQuery)->count(),
 
-                'hoy' =>
-                    (clone $baseQuery)
-                        ->whereDate(
-                            'created_at',
-                            now()->toDateString()
-                        )
-                        ->count(),
+                'hoy' => (clone $baseQuery)
+                    ->whereDate(
+                        'created_at',
+                        now()->toDateString()
+                    )
+                    ->count(),
 
-                'acciones' =>
-                    (clone $baseQuery)
-                        ->select(
-                            'accion',
-                            DB::raw(
-                                'COUNT(*) as total'
-                            )
-                        )
-                        ->groupBy('accion')
-                        ->orderByDesc('total')
-                        ->get(),
+                'acciones' => (clone $baseQuery)
+                    ->select(
+                        'accion',
+                        DB::raw('COUNT(*) as total')
+                    )
+                    ->groupBy('accion')
+                    ->orderByDesc('total')
+                    ->get(),
             ];
 
             app(AuditoriaService::class)->registrar(
@@ -162,67 +217,109 @@ class AuditoriaController extends Controller
                 null,
                 null,
                 [
+                    'empresa_id_filtro' =>
+                        $request->input('empresa_id'),
+
                     'usuario_id' =>
                         $request->input('usuario_id'),
+
                     'accion' =>
                         $request->input('accion'),
+
                     'tabla' =>
                         $request->input('tabla'),
+
                     'fecha_desde' =>
                         $request->input('fecha_desde'),
+
                     'fecha_hasta' =>
                         $request->input('fecha_hasta'),
-                    'per_page' =>
-                        $perPage,
+
+                    'per_page' => $perPage,
+
+                    'consulta_global' =>
+                        $esSuperAdmin &&
+                        !$request->filled('empresa_id'),
                 ],
-                $empresaId,
-                $user->id
+                $request->filled('empresa_id')
+                    ? (int) $request->input('empresa_id')
+                    : ($esSuperAdmin
+                        ? null
+                        : (int) $user->empresa_id),
+                (int) $user->id
             );
 
             return response()->json([
                 'data' => $logs,
                 'resumen' => $resumen,
             ]);
-        } catch (ValidationException $e) {
-            throw $e;
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             Log::error(
-                '❌ Error al consultar auditoría: ' .
-                $e->getMessage()
+                'Error al consultar auditoría.',
+                [
+                    'usuario_id' => $user->id,
+                    'empresa_id' => $user->empresa_id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
             );
 
             return response()->json([
-                'message' =>
-                    'Error al consultar auditoría.',
+                'message' => 'Error al consultar auditoría.',
             ], 500);
         }
     }
 
     /**
-     * Mostrar detalle de un registro de auditoría.
+     * Mostrar un registro de auditoría.
      */
-    public function show(
-        $id,
-        Request $request
-    ) {
+    public function show($id, Request $request)
+    {
         $user = $request->user();
 
         if (!$user) {
             return response()->json([
-                'message' => 'Usuario no autenticado.',
+                'message' => 'No autenticado.',
             ], 401);
         }
 
-        try {
-            $empresaId = (int) $user->empresa_id;
+        $esSuperAdmin = app(AuditoriaService::class)
+            ->esSuperAdmin($user);
 
-            $log = LogAuditoria::query()
-                ->where(
-                    'empresa_id',
-                    $empresaId
-                )
-                ->with('usuario')
-                ->findOrFail($id);
+        try {
+            $query = LogAuditoria::query()
+                ->with([
+                    'usuario:id,name,email,empresa_id,rol',
+                ])
+                ->whereKey($id);
+
+            /*
+             * Usuario normal:
+             * únicamente su empresa.
+             *
+             * Superadmin:
+             * puede consultar cualquier auditoría.
+             */
+            if (!$esSuperAdmin) {
+                $empresaId = (int) $user->empresa_id;
+
+                if ($empresaId <= 0) {
+                    return response()->json([
+                        'message' =>
+                            'El usuario no tiene una empresa válida.',
+                    ], 403);
+                }
+
+                $query->where('empresa_id', $empresaId);
+            }
+
+            $log = $query->first();
+
+            if (!$log) {
+                return response()->json([
+                    'message' => 'Registro de auditoría no encontrado.',
+                ], 404);
+            }
 
             app(AuditoriaService::class)->registrar(
                 $request,
@@ -232,29 +329,39 @@ class AuditoriaController extends Controller
                 null,
                 [
                     'registro_consultado' =>
-                        $log->id,
+                        (int) $log->id,
+
                     'accion_original' =>
                         $log->accion,
+
                     'tabla_original' =>
                         $log->tabla,
+
                     'registro_id_original' =>
                         $log->registro_id,
                 ],
-                $empresaId,
-                $user->id
+                $log->empresa_id !== null
+                    ? (int) $log->empresa_id
+                    : null,
+                (int) $user->id
             );
 
             return response()->json($log);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             Log::error(
-                '❌ Error al consultar detalle de auditoría: ' .
-                $e->getMessage()
+                'Error al consultar detalle de auditoría.',
+                [
+                    'usuario_id' => $user->id,
+                    'registro_id' => $id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
             );
 
             return response()->json([
                 'message' =>
-                    'Registro de auditoría no encontrado.',
-            ], 404);
+                    'Error al consultar el registro de auditoría.',
+            ], 500);
         }
     }
 
@@ -267,15 +374,25 @@ class AuditoriaController extends Controller
 
         if (!$user) {
             return response()->json([
-                'message' => 'Usuario no autenticado.',
+                'message' => 'No autenticado.',
             ], 401);
         }
 
+        $esSuperAdmin = app(AuditoriaService::class)
+            ->esSuperAdmin($user);
+
         $request->validate([
+            'empresa_id' => [
+                'nullable',
+                'integer',
+                'exists:empresas,id',
+            ],
+
             'fecha_desde' => [
                 'nullable',
                 'date',
             ],
+
             'fecha_hasta' => [
                 'nullable',
                 'date',
@@ -283,15 +400,39 @@ class AuditoriaController extends Controller
             ],
         ]);
 
+        $file = null;
+
         try {
-            $empresaId = (int) $user->empresa_id;
+            $empresaFiltro = null;
+
+            if ($esSuperAdmin) {
+                if ($request->filled('empresa_id')) {
+                    $empresaFiltro = (int) $request->input(
+                        'empresa_id'
+                    );
+                }
+            } else {
+                $empresaFiltro = (int) $user->empresa_id;
+
+                if ($empresaFiltro <= 0) {
+                    return response()->json([
+                        'message' =>
+                            'El usuario no tiene una empresa válida.',
+                    ], 403);
+                }
+            }
 
             $query = LogAuditoria::query()
-                ->where(
+                ->with([
+                    'usuario:id,name,email,empresa_id,rol',
+                ]);
+
+            if ($empresaFiltro !== null) {
+                $query->where(
                     'empresa_id',
-                    $empresaId
-                )
-                ->with('usuario');
+                    $empresaFiltro
+                );
+            }
 
             if ($request->filled('fecha_desde')) {
                 $query->whereDate(
@@ -309,40 +450,30 @@ class AuditoriaController extends Controller
                 );
             }
 
-            $logs = $query
-                ->orderByDesc('created_at')
-                ->get();
-
             $filename =
                 'auditoria_' .
-                now()->format(
-                    'Y-m-d_H-i-s'
-                ) .
+                ($empresaFiltro ?? 'global') .
+                '_' .
+                now()->format('Y-m-d_H-i-s') .
+                '_' .
+                uniqid() .
                 '.csv';
 
             $directory = 'exports';
 
-            if (
-                !Storage::disk('public')
-                    ->exists($directory)
-            ) {
-                Storage::disk('public')
-                    ->makeDirectory($directory);
+            $disk = Storage::disk('public');
+
+            if (!$disk->exists($directory)) {
+                $disk->makeDirectory($directory);
             }
 
             $relativePath =
-                $directory .
-                '/' .
-                $filename;
+                $directory . '/' . $filename;
 
             $absolutePath =
-                Storage::disk('public')
-                    ->path($relativePath);
+                $disk->path($relativePath);
 
-            $file = fopen(
-                $absolutePath,
-                'wb'
-            );
+            $file = fopen($absolutePath, 'wb');
 
             if ($file === false) {
                 throw new \RuntimeException(
@@ -351,55 +482,103 @@ class AuditoriaController extends Controller
             }
 
             /*
-             * BOM UTF-8 para Excel.
+             * BOM para Excel.
              */
-            fwrite(
-                $file,
-                "\xEF\xBB\xBF"
-            );
+            fwrite($file, "\xEF\xBB\xBF");
 
-            fputcsv(
-                $file,
-                [
-                    'ID',
-                    'Usuario',
-                    'Acción',
-                    'Tabla',
-                    'Registro ID',
-                    'Datos Antes',
-                    'Datos Después',
-                    'IP',
-                    'Fecha',
-                ]
-            );
+            fputcsv($file, [
+                'ID',
+                'Empresa ID',
+                'Usuario ID',
+                'Usuario',
+                'Rol',
+                'Acción',
+                'Tabla',
+                'Registro ID',
+                'Datos Antes',
+                'Datos Después',
+                'IP',
+                'Fecha',
+            ]);
 
-            foreach ($logs as $log) {
-                fputcsv(
-                    $file,
-                    [
-                        $log->id,
-                        $log->usuario?->name ?? 'N/A',
-                        $log->accion,
-                        $log->tabla,
-                        $log->registro_id,
-                        $this->jsonParaCsv(
-                            $log->datos_antes
-                        ),
-                        $this->jsonParaCsv(
-                            $log->datos_despues
-                        ),
-                        $log->ip ?? '',
-                        $log->created_at
-                            ? $log->created_at
-                                ->format(
-                                    'd/m/Y H:i:s'
-                                )
-                            : '',
-                    ]
+            $registrosExportados = 0;
+
+            $query
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
+                ->chunk(
+                    500,
+                    function ($logs) use (
+                        $file,
+                        &$registrosExportados
+                    ) {
+                        foreach ($logs as $log) {
+                            fputcsv($file, [
+                                $this->valorCsv(
+                                    $log->id
+                                ),
+
+                                $this->valorCsv(
+                                    $log->empresa_id
+                                ),
+
+                                $this->valorCsv(
+                                    $log->usuario_id
+                                ),
+
+                                $this->valorCsv(
+                                    $log->usuario?->name ?? 'N/A'
+                                ),
+
+                                $this->valorCsv(
+                                    $log->usuario?->rol ?? 'N/A'
+                                ),
+
+                                $this->valorCsv(
+                                    $log->accion
+                                ),
+
+                                $this->valorCsv(
+                                    $log->tabla
+                                ),
+
+                                $this->valorCsv(
+                                    $log->registro_id
+                                ),
+
+                                $this->valorCsv(
+                                    $this->jsonParaCsv(
+                                        $log->datos_antes
+                                    )
+                                ),
+
+                                $this->valorCsv(
+                                    $this->jsonParaCsv(
+                                        $log->datos_despues
+                                    )
+                                ),
+
+                                $this->valorCsv(
+                                    $log->ip ?? ''
+                                ),
+
+                                $this->valorCsv(
+                                    $log->created_at
+                                        ? $log->created_at
+                                            ->format(
+                                                'd/m/Y H:i:s'
+                                            )
+                                        : ''
+                                ),
+                            ]);
+
+                            $registrosExportados++;
+                        }
+                    }
                 );
-            }
 
             fclose($file);
+            $file = null;
 
             app(AuditoriaService::class)->registrar(
                 $request,
@@ -408,36 +587,57 @@ class AuditoriaController extends Controller
                 null,
                 null,
                 [
+                    'empresa_id_filtro' =>
+                        $empresaFiltro,
+
                     'fecha_desde' =>
                         $request->input('fecha_desde'),
+
                     'fecha_hasta' =>
                         $request->input('fecha_hasta'),
+
                     'registros_exportados' =>
-                        $logs->count(),
+                        $registrosExportados,
+
                     'archivo' =>
                         $filename,
+
+                    'consulta_global' =>
+                        $esSuperAdmin &&
+                        $empresaFiltro === null,
                 ],
-                $empresaId,
-                $user->id
+                $empresaFiltro,
+                (int) $user->id
             );
 
             return response()->json([
                 'message' =>
-                    'Exportación completada',
+                    'Exportación completada.',
+
                 'url' =>
                     asset(
-                        'storage/exports/' .
-                        $filename
+                        'storage/exports/' . $filename
                     ),
+
                 'filename' =>
                     $filename,
+
                 'registros_exportados' =>
-                    $logs->count(),
+                    $registrosExportados,
             ]);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
+            if (is_resource($file)) {
+                fclose($file);
+            }
+
             Log::error(
-                '❌ Error al exportar auditoría: ' .
-                $e->getMessage()
+                'Error al exportar auditoría.',
+                [
+                    'usuario_id' => $user->id,
+                    'empresa_id' => $user->empresa_id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
             );
 
             return response()->json([
@@ -448,39 +648,58 @@ class AuditoriaController extends Controller
     }
 
     /**
-     * Convertir datos de auditoría a texto CSV.
+     * Convertir datos a texto para CSV.
      */
-    private function jsonParaCsv(
-        mixed $value
-    ): string {
+    private function jsonParaCsv(mixed $value): string
+    {
         if ($value === null) {
             return '';
         }
 
         if (is_string($value)) {
-            $decoded = json_decode(
-                $value,
-                true
-            );
-
-            if (
-                json_last_error() ===
-                JSON_ERROR_NONE
-            ) {
-                return json_encode(
-                    $decoded,
-                    JSON_UNESCAPED_UNICODE |
-                    JSON_UNESCAPED_SLASHES
-                );
-            }
-
             return $value;
         }
 
-        return json_encode(
-            $value,
-            JSON_UNESCAPED_UNICODE |
-            JSON_UNESCAPED_SLASHES
-        ) ?: '';
+        if (is_array($value)) {
+            $json = json_encode(
+                $value,
+                JSON_UNESCAPED_UNICODE |
+                JSON_UNESCAPED_SLASHES
+            );
+
+            return $json !== false
+                ? $json
+                : '';
+        }
+
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        return (string) $value;
+    }
+
+    /**
+     * Protección básica contra CSV/Excel Formula Injection.
+     */
+    private function valorCsv(mixed $value): string
+    {
+        $value = $this->jsonParaCsv($value);
+
+        if ($value === '') {
+            return '';
+        }
+
+        $primerCaracter = $value[0];
+
+        if (in_array(
+            $primerCaracter,
+            ['=', '+', '-', '@'],
+            true
+        )) {
+            return "'" . $value;
+        }
+
+        return $value;
     }
 }

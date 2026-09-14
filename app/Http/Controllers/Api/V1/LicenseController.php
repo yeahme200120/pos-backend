@@ -5,13 +5,31 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Empresa;
 use App\Services\AuditoriaService;
+use Illuminate\Database\QueryException;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Throwable;
 
 class LicenseController extends Controller
 {
+    /**
+     * Tipos de licencia permitidos.
+     */
+    private const TIPOS_LICENCIA = [
+        'dia',
+        'semana',
+        'quincena',
+        'mes',
+        'bimestre',
+        'trimestre',
+        'semestre',
+        'anual',
+        'permanente',
+    ];
+
     public function __construct(
         private readonly AuditoriaService $auditoriaService
     ) {
@@ -34,19 +52,32 @@ class LicenseController extends Controller
      * De esta forma un usuario con licencia vencida
      * puede autenticarse y consultar el estado.
      */
-    public function status(Request $request)
+    public function status(Request $request): JsonResponse
     {
-        try {
-            $user = $request->user();
+        $user = $request->user();
 
-            if (!$user) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No autenticado.',
+        /*
+         * La autenticación se valida antes de acceder
+         * a cualquier relación o dato empresarial.
+         */
+        if (!$user) {
+            $this->registrarAuditoriaError(
+                $request,
+                'licencia.consulta.no_autenticado',
+                null,
+                [
                     'error' => 'UNAUTHENTICATED',
-                ], 401);
-            }
+                ]
+            );
 
+            return response()->json([
+                'success' => false,
+                'message' => 'No autenticado.',
+                'error' => 'UNAUTHENTICATED',
+            ], 401);
+        }
+
+        try {
             /*
              * Superadmin:
              *
@@ -54,40 +85,54 @@ class LicenseController extends Controller
              * para administrar el sistema.
              */
             if ($user->isSuperAdmin()) {
-                return response()->json([
+                $data = [
                     'success' => true,
-
                     'activa' => true,
-
                     'tipo' => 'permanente',
-
                     'fecha_inicio' => null,
-
                     'fecha_fin' => null,
-
                     'permanente' => true,
-
                     'dias_restantes' => null,
-
                     'empresa_id' => null,
-
                     'empresa' => null,
-
                     'licencia_activa' => true,
-
                     'vigente' => true,
-
                     'en_gracia' => false,
-
                     'puede_operar' => true,
-
                     'dias_vencidos' => 0,
-                ], 200);
+                ];
+
+                $this->registrarAuditoria(
+                    $request,
+                    'licencia.consultada',
+                    'empresas',
+                    null,
+                    null,
+                    [
+                        'superadmin' => true,
+                        'licencia_activa' => true,
+                        'tipo' => 'permanente',
+                    ]
+                );
+
+                return response()->json($data, 200);
             }
 
+            /*
+             * La relación empresa se obtiene una sola vez.
+             */
             $empresa = $user->empresa;
 
             if (!$empresa) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'licencia.consulta.sin_empresa',
+                    null,
+                    [
+                        'error' => 'COMPANY_NOT_ASSIGNED',
+                    ]
+                );
+
                 return response()->json([
                     'success' => false,
                     'message' =>
@@ -100,8 +145,8 @@ class LicenseController extends Controller
             /*
              * Actualizar última validación.
              *
-             * Si falla la escritura, no se bloquea
-             * la consulta.
+             * Si falla esta escritura, la consulta de licencia
+             * debe continuar funcionando.
              */
             try {
                 $empresa->forceFill([
@@ -112,11 +157,17 @@ class LicenseController extends Controller
                     'No se pudo actualizar la última validación de licencia.',
                     [
                         'empresa_id' => $empresa->id,
+                        'usuario_id' => $user->id,
                         'error' => $e->getMessage(),
+                        'exception' => get_class($e),
                     ]
                 );
             }
 
+            /*
+             * Refrescar únicamente después del intento de actualización
+             * para obtener el estado real almacenado.
+             */
             $empresa->refresh();
 
             $estado = $empresa->licenseStatus();
@@ -127,7 +178,10 @@ class LicenseController extends Controller
                 'empresas',
                 (int) $empresa->id,
                 null,
-                $estado
+                [
+                    'estado' => $estado,
+                    'empresa_id' => $empresa->id,
+                ]
             );
 
             /*
@@ -157,9 +211,6 @@ class LicenseController extends Controller
                 'dias_restantes' =>
                     $estado['dias_restantes'],
 
-                /*
-                 * Campos adicionales.
-                 */
                 'empresa_id' =>
                     $empresa->id,
 
@@ -184,21 +235,54 @@ class LicenseController extends Controller
                 'ultima_validacion' =>
                     $estado['ultima_validacion'],
             ], 200);
+        } catch (QueryException $e) {
+            Log::error(
+                'Error de base de datos consultando licencia.',
+                [
+                    'usuario_id' => $user->id,
+                    'empresa_id' => $user->empresa_id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'licencia.consulta.error_db',
+                $user->empresa_id
+                    ? (int) $user->empresa_id
+                    : null,
+                [
+                    'error' => 'LICENSE_STATUS_DB_ERROR',
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    'No fue posible consultar el estado de la licencia.',
+                'error' =>
+                    'LICENSE_STATUS_DB_ERROR',
+            ], 500);
         } catch (Throwable $e) {
             Log::error(
                 'Error consultando licencia.',
                 [
-                    'usuario_id' =>
-                        $request->user()?->id,
+                    'usuario_id' => $user->id,
+                    'empresa_id' => $user->empresa_id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
 
-                    'empresa_id' =>
-                        $request->user()?->empresa_id,
-
-                    'error' =>
-                        $e->getMessage(),
-
-                    'exception' =>
-                        get_class($e),
+            $this->registrarAuditoriaError(
+                $request,
+                'licencia.consulta.error',
+                $user->empresa_id
+                    ? (int) $user->empresa_id
+                    : null,
+                [
+                    'error' => 'LICENSE_STATUS_ERROR',
                 ]
             );
 
@@ -226,7 +310,7 @@ class LicenseController extends Controller
     public function show(
         Request $request,
         int $empresaId
-    ) {
+    ): JsonResponse {
         $authorization =
             $this->ensureSuperAdmin($request);
 
@@ -234,22 +318,36 @@ class LicenseController extends Controller
             return $authorization;
         }
 
-        $empresa = Empresa::find($empresaId);
+        try {
+            /*
+             * Consulta parametrizada mediante Eloquent.
+             */
+            $empresa = Empresa::query()
+                ->whereKey($empresaId)
+                ->first();
 
-        if (!$empresa) {
-            return response()->json([
-                'success' => false,
-                'message' =>
-                    'Empresa no encontrada.',
-                'error' =>
-                    'COMPANY_NOT_FOUND',
-            ], 404);
-        }
+            if (!$empresa) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'licencia.consulta_empresa.no_encontrada',
+                    $empresaId,
+                    [
+                        'error' => 'COMPANY_NOT_FOUND',
+                    ]
+                );
 
-        return response()->json([
-            'success' => true,
+                return response()->json([
+                    'success' => false,
+                    'message' =>
+                        'Empresa no encontrada.',
+                    'error' =>
+                        'COMPANY_NOT_FOUND',
+                ], 404);
+            }
 
-            'data' => [
+            $estado = $empresa->licenseStatus();
+
+            $data = [
                 'empresa_id' =>
                     $empresa->id,
 
@@ -278,9 +376,83 @@ class LicenseController extends Controller
                         ?->toISOString(),
 
                 'estado' =>
-                    $empresa->licenseStatus(),
-            ],
-        ], 200);
+                    $estado,
+            ];
+
+            $this->registrarAuditoria(
+                $request,
+                'licencia.consultada_empresa',
+                'empresas',
+                (int) $empresa->id,
+                null,
+                [
+                    'empresa_id' => $empresa->id,
+                    'licencia_tipo' => $empresa->licencia_tipo,
+                    'licencia_activa' =>
+                        (bool) $empresa->licencia_activa,
+                    'estado' => $estado,
+                ]
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => $data,
+            ], 200);
+        } catch (QueryException $e) {
+            Log::error(
+                'Error de base de datos consultando licencia de empresa.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $request->user()?->id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'licencia.consulta_empresa.error_db',
+                $empresaId,
+                [
+                    'error' => 'LICENSE_COMPANY_STATUS_DB_ERROR',
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    'No fue posible consultar la licencia de la empresa.',
+                'error' =>
+                    'LICENSE_COMPANY_STATUS_DB_ERROR',
+            ], 500);
+        } catch (Throwable $e) {
+            Log::error(
+                'Error consultando licencia de empresa.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $request->user()?->id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'licencia.consulta_empresa.error',
+                $empresaId,
+                [
+                    'error' => 'LICENSE_COMPANY_STATUS_ERROR',
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    'No fue posible obtener la licencia de la empresa.',
+                'error' =>
+                    'LICENSE_COMPANY_STATUS_ERROR',
+            ], 500);
+        }
     }
 
     /*
@@ -297,7 +469,7 @@ class LicenseController extends Controller
     public function update(
         Request $request,
         int $empresaId
-    ) {
+    ): JsonResponse {
         $authorization =
             $this->ensureSuperAdmin($request);
 
@@ -305,35 +477,14 @@ class LicenseController extends Controller
             return $authorization;
         }
 
-        $empresa = Empresa::find($empresaId);
-
-        if (!$empresa) {
-            return response()->json([
-                'success' => false,
-                'message' =>
-                    'Empresa no encontrada.',
-                'error' =>
-                    'COMPANY_NOT_FOUND',
-            ], 404);
-        }
-
-        $tiposLicencia = [
-            'dia',
-            'semana',
-            'quincena',
-            'mes',
-            'bimestre',
-            'trimestre',
-            'semestre',
-            'anual',
-            'permanente',
-        ];
-
+        /*
+         * Validación de entrada antes de tocar la base.
+         */
         $validated = $request->validate([
             'licencia_tipo' => [
                 'required',
                 'string',
-                Rule::in($tiposLicencia),
+                Rule::in(self::TIPOS_LICENCIA),
             ],
 
             'licencia_fecha_inicio' => [
@@ -374,17 +525,22 @@ class LicenseController extends Controller
          */
         if ($tipo === 'permanente') {
             $fechaFin = null;
-
-            /*
-             * Para permanente permitimos fecha de inicio
-             * opcional.
-             */
         } else {
             /*
              * Licencia temporal:
              * ambas fechas son obligatorias.
              */
             if (!$fechaInicio) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'licencia.actualizacion.validacion',
+                    $empresaId,
+                    [
+                        'error' =>
+                            'LICENSE_START_REQUIRED',
+                    ]
+                );
+
                 return response()->json([
                     'success' => false,
                     'message' =>
@@ -395,6 +551,16 @@ class LicenseController extends Controller
             }
 
             if (!$fechaFin) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'licencia.actualizacion.validacion',
+                    $empresaId,
+                    [
+                        'error' =>
+                            'LICENSE_END_REQUIRED',
+                    ]
+                );
+
                 return response()->json([
                     'success' => false,
                     'message' =>
@@ -405,103 +571,247 @@ class LicenseController extends Controller
             }
         }
 
-        $datosAntes = [
-            'licencia_tipo' =>
-                $empresa->licencia_tipo,
+        try {
+            /*
+             * La lectura y actualización se realizan dentro
+             * de una misma transacción.
+             *
+             * lockForUpdate() evita que dos procesos superadmin
+             * modifiquen simultáneamente la misma licencia.
+             */
+            $resultado = DB::transaction(
+                function () use (
+                    $empresaId,
+                    $tipo,
+                    $fechaInicio,
+                    $fechaFin,
+                    $activa
+                ) {
+                    $empresa = Empresa::query()
+                        ->whereKey($empresaId)
+                        ->lockForUpdate()
+                        ->first();
 
-            'licencia_fecha_inicio' =>
-                $empresa
-                    ->licencia_fecha_inicio
-                    ?->toISOString(),
+                    if (!$empresa) {
+                        throw new \RuntimeException(
+                            'COMPANY_NOT_FOUND'
+                        );
+                    }
 
-            'licencia_fecha_fin' =>
-                $empresa
-                    ->licencia_fecha_fin
-                    ?->toISOString(),
+                    $datosAntes = [
+                        'licencia_tipo' =>
+                            $empresa->licencia_tipo,
 
-            'licencia_activa' =>
-                (bool) $empresa->licencia_activa,
-        ];
+                        'licencia_fecha_inicio' =>
+                            $empresa
+                                ->licencia_fecha_inicio
+                                ?->toISOString(),
 
-        $empresa->forceFill([
-            'licencia_tipo' =>
-                $tipo,
+                        'licencia_fecha_fin' =>
+                            $empresa
+                                ->licencia_fecha_fin
+                                ?->toISOString(),
 
-            'licencia_fecha_inicio' =>
-                $fechaInicio,
+                        'licencia_activa' =>
+                            (bool) $empresa->licencia_activa,
+                    ];
 
-            'licencia_fecha_fin' =>
-                $fechaFin,
+                    $empresa->forceFill([
+                        'licencia_tipo' =>
+                            $tipo,
 
-            'licencia_activa' =>
-                $activa,
+                        'licencia_fecha_inicio' =>
+                            $fechaInicio,
 
-            'licencia_ultima_validacion' =>
-                now(),
-        ])->save();
+                        'licencia_fecha_fin' =>
+                            $fechaFin,
 
-        $empresa->refresh();
+                        'licencia_activa' =>
+                            $activa,
 
-        $estado =
-            $empresa->licenseStatus();
+                        'licencia_ultima_validacion' =>
+                            now(),
+                    ])->save();
 
-        $datosDespues = [
-            'licencia_tipo' =>
-                $empresa->licencia_tipo,
+                    $empresa->refresh();
 
-            'licencia_fecha_inicio' =>
-                $empresa
-                    ->licencia_fecha_inicio
-                    ?->toISOString(),
+                    $estado =
+                        $empresa->licenseStatus();
 
-            'licencia_fecha_fin' =>
-                $empresa
-                    ->licencia_fecha_fin
-                    ?->toISOString(),
+                    $datosDespues = [
+                        'licencia_tipo' =>
+                            $empresa->licencia_tipo,
 
-            'licencia_activa' =>
-                (bool) $empresa->licencia_activa,
-        ];
+                        'licencia_fecha_inicio' =>
+                            $empresa
+                                ->licencia_fecha_inicio
+                                ?->toISOString(),
 
-        $this->registrarAuditoria(
-            $request,
-            'licencia.actualizada',
-            'empresas',
-            (int) $empresa->id,
-            $datosAntes,
-            $datosDespues
-        );
+                        'licencia_fecha_fin' =>
+                            $empresa
+                                ->licencia_fecha_fin
+                                ?->toISOString(),
 
-        return response()->json([
-            'success' => true,
+                        'licencia_activa' =>
+                            (bool) $empresa->licencia_activa,
+                    ];
 
-            'message' =>
-                'Licencia actualizada correctamente.',
+                    return [
+                        'empresa' => $empresa,
+                        'datos_antes' => $datosAntes,
+                        'datos_despues' => $datosDespues,
+                        'estado' => $estado,
+                    ];
+                }
+            );
 
-            'data' => [
-                'empresa_id' =>
-                    $empresa->id,
+            /** @var Empresa $empresa */
+            $empresa = $resultado['empresa'];
 
-                'licencia_tipo' =>
-                    $empresa->licencia_tipo,
+            $datosAntes =
+                $resultado['datos_antes'];
 
-                'licencia_fecha_inicio' =>
-                    $empresa
-                        ->licencia_fecha_inicio
-                        ?->toISOString(),
+            $datosDespues =
+                $resultado['datos_despues'];
 
-                'licencia_fecha_fin' =>
-                    $empresa
-                        ->licencia_fecha_fin
-                        ?->toISOString(),
+            $estado =
+                $resultado['estado'];
 
-                'licencia_activa' =>
-                    (bool) $empresa->licencia_activa,
+            $this->registrarAuditoria(
+                $request,
+                'licencia.actualizada',
+                'empresas',
+                (int) $empresa->id,
+                $datosAntes,
+                array_merge(
+                    $datosDespues,
+                    [
+                        'estado' => $estado,
+                    ]
+                )
+            );
 
-                'estado' =>
-                    $estado,
-            ],
-        ], 200);
+            return response()->json([
+                'success' => true,
+
+                'message' =>
+                    'Licencia actualizada correctamente.',
+
+                'data' => [
+                    'empresa_id' =>
+                        $empresa->id,
+
+                    'licencia_tipo' =>
+                        $empresa->licencia_tipo,
+
+                    'licencia_fecha_inicio' =>
+                        $empresa
+                            ->licencia_fecha_inicio
+                            ?->toISOString(),
+
+                    'licencia_fecha_fin' =>
+                        $empresa
+                            ->licencia_fecha_fin
+                            ?->toISOString(),
+
+                    'licencia_activa' =>
+                        (bool) $empresa->licencia_activa,
+
+                    'estado' =>
+                        $estado,
+                ],
+            ], 200);
+        } catch (QueryException $e) {
+            Log::error(
+                'Error de base de datos actualizando licencia.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $request->user()?->id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'licencia.actualizacion.error_db',
+                $empresaId,
+                [
+                    'error' =>
+                        'LICENSE_UPDATE_DB_ERROR',
+                    'licencia_tipo' =>
+                        $tipo,
+                    'licencia_activa' =>
+                        $activa,
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    'No fue posible actualizar la licencia.',
+                'error' =>
+                    'LICENSE_UPDATE_DB_ERROR',
+            ], 500);
+        } catch (Throwable $e) {
+            /*
+             * Error controlado para empresa inexistente.
+             */
+            if (
+                $e instanceof \RuntimeException
+                && $e->getMessage() === 'COMPANY_NOT_FOUND'
+            ) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'licencia.actualizacion.empresa_no_encontrada',
+                    $empresaId,
+                    [
+                        'error' =>
+                            'COMPANY_NOT_FOUND',
+                    ]
+                );
+
+                return response()->json([
+                    'success' => false,
+                    'message' =>
+                        'Empresa no encontrada.',
+                    'error' =>
+                        'COMPANY_NOT_FOUND',
+                ], 404);
+            }
+
+            Log::error(
+                'Error actualizando licencia.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $request->user()?->id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'licencia.actualizacion.error',
+                $empresaId,
+                [
+                    'error' =>
+                        'LICENSE_UPDATE_ERROR',
+                    'licencia_tipo' =>
+                        $tipo,
+                    'licencia_activa' =>
+                        $activa,
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    'No fue posible actualizar la licencia.',
+                'error' =>
+                    'LICENSE_UPDATE_ERROR',
+            ], 500);
+        }
     }
 
     /*
@@ -515,10 +825,20 @@ class LicenseController extends Controller
      */
     private function ensureSuperAdmin(
         Request $request
-    ): ?\Illuminate\Http\JsonResponse {
+    ): ?JsonResponse {
         $user = $request->user();
 
         if (!$user) {
+            $this->registrarAuditoriaError(
+                $request,
+                'licencia.autorizacion.no_autenticado',
+                null,
+                [
+                    'error' =>
+                        'UNAUTHENTICATED',
+                ]
+            );
+
             return response()->json([
                 'success' => false,
                 'message' =>
@@ -528,17 +848,63 @@ class LicenseController extends Controller
             ], 401);
         }
 
-        if (!$user->isSuperAdmin()) {
+        try {
+            if (!$user->isSuperAdmin()) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'licencia.autorizacion.denegada',
+                    $user->empresa_id
+                        ? (int) $user->empresa_id
+                        : null,
+                    [
+                        'error' =>
+                            'SUPERADMIN_REQUIRED',
+                        'usuario_id' =>
+                            $user->id,
+                    ]
+                );
+
+                return response()->json([
+                    'success' => false,
+                    'message' =>
+                        'No tienes autorización para administrar licencias.',
+                    'error' =>
+                        'SUPERADMIN_REQUIRED',
+                ], 403);
+            }
+
+            return null;
+        } catch (Throwable $e) {
+            Log::error(
+                'Error verificando autorización de licencia.',
+                [
+                    'usuario_id' => $user->id,
+                    'empresa_id' => $user->empresa_id,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'licencia.autorizacion.error',
+                $user->empresa_id
+                    ? (int) $user->empresa_id
+                    : null,
+                [
+                    'error' =>
+                        'LICENSE_AUTHORIZATION_ERROR',
+                ]
+            );
+
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'No tienes autorización para administrar licencias.',
+                    'No fue posible verificar la autorización.',
                 'error' =>
-                    'SUPERADMIN_REQUIRED',
-            ], 403);
+                    'LICENSE_AUTHORIZATION_ERROR',
+            ], 500);
         }
-
-        return null;
     }
 
     /*
@@ -547,6 +913,12 @@ class LicenseController extends Controller
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Registrar auditoría sin afectar la operación principal.
+     *
+     * El contexto de empresa y usuario siempre proviene
+     * del servidor y no de datos enviados por el cliente.
+     */
     private function registrarAuditoria(
         Request $request,
         string $accion,
@@ -556,15 +928,29 @@ class LicenseController extends Controller
         ?array $datosDespues
     ): void {
         try {
+            $usuario = $request->user();
+
+            $datosAuditoria =
+                array_merge(
+                    $datosDespues ?? [],
+                    [
+                        'empresa_id' =>
+                            $usuario?->empresa_id,
+
+                        'usuario_id' =>
+                            $usuario?->id,
+                    ]
+                );
+
             $this->auditoriaService->registrar(
                 $request,
                 $accion,
                 $tabla,
                 $registroId,
                 $datosAntes,
-                $datosDespues,
-                $request->user()?->empresa_id,
-                $request->user()?->id
+                $datosAuditoria,
+                $usuario?->empresa_id,
+                $usuario?->id
             );
         } catch (Throwable $e) {
             Log::warning(
@@ -579,8 +965,78 @@ class LicenseController extends Controller
                     'registro_id' =>
                         $registroId,
 
+                    'usuario_id' =>
+                        $request->user()?->id,
+
+                    'empresa_id' =>
+                        $request->user()?->empresa_id,
+
                     'error' =>
                         $e->getMessage(),
+
+                    'exception' =>
+                        get_class($e),
+                ]
+            );
+        }
+    }
+
+    /**
+     * Registrar errores de auditoría sin provocar
+     * una excepción secundaria.
+     */
+    private function registrarAuditoriaError(
+        Request $request,
+        string $accion,
+        ?int $registroId,
+        array $datos
+    ): void {
+        try {
+            $usuario = $request->user();
+
+            $datosAuditoria =
+                array_merge(
+                    $datos,
+                    [
+                        'empresa_id' =>
+                            $usuario?->empresa_id,
+
+                        'usuario_id' =>
+                            $usuario?->id,
+                    ]
+                );
+
+            $this->auditoriaService->registrar(
+                $request,
+                $accion,
+                'empresas',
+                $registroId,
+                null,
+                $datosAuditoria,
+                $usuario?->empresa_id,
+                $usuario?->id
+            );
+        } catch (Throwable $e) {
+            Log::warning(
+                'No se pudo registrar auditoría de error.',
+                [
+                    'accion' =>
+                        $accion,
+
+                    'registro_id' =>
+                        $registroId,
+
+                    'usuario_id' =>
+                        $request->user()?->id,
+
+                    'empresa_id' =>
+                        $request->user()?->empresa_id,
+
+                    'error' =>
+                        $e->getMessage(),
+
+                    'exception' =>
+                        get_class($e),
                 ]
             );
         }

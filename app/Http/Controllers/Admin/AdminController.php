@@ -3,309 +3,663 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
-use App\Models\User;
 use App\Models\Empresa;
+use App\Models\User;
 use App\Models\Venta;
-use Illuminate\Support\Facades\Hash;
+use App\Services\AuditoriaService;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\QueryException;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+use Throwable;
+
+use function Illuminate\Log\log;
 
 class AdminController extends Controller
 {
-    /**
-     * Listar usuarios con paginación.
-     */
-    public function usuarios(Request $request)
+    public function __construct(
+        protected AuditoriaService $auditoria
+    ) {}
+
+    /*
+    |--------------------------------------------------------------------------
+    | HELPERS
+    |--------------------------------------------------------------------------
+    */
+
+    private function usuarioAutenticado(): ?User
     {
-        Log::info(
-            '📋 Listando usuarios - Filtros:',
-            $request->all()
+        $usuario = auth()->user();
+
+        return $usuario instanceof User
+            ? $usuario
+            : null;
+    }
+
+    private function respuestaNoAutenticado()
+    {
+        return response()->json([
+            'message' => 'No autenticado.',
+        ], 401);
+    }
+
+    private function puedeAdministrarEmpresa(
+        User $usuario,
+        ?int $empresaId = null
+    ): bool {
+        if ($usuario->rol === 'superadmin') {
+            return true;
+        }
+
+        if (!$usuario->empresa_id) {
+            return false;
+        }
+
+        if ($empresaId === null) {
+            return true;
+        }
+
+        return (int) $usuario->empresa_id === $empresaId;
+    }
+
+    /**
+     * Registrar auditoría sin permitir que una falla
+     * de auditoría rompa la operación principal.
+     */
+    private function auditar(
+        Request $request,
+        string $accion,
+        string $tabla,
+        $registroId,
+        $datosAntes = null,
+        $datosDespues = null,
+        ?int $empresaId = null,
+        ?int $usuarioId = null
+    ): void {
+        try {
+            $usuario = $this->usuarioAutenticado();
+
+            $empresaId ??= $usuario?->empresa_id;
+            $usuarioId ??= $usuario?->id;
+
+            $this->auditoria->registrar(
+                $request,
+                $accion,
+                $tabla,
+                $registroId,
+                $datosAntes,
+                $datosDespues,
+                $empresaId,
+                $usuarioId
+            );
+        } catch (Throwable $e) {
+            Log::warning(
+                'No fue posible registrar auditoría en AdminController.',
+                [
+                    'accion' => $accion,
+                    'tabla' => $tabla,
+                    'registro_id' => $registroId,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ]
+            );
+        }
+    }
+
+    /**
+     * Respuesta estándar para errores de validación.
+     */
+    private function respuestaValidacion(
+        Request $request,
+        ValidationException $e,
+        string $accion,
+        string $tabla,
+        $registroId = null,
+        ?int $empresaId = null
+    ) {
+        $errores = $e->errors();
+
+        $this->auditar(
+            $request,
+            $accion,
+            $tabla,
+            $registroId,
+            null,
+            [
+                'errores' => $errores,
+            ],
+            $empresaId
         );
 
-        try {
+        return response()->json([
+            'message' => 'Error de validación.',
+            'errors' => $errores,
+        ], 422);
+    }
 
-            $users = User::with('empresa')
+    /**
+     * Generar una respuesta muy detallada para errores internos.
+     *
+     * IMPORTANTE:
+     * No incluye contraseñas ni datos sensibles del request.
+     */
+    private function respuestaErrorInterno(
+        Request $request,
+        Throwable $e,
+        string $mensaje,
+        string $accion,
+        string $tabla,
+        $registroId = null,
+        ?int $empresaId = null,
+        ?int $usuarioId = null,
+        array $contexto = []
+    ) {
+        $exceptionClass = get_class($e);
+
+        $esDatabase = $e instanceof QueryException;
+
+        $codigo = $e->getCode();
+
+        $detalle = [
+            'tipo' => $esDatabase
+                ? 'database_error'
+                : 'application_error',
+
+            'exception' => $exceptionClass,
+
+            'code' => $codigo,
+
+            'message' => $e->getMessage(),
+
+            'file' => $e->getFile(),
+
+            'line' => $e->getLine(),
+        ];
+
+        /*
+         * QueryException contiene información adicional
+         * extremadamente útil para detectar columnas,
+         * constraints, tablas, etc.
+         */
+        if ($e instanceof QueryException) {
+            $detalle['sql_state'] =
+                $e->errorInfo[0] ?? null;
+
+            $detalle['driver_code'] =
+                $e->errorInfo[1] ?? null;
+
+            $detalle['driver_message'] =
+                $e->errorInfo[2] ?? null;
+        }
+
+        $contextoError = [
+            'accion' => $accion,
+            'tabla' => $tabla,
+            'registro_id' => $registroId,
+            'usuario_id' => $usuarioId,
+            'empresa_id' => $empresaId,
+            'endpoint' => $request->path(),
+            'method' => $request->method(),
+            'ip' => $request->ip(),
+        ];
+
+        if (!empty($contexto)) {
+            $contextoError['contexto'] = $contexto;
+        }
+
+        /*
+         * Registrar absolutamente todos los detalles en Laravel.
+         */
+        Log::error(
+            $mensaje,
+            [
+                'exception' => $exceptionClass,
+                'code' => $codigo,
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+
+                'sql_state' =>
+                    $e instanceof QueryException
+                    ? ($e->errorInfo[0] ?? null)
+                    : null,
+
+                'driver_code' =>
+                    $e instanceof QueryException
+                    ? ($e->errorInfo[1] ?? null)
+                    : null,
+
+                'driver_message' =>
+                    $e instanceof QueryException
+                    ? ($e->errorInfo[2] ?? null)
+                    : null,
+
+                'contexto' => $contextoError,
+            ]
+        );
+
+        /*
+         * La auditoría también se intenta registrar,
+         * pero nunca debe romper la respuesta.
+         */
+        $this->auditar(
+            $request,
+            $accion . '_error',
+            $tabla,
+            $registroId,
+            null,
+            [
+                'tipo' => $detalle['tipo'],
+                'exception' => $exceptionClass,
+                'code' => $codigo,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ],
+            $empresaId,
+            $usuarioId
+        );
+
+        return response()->json([
+            'message' => $mensaje,
+
+            'error' => $detalle,
+
+            'context' => $contextoError,
+        ], 500);
+    }
+
+    private function validarId($id): ?int
+    {
+        if (
+            !is_numeric($id) ||
+            (int) $id <= 0 ||
+            (string) (int) $id != (string) $id
+        ) {
+            return null;
+        }
+
+        return (int) $id;
+    }
+
+    private function datosUsuario(User $usuario): array
+    {
+        return [
+            'id' => $usuario->id,
+            'name' => $usuario->name,
+            'email' => $usuario->email,
+            'telefono' => $usuario->telefono,
+            'numero_usuario' => $usuario->numero_usuario,
+            'empresa_id' => $usuario->empresa_id,
+            'rol' => $usuario->rol,
+            'activo' => $usuario->activo,
+        ];
+    }
+
+    private function datosEmpresa(Empresa $empresa): array
+    {
+        return [
+            'id' => $empresa->id,
+            'nombre' => $empresa->nombre,
+            'rfc' => $empresa->rfc,
+            'activo' => $empresa->activo,
+            'licencia_tipo' => $empresa->licencia_tipo,
+            'licencia_fecha_inicio' =>
+                $empresa->licencia_fecha_inicio,
+            'licencia_fecha_fin' =>
+                $empresa->licencia_fecha_fin,
+            'licencia_activa' =>
+                $empresa->licencia_activa,
+        ];
+    }
+
+    private function respuestaNoEncontrado(string $mensaje)
+    {
+        return response()->json([
+            'message' => $mensaje,
+        ], 404);
+    }
+
+    private function respuestaNoAutorizado(string $mensaje)
+    {
+        return response()->json([
+            'message' => $mensaje,
+        ], 403);
+    }
+
+    private function datosLicencia(Empresa $empresa): array
+    {
+        return [
+            'empresa_id' => $empresa->id,
+            'empresa' => $empresa->nombre,
+            'licencia_tipo' => $empresa->licencia_tipo,
+            'licencia_fecha_inicio' =>
+                $empresa->licencia_fecha_inicio,
+            'licencia_fecha_fin' =>
+                $empresa->licencia_fecha_fin,
+            'licencia_activa' =>
+                $empresa->licencia_activa,
+            'licencia_vigente' =>
+                $empresa->tieneLicenciaActiva(),
+            'licencia_vencida' =>
+                $empresa->licenciaVencida(),
+            'licencia_pendiente' =>
+                $empresa->licenciaPendiente(),
+            'dias_restantes' =>
+                $empresa->diasLicenciaRestantes(),
+            'estado_licencia' =>
+                $empresa->estadoLicencia(),
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | USUARIOS
+    |--------------------------------------------------------------------------
+    */
+
+    public function usuarios(Request $request)
+    {
+        $usuario = $this->usuarioAutenticado();
+
+        if (!$usuario) {
+            return $this->respuestaNoAutenticado();
+        }
+
+        try {
+            $validator = Validator::make(
+                $request->all(),
+                [
+                    'search' => [
+                        'nullable',
+                        'string',
+                        'max:255',
+                    ],
+
+                    'rol' => [
+                        'nullable',
+                        'string',
+                        Rule::in([
+                            'superadmin',
+                            'admin',
+                            'vendedor',
+                            'cajero',
+                        ]),
+                    ],
+
+                    'activo' => [
+                        'nullable',
+                        'boolean',
+                    ],
+
+                    'empresa_id' => [
+                        'nullable',
+                        'integer',
+                        'min:1',
+                    ],
+
+                    'per_page' => [
+                        'nullable',
+                        'integer',
+                        'min:1',
+                        'max:100',
+                    ],
+                ],
+                [
+                    'search.string' =>
+                        'El texto de búsqueda no es válido.',
+
+                    'search.max' =>
+                        'El texto de búsqueda es demasiado largo.',
+
+                    'rol.in' =>
+                        'El rol seleccionado no es válido.',
+
+                    'activo.boolean' =>
+                        'El estado activo no es válido.',
+
+                    'empresa_id.integer' =>
+                        'La empresa indicada no es válida.',
+
+                    'empresa_id.min' =>
+                        'La empresa indicada no es válida.',
+
+                    'per_page.integer' =>
+                        'La cantidad de registros por página no es válida.',
+
+                    'per_page.max' =>
+                        'No se pueden solicitar más de 100 registros por página.',
+                ]
+            );
+
+            if ($validator->fails()) {
+                throw new ValidationException($validator);
+            }
+
+            $empresaFiltro = $request->filled('empresa_id')
+                ? (int) $request->empresa_id
+                : null;
+
+            $query = User::query()
+                ->with([
+                    'empresa:id,nombre,rfc,activo',
+                ])
+                ->select([
+                    'id',
+                    'name',
+                    'email',
+                    'telefono',
+                    'numero_usuario',
+                    'empresa_id',
+                    'rol',
+                    'activo',
+                    'created_at',
+                    'updated_at',
+                ]);
+
+            if ($usuario->rol !== 'superadmin') {
+                if (!$usuario->empresa_id) {
+                    return $this->respuestaNoAutorizado(
+                        'El usuario no tiene una empresa asignada.'
+                    );
+                }
+
+                $query->where(
+                    'empresa_id',
+                    $usuario->empresa_id
+                );
+
+                $empresaFiltro =
+                    $usuario->empresa_id;
+            }
+
+            if ($empresaFiltro !== null) {
+                $query->where(
+                    'empresa_id',
+                    $empresaFiltro
+                );
+            }
+
+            $query
                 ->when(
-                    $request->search,
-                    function ($q, $search) {
+                    $request->filled('search'),
+                    function ($q) use ($request) {
+                        $search =
+                            trim($request->search);
 
                         $q->where(function ($query) use ($search) {
-
                             $query
                                 ->where(
                                     'name',
                                     'like',
-                                    "%{$search}%"
+                                    '%' . $search . '%'
                                 )
                                 ->orWhere(
                                     'email',
                                     'like',
-                                    "%{$search}%"
+                                    '%' . $search . '%'
                                 )
                                 ->orWhere(
                                     'numero_usuario',
                                     'like',
-                                    "%{$search}%"
+                                    '%' . $search . '%'
                                 );
                         });
                     }
                 )
                 ->when(
-                    $request->rol,
-                    function ($q, $rol) {
-                        $q->where(
-                            'rol',
-                            $rol
-                        );
-                    }
+                    $request->filled('rol'),
+                    fn($q) => $q->where(
+                        'rol',
+                        $request->rol
+                    )
                 )
                 ->when(
-                    $request->activo !== null,
-                    function ($q) use ($request) {
-                        $q->where(
-                            'activo',
-                            $request->activo
-                        );
-                    }
+                    $request->has('activo'),
+                    fn($q) => $q->where(
+                        'activo',
+                        $request->boolean('activo')
+                    )
                 )
-                ->orderBy(
-                    'id',
-                    'desc'
-                )
-                ->paginate(10);
+                ->orderByDesc('id');
 
-            Log::info(
-                '✅ Usuarios listados: ' .
-                $users->total() .
-                ' registros'
-            );
-
-            return response()->json(
-                $users
-            );
-
-        } catch (\Exception $e) {
-
-            Log::error(
-                '❌ Error al listar usuarios: ' .
-                $e->getMessage(),
-                [
-                    'trace' =>
-                        $e->getTraceAsString()
-                ]
-            );
-
-            return response()->json([
-                'message' =>
-                    'Error al cargar usuarios'
-            ], 500);
-        }
-    }
-
-    /**
-     * Crear usuario.
-     */
-    public function crearUsuario(Request $request)
-    {
-        Log::info(
-            '📝 Creando usuario - Datos:',
-            $request->all()
-        );
-
-        $request->validate([
-            'name' =>
-                'required|string|max:255',
-
-            'email' =>
-                'required|email|unique:users,email',
-
-            'password' =>
-                'required|min:6',
-
-            'telefono' =>
-                'nullable|numeric|digits:10',
-
-            'rol' =>
-                'required|in:superadmin,admin,vendedor,cajero',
-
-            'empresa_id' =>
-                'required|exists:empresas,id',
-
-            'activo' =>
-                'boolean',
-        ], [
-
-            'name.required' =>
-                'El nombre es obligatorio.',
-
-            'name.string' =>
-                'El nombre debe ser un texto válido.',
-
-            'name.max' =>
-                'El nombre no puede tener más de 255 caracteres.',
-
-            'email.required' =>
-                'El correo electrónico es obligatorio.',
-
-            'email.email' =>
-                'Ingresa un correo electrónico válido.',
-
-            'email.unique' =>
-                'Este correo electrónico ya está registrado.',
-
-            'password.required' =>
-                'La contraseña es obligatoria.',
-
-            'password.min' =>
-                'La contraseña debe tener al menos 6 caracteres.',
-
-            'telefono.numeric' =>
-                'El teléfono debe ser un número válido.',
-
-            'telefono.digits' =>
-                'El teléfono debe tener exactamente 10 dígitos.',
-
-            'rol.required' =>
-                'El rol es obligatorio.',
-
-            'rol.in' =>
-                'El rol seleccionado no es válido.',
-
-            'empresa_id.required' =>
-                'La empresa es obligatoria.',
-
-            'empresa_id.exists' =>
-                'La empresa seleccionada no existe.',
-
-            'activo.boolean' =>
-                'El estado activo debe ser verdadero o falso.',
-        ]);
-
-        DB::beginTransaction();
-
-        try {
-
-            $user = User::create([
-                'name' =>
-                    $request->name,
-
-                'email' =>
-                    $request->email,
-
-                'password' =>
-                    Hash::make(
-                        $request->password
+            $perPage = min(
+                max(
+                    (int) $request->input(
+                        'per_page',
+                        10
                     ),
-
-                'telefono' =>
-                    $request->telefono,
-
-                'numero_usuario' =>
-                    User::generarNumeroUsuario(),
-
-                'empresa_id' =>
-                    $request->empresa_id,
-
-                'rol' =>
-                    $request->rol,
-
-                'activo' =>
-                    $request->activo ?? true,
-            ]);
-
-            DB::commit();
-
-            Log::info(
-                '✅ Usuario creado correctamente',
-                [
-                    'id' => $user->id,
-                    'email' => $user->email
-                ]
+                    1
+                ),
+                100
             );
 
-            return response()->json([
-                'message' =>
-                    'Usuario creado correctamente',
+            $users = $query->paginate($perPage);
 
-                'user' =>
-                    $user->load('empresa')
-            ], 201);
-
-        } catch (\Exception $e) {
-
-            DB::rollBack();
-
-            Log::error(
-                '❌ Error al crear usuario: ' .
-                $e->getMessage(),
+            $this->auditar(
+                $request,
+                'listar_usuarios',
+                'users',
+                null,
+                null,
                 [
-                    'data' =>
-                        $request->all(),
+                    'total' =>
+                        $users->total(),
 
-                    'trace' =>
-                        $e->getTraceAsString()
-                ]
+                    'pagina' =>
+                        $users->currentPage(),
+
+                    'per_page' =>
+                        $users->perPage(),
+                ],
+                $usuario->rol === 'superadmin'
+                    ? $empresaFiltro
+                    : $usuario->empresa_id
             );
 
-            return response()->json([
-                'message' =>
-                    'Error al crear usuario: ' .
-                    $e->getMessage()
-            ], 500);
+            return response()->json($users);
+        } catch (ValidationException $e) {
+            return $this->respuestaValidacion(
+                $request,
+                $e,
+                'listar_usuarios_validacion_rechazada',
+                'users',
+                null,
+                $usuario->empresa_id
+            );
+        } catch (Throwable $e) {
+            return $this->respuestaErrorInterno(
+                $request,
+                $e,
+                'Error al cargar usuarios.',
+                'listar_usuarios',
+                'users',
+                null,
+                $usuario->empresa_id,
+                $usuario->id
+            );
         }
     }
 
-    /**
-     * Actualizar usuario.
-     *
-     * La licencia NO se actualiza aquí.
-     * La licencia pertenece a la empresa.
-     */
-    public function actualizarUsuario(
-        Request $request,
-        $id
-    ) {
-        Log::info(
-            '✏️ Actualizando usuario ID: ' .
-            $id
-        );
+/**
+ * Crear usuario.
+ */
+public function crearUsuario(Request $request)
+{
+    $usuarioActual =
+        $this->usuarioAutenticado();
 
-        Log::info(
-            '📝 Datos recibidos:',
-            $request->all()
-        );
+    if (!$usuarioActual) {
+        return $this->respuestaNoAutenticado();
+    }
 
-        try {
+    try {
+        $validator = Validator::make(
+            $request->all(),
+            [
+                'name' => [
+                    'required',
+                    'string',
+                    'max:255',
+                ],
 
-            $user = User::findOrFail($id);
+                'email' => [
+                    'required',
+                    'email',
+                    'max:255',
+                    Rule::unique('users', 'email'),
+                ],
 
-            Log::info(
-                '👤 Usuario encontrado:',
-                $user->toArray()
-            );
+                'password' => [
+                    'required',
+                    'string',
+                    'min:6',
+                    'max:255',
+                ],
 
-            $request->validate([
-                'name' =>
-                    'required|string|max:255',
+                /*
+                 * Confirmación obligatoria al crear.
+                 */
+                'password_confirmation' => [
+                    'required',
+                    'same:password',
+                ],
 
-                'email' =>
-                    'required|email|unique:users,email,' .
-                    $id,
+                'telefono' => [
+                    'nullable',
+                    'digits:10',
+                ],
 
-                'telefono' =>
-                    'nullable|numeric|digits:10',
+                'rol' => [
+                    'required',
+                    Rule::in([
+                        'superadmin',
+                        'admin',
+                        'vendedor',
+                        'cajero',
+                    ]),
+                ],
 
-                'rol' =>
-                    'required|in:superadmin,admin,vendedor,cajero',
+                'empresa_id' => [
+                    'required',
+                    'integer',
+                    'min:1',
+                    'exists:empresas,id',
+                ],
 
-                'empresa_id' =>
-                    'required|exists:empresas,id',
-
-                'activo' =>
+                'activo' => [
+                    'sometimes',
                     'boolean',
-            ], [
-
+                ],
+            ],
+            [
                 'name.required' =>
                     'El nombre es obligatorio.',
 
@@ -321,11 +675,26 @@ class AdminController extends Controller
                 'email.email' =>
                     'Ingresa un correo electrónico válido.',
 
+                'email.max' =>
+                    'El correo electrónico es demasiado largo.',
+
                 'email.unique' =>
                     'Este correo electrónico ya está registrado.',
 
-                'telefono.numeric' =>
-                    'El teléfono debe ser un número válido.',
+                'password.required' =>
+                    'La contraseña es obligatoria.',
+
+                'password.min' =>
+                    'La contraseña debe tener al menos 6 caracteres.',
+
+                'password.max' =>
+                    'La contraseña es demasiado larga.',
+
+                'password_confirmation.required' =>
+                    'La confirmación de contraseña es obligatoria.',
+
+                'password_confirmation.same' =>
+                    'La confirmación de contraseña no coincide con la contraseña.',
 
                 'telefono.digits' =>
                     'El teléfono debe tener exactamente 10 dígitos.',
@@ -344,109 +713,599 @@ class AdminController extends Controller
 
                 'activo.boolean' =>
                     'El estado activo debe ser verdadero o falso.',
-            ]);
+            ]
+        );
 
-            $data = $request->only([
-                'name',
-                'email',
-                'telefono',
-                'rol',
-                'empresa_id',
-                'activo',
-            ]);
+        if ($validator->fails()) {
+            throw new ValidationException($validator);
+        }
 
-            if ($request->filled('password')) {
+        $validated = $validator->validated();
 
-                $request->validate([
-                    'password' =>
-                        'min:6',
-                ], [
-                    'password.min' =>
-                        'La contraseña debe tener al menos 6 caracteres.',
-                ]);
+        $empresaId =
+            (int) $validated['empresa_id'];
 
-                $data['password'] =
-                    Hash::make(
-                        $request->password
+        if (
+            !$this->puedeAdministrarEmpresa(
+                $usuarioActual,
+                $empresaId
+            )
+        ) {
+            $this->auditar(
+                $request,
+                'crear_usuario_no_autorizado',
+                'users',
+                null,
+                null,
+                [
+                    'empresa_id_solicitada' =>
+                        $empresaId,
+                ],
+                $usuarioActual->empresa_id
+            );
+
+            return $this->respuestaNoAutorizado(
+                'No tienes permiso para crear usuarios en esta empresa.'
+            );
+        }
+
+        if (
+            $validated['rol'] === 'superadmin' &&
+            $usuarioActual->rol !== 'superadmin'
+        ) {
+            $this->auditar(
+                $request,
+                'crear_usuario_rol_no_autorizado',
+                'users',
+                null,
+                null,
+                [
+                    'rol_solicitado' =>
+                        'superadmin',
+                ],
+                $usuarioActual->empresa_id
+            );
+
+            return $this->respuestaNoAutorizado(
+                'No tienes permiso para crear usuarios superadmin.'
+            );
+        }
+
+        /*
+         * La confirmación ya fue validada pero NO se
+         * utiliza para crear el registro.
+         */
+        $user = DB::transaction(
+            function () use (
+                $validated,
+                $empresaId
+            ) {
+                $empresa = Empresa::query()
+                    ->lockForUpdate()
+                    ->find($empresaId);
+
+                if (!$empresa) {
+                    throw new ModelNotFoundException(
+                        'La empresa seleccionada no existe.'
                     );
+                }
+
+                /*
+                 * Obtener el siguiente ID y pasarlo al
+                 * generador de numero_usuario.
+                 */
+                $nextId =
+                    User::withTrashed()->max('id') + 1;
+
+                $numeroUsuario =
+                    User::generarNumeroUsuario($nextId);
+
+                return User::create([
+                    'name' =>
+                        trim($validated['name']),
+
+                    'email' =>
+                        strtolower(
+                            trim($validated['email'])
+                        ),
+
+                    'password' =>
+                        Hash::make(
+                            $validated['password']
+                        ),
+
+                    'telefono' =>
+                        $validated['telefono'] ?? null,
+
+                    'numero_usuario' =>
+                        $numeroUsuario,
+
+                    'empresa_id' =>
+                        $empresa->id,
+
+                    'rol' =>
+                        $validated['rol'],
+
+                    'activo' =>
+                        $validated['activo'] ?? true,
+                ]);
+            }
+        );
+
+        $user->load([
+            'empresa:id,nombre,rfc,activo',
+        ]);
+
+        $this->auditar(
+            $request,
+            'crear_usuario',
+            'users',
+            $user->id,
+            null,
+            $this->datosUsuario($user),
+            $user->empresa_id
+        );
+
+        Log::info(
+            'Usuario creado correctamente.',
+            [
+                'usuario_id' =>
+                    $user->id,
+
+                'empresa_id' =>
+                    $user->empresa_id,
+
+                'creado_por' =>
+                    $usuarioActual->id,
+            ]
+        );
+
+        return response()->json([
+            'message' =>
+                'Usuario creado correctamente.',
+
+            'user' =>
+                $user,
+        ], 201);
+    } catch (ValidationException $e) {
+        return $this->respuestaValidacion(
+            $request,
+            $e,
+            'crear_usuario_validacion_rechazada',
+            'users',
+            null,
+            $usuarioActual->empresa_id
+        );
+    } catch (ModelNotFoundException $e) {
+        return response()->json([
+            'message' =>
+                'Empresa no encontrada.',
+
+            'error' => [
+                'tipo' =>
+                    'model_not_found',
+
+                'exception' =>
+                    get_class($e),
+
+                'code' =>
+                    $e->getCode(),
+
+                'message' =>
+                    $e->getMessage(),
+
+                'file' =>
+                    $e->getFile(),
+
+                'line' =>
+                    $e->getLine(),
+            ],
+
+            'context' => [
+                'accion' =>
+                    'crear_usuario',
+
+                'empresa_id' =>
+                    $usuarioActual->empresa_id,
+
+                'usuario_id' =>
+                    $usuarioActual->id,
+            ],
+        ], 404);
+    } catch (Throwable $e) {
+        log($e);
+
+        return $this->respuestaErrorInterno(
+            $request,
+            $e,
+            'Error al crear usuario.',
+            'crear_usuario',
+            'users',
+            null,
+            $usuarioActual->empresa_id,
+            $usuarioActual->id,
+            [
+                'empresa_id_solicitada' =>
+                    $request->input('empresa_id'),
+
+                'rol_solicitado' =>
+                    $request->input('rol'),
+
+                'email_solicitado' =>
+                    $request->input('email'),
+
+                'password_recibida' =>
+                    $request->has('password'),
+
+                'password_confirmation_recibida' =>
+                    $request->has(
+                        'password_confirmation'
+                    ),
+            ]
+        );
+    }
+}
+
+
+    /**
+     * Actualizar usuario.
+     */
+    public function actualizarUsuario(
+        Request $request,
+        $id
+    ) {
+        $usuarioActual =
+            $this->usuarioAutenticado();
+
+        if (!$usuarioActual) {
+            return $this->respuestaNoAutenticado();
+        }
+
+        $userId = $this->validarId($id);
+
+        if ($userId === null) {
+            return response()->json([
+                'message' =>
+                    'El ID del usuario no es válido.',
+            ], 422);
+        }
+
+        try {
+            $userQuery = User::query();
+
+            if ($usuarioActual->rol !== 'superadmin') {
+                $userQuery->where(
+                    'empresa_id',
+                    $usuarioActual->empresa_id
+                );
             }
 
-            DB::beginTransaction();
+            $user = $userQuery->find($userId);
 
-            $user->update(
-                $data
-            );
+            if (!$user) {
+                $this->auditar(
+                    $request,
+                    'actualizar_usuario_no_encontrado',
+                    'users',
+                    $userId,
+                    null,
+                    null,
+                    $usuarioActual->empresa_id
+                );
 
-            $user->refresh();
+                return $this->respuestaNoEncontrado(
+                    'Usuario no encontrado.'
+                );
+            }
 
-            DB::commit();
-
-            Log::info(
-                '✅ Usuario actualizado correctamente',
+            $validator = Validator::make(
+                $request->all(),
                 [
-                    'id' => $user->id
+                    'name' => [
+                        'required',
+                        'string',
+                        'max:255',
+                    ],
+
+                    'email' => [
+                        'required',
+                        'email',
+                        'max:255',
+                        Rule::unique('users', 'email')
+                            ->ignore($user->id),
+                    ],
+
+                    'password' => [
+                        'nullable',
+                        'string',
+                        'min:6',
+                        'max:255',
+                    ],
+
+                    /*
+                     * Solo obligatoria cuando se está
+                     * enviando una nueva contraseña.
+                     */
+                    'password_confirmation' => [
+                        'nullable',
+                        'required_with:password',
+                        'same:password',
+                    ],
+
+                    'telefono' => [
+                        'nullable',
+                        'digits:10',
+                    ],
+
+                    'rol' => [
+                        'required',
+                        Rule::in([
+                            'superadmin',
+                            'admin',
+                            'vendedor',
+                            'cajero',
+                        ]),
+                    ],
+
+                    'empresa_id' => [
+                        'required',
+                        'integer',
+                        'min:1',
+                        'exists:empresas,id',
+                    ],
+
+                    'activo' => [
+                        'sometimes',
+                        'boolean',
+                    ],
+                ],
+                [
+                    'name.required' =>
+                        'El nombre es obligatorio.',
+
+                    'name.string' =>
+                        'El nombre debe ser un texto válido.',
+
+                    'name.max' =>
+                        'El nombre no puede tener más de 255 caracteres.',
+
+                    'email.required' =>
+                        'El correo electrónico es obligatorio.',
+
+                    'email.email' =>
+                        'Ingresa un correo electrónico válido.',
+
+                    'email.unique' =>
+                        'Este correo electrónico ya está registrado.',
+
+                    'password.min' =>
+                        'La contraseña debe tener al menos 6 caracteres.',
+
+                    'password_confirmation.required_with' =>
+                        'Debes confirmar la nueva contraseña.',
+
+                    'password_confirmation.same' =>
+                        'La confirmación de contraseña no coincide con la contraseña.',
+
+                    'telefono.digits' =>
+                        'El teléfono debe tener exactamente 10 dígitos.',
+
+                    'rol.required' =>
+                        'El rol es obligatorio.',
+
+                    'rol.in' =>
+                        'El rol seleccionado no es válido.',
+
+                    'empresa_id.required' =>
+                        'La empresa es obligatoria.',
+
+                    'empresa_id.exists' =>
+                        'La empresa seleccionada no existe.',
+
+                    'activo.boolean' =>
+                        'El estado activo debe ser verdadero o falso.',
                 ]
             );
 
-            return response()->json([
-                'message' =>
-                    'Usuario actualizado correctamente',
+            if ($validator->fails()) {
+                throw new ValidationException($validator);
+            }
 
-                'user' =>
-                    $user->load('empresa')
+            $validated =
+                $validator->validated();
+
+            $nuevaEmpresaId =
+                (int) $validated['empresa_id'];
+
+            if (
+                !$this->puedeAdministrarEmpresa(
+                    $usuarioActual,
+                    $nuevaEmpresaId
+                )
+            ) {
+                $this->auditar(
+                    $request,
+                    'actualizar_usuario_empresa_no_autorizada',
+                    'users',
+                    $user->id,
+                    $this->datosUsuario($user),
+                    [
+                        'empresa_id_solicitada' =>
+                            $nuevaEmpresaId,
+                    ],
+                    $usuarioActual->empresa_id
+                );
+
+                return $this->respuestaNoAutorizado(
+                    'No tienes permiso para asignar usuarios a esta empresa.'
+                );
+            }
+
+            if (
+                $validated['rol'] === 'superadmin' &&
+                $usuarioActual->rol !== 'superadmin'
+            ) {
+                return $this->respuestaNoAutorizado(
+                    'No tienes permiso para asignar el rol superadmin.'
+                );
+            }
+
+            $datosAntes =
+                $this->datosUsuario($user);
+
+            $user = DB::transaction(
+                function () use (
+                    $userId,
+                    $validated,
+                    $nuevaEmpresaId,
+                    $usuarioActual
+                ) {
+                    $query = User::query()
+                        ->lockForUpdate();
+
+                    if ($usuarioActual->rol !== 'superadmin') {
+                        $query->where(
+                            'empresa_id',
+                            $usuarioActual->empresa_id
+                        );
+                    }
+
+                    $user = $query->find($userId);
+
+                    if (!$user) {
+                        throw new ModelNotFoundException(
+                            'Usuario no encontrado.'
+                        );
+                    }
+
+                    $empresa = Empresa::query()
+                        ->lockForUpdate()
+                        ->find($nuevaEmpresaId);
+
+                    if (!$empresa) {
+                        throw new ModelNotFoundException(
+                            'Empresa no encontrada.'
+                        );
+                    }
+
+                    $data = [
+                        'name' =>
+                            trim($validated['name']),
+
+                        'email' =>
+                            strtolower(
+                                trim($validated['email'])
+                            ),
+
+                        'telefono' =>
+                            $validated['telefono'] ?? null,
+
+                        'rol' =>
+                            $validated['rol'],
+
+                        'empresa_id' =>
+                            $empresa->id,
+
+                        'activo' =>
+                            $validated['activo']
+                            ?? $user->activo,
+                    ];
+
+                    if (
+                        !empty($validated['password'])
+                    ) {
+                        $data['password'] =
+                            Hash::make(
+                                $validated['password']
+                            );
+                    }
+
+                    $user->update($data);
+
+                    return $user->fresh();
+                }
+            );
+
+            $user->load([
+                'empresa:id,nombre,rfc,activo',
             ]);
 
-        } catch (
-            \Illuminate\Database\Eloquent\ModelNotFoundException $e
-        ) {
+            $this->auditar(
+                $request,
+                'actualizar_usuario',
+                'users',
+                $user->id,
+                $datosAntes,
+                $this->datosUsuario($user),
+                $user->empresa_id
+            );
 
-            DB::rollBack();
-
-            return response()->json([
-                'message' =>
-                    'Usuario no encontrado'
-            ], 404);
-
-        } catch (
-            \Illuminate\Validation\ValidationException $e
-        ) {
-
-            DB::rollBack();
-
-            return response()->json([
-                'message' =>
-                    'Error de validación',
-
-                'errors' =>
-                    $e->errors()
-            ], 422);
-
-        } catch (\Exception $e) {
-
-            DB::rollBack();
-
-            Log::error(
-                '❌ Error al actualizar usuario',
+            Log::info(
+                'Usuario actualizado correctamente.',
                 [
-                    'user_id' =>
-                        $id,
+                    'usuario_id' =>
+                        $user->id,
 
-                    'data' =>
-                        $request->all(),
+                    'empresa_id' =>
+                        $user->empresa_id,
 
-                    'error' =>
-                        $e->getMessage(),
-
-                    'trace' =>
-                        $e->getTraceAsString()
+                    'actualizado_por' =>
+                        $usuarioActual->id,
                 ]
             );
 
             return response()->json([
                 'message' =>
-                    'Error al actualizar usuario: ' .
-                    $e->getMessage()
-            ], 500);
+                    'Usuario actualizado correctamente.',
+
+                'user' =>
+                    $user,
+            ]);
+        } catch (ValidationException $e) {
+            return $this->respuestaValidacion(
+                $request,
+                $e,
+                'actualizar_usuario_validacion_rechazada',
+                'users',
+                $userId,
+                $usuarioActual->empresa_id
+            );
+        } catch (ModelNotFoundException $e) {
+            return response()->json([
+                'message' =>
+                    'Usuario o empresa no encontrada.',
+
+                'error' => [
+                    'tipo' =>
+                        'model_not_found',
+
+                    'exception' =>
+                        get_class($e),
+
+                    'code' =>
+                        $e->getCode(),
+
+                    'message' =>
+                        $e->getMessage(),
+
+                    'file' =>
+                        $e->getFile(),
+
+                    'line' =>
+                        $e->getLine(),
+                ],
+            ], 404);
+        } catch (Throwable $e) {
+            return $this->respuestaErrorInterno(
+                $request,
+                $e,
+                'Error al actualizar usuario.',
+                'actualizar_usuario',
+                'users',
+                $userId,
+                $usuarioActual->empresa_id,
+                $usuarioActual->id
+            );
         }
     }
 
@@ -455,77 +1314,161 @@ class AdminController extends Controller
      */
     public function eliminarUsuario($id)
     {
-        Log::info(
-            '🗑️ Eliminando usuario ID: ' .
-            $id
-        );
+        $request = request();
+
+        $usuarioActual =
+            $this->usuarioAutenticado();
+
+        if (!$usuarioActual) {
+            return $this->respuestaNoAutenticado();
+        }
+
+        $userId = $this->validarId($id);
+
+        if ($userId === null) {
+            return response()->json([
+                'message' =>
+                    'El ID del usuario no es válido.',
+            ], 422);
+        }
 
         try {
-
-            $user = User::findOrFail($id);
-
             if (
-                auth()->id() === $user->id
+                (int) $usuarioActual->id === $userId
             ) {
+                $this->auditar(
+                    $request,
+                    'eliminar_usuario_rechazado',
+                    'users',
+                    $userId,
+                    null,
+                    [
+                        'motivo' =>
+                            'Intento de eliminar usuario propio.',
+                    ],
+                    $usuarioActual->empresa_id
+                );
 
                 return response()->json([
                     'message' =>
-                        'No puedes eliminar tu propio usuario'
+                        'No puedes eliminar tu propio usuario.',
                 ], 403);
             }
 
-            DB::beginTransaction();
+            $user = DB::transaction(
+                function () use (
+                    $userId,
+                    $usuarioActual
+                ) {
+                    $query = User::query()
+                        ->lockForUpdate();
 
-            $user->delete();
+                    if ($usuarioActual->rol !== 'superadmin') {
+                        $query->where(
+                            'empresa_id',
+                            $usuarioActual->empresa_id
+                        );
+                    }
 
-            DB::commit();
+                    $user = $query->find($userId);
+
+                    if (!$user) {
+                        throw new ModelNotFoundException(
+                            'Usuario no encontrado.'
+                        );
+                    }
+
+                    if (
+                        $user->rol === 'superadmin' &&
+                        $usuarioActual->rol !== 'superadmin'
+                    ) {
+                        throw new \RuntimeException(
+                            'No tienes permiso para eliminar este usuario.'
+                        );
+                    }
+
+                    $datosAntes =
+                        $this->datosUsuario($user);
+
+                    $user->delete();
+
+                    return [
+                        'user' => $user,
+                        'datosAntes' => $datosAntes,
+                    ];
+                }
+            );
+
+            $user =
+                $user['user'];
+
+            $datosAntes =
+                $user['datosAntes'];
+
+            $this->auditar(
+                $request,
+                'eliminar_usuario',
+                'users',
+                $user->id,
+                $datosAntes,
+                null,
+                $user->empresa_id
+            );
 
             Log::info(
-                '✅ Usuario eliminado correctamente',
+                'Usuario eliminado correctamente.',
                 [
-                    'id' => $id,
-                    'email' => $user->email
+                    'usuario_id' =>
+                        $user->id,
+
+                    'empresa_id' =>
+                        $user->empresa_id,
+
+                    'eliminado_por' =>
+                        $usuarioActual->id,
                 ]
             );
 
             return response()->json([
                 'message' =>
-                    'Usuario eliminado correctamente'
+                    'Usuario eliminado correctamente.',
             ]);
-
-        } catch (
-            \Illuminate\Database\Eloquent\ModelNotFoundException $e
-        ) {
-
-            DB::rollBack();
-
+        } catch (ModelNotFoundException $e) {
             return response()->json([
                 'message' =>
-                    'Usuario no encontrado'
-            ], 404);
+                    'Usuario no encontrado.',
 
-        } catch (\Exception $e) {
+                'error' => [
+                    'tipo' =>
+                        'model_not_found',
 
-            DB::rollBack();
+                    'exception' =>
+                        get_class($e),
 
-            Log::error(
-                '❌ Error al eliminar usuario',
-                [
-                    'user_id' =>
-                        $id,
+                    'code' =>
+                        $e->getCode(),
 
-                    'error' =>
+                    'message' =>
                         $e->getMessage(),
 
-                    'trace' =>
-                        $e->getTraceAsString()
-                ]
-            );
+                    'file' =>
+                        $e->getFile(),
 
-            return response()->json([
-                'message' =>
-                    'Error al eliminar usuario'
-            ], 500);
+                    'line' =>
+                        $e->getLine(),
+                ],
+            ], 404);
+        } catch (Throwable $e) {
+            return $this->respuestaErrorInterno(
+                $request,
+                $e,
+                'Error al eliminar usuario.',
+                'eliminar_usuario',
+                'users',
+                $userId,
+                $usuarioActual->empresa_id,
+                $usuarioActual->id
+            );
         }
     }
 
@@ -535,96 +1478,117 @@ class AdminController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Listar empresas incluyendo información de licencia.
-     */
-    public function empresas()
+    public function empresas(Request $request)
     {
-        Log::info(
-            '📋 Listando empresas'
-        );
+        $usuarioActual =
+            $this->usuarioAutenticado();
+
+        if (!$usuarioActual) {
+            return $this->respuestaNoAutenticado();
+        }
 
         try {
+            $query = Empresa::query()
+                ->select([
+                    'id',
+                    'nombre',
+                    'rfc',
+                    'activo',
+                    'licencia_tipo',
+                    'licencia_fecha_inicio',
+                    'licencia_fecha_fin',
+                    'licencia_activa',
+                ])
+                ->orderBy('nombre');
 
-            $empresas = Empresa::select([
-                'id',
-                'nombre',
-                'rfc',
-                'activo',
-                'licencia_tipo',
-                'licencia_fecha_inicio',
-                'licencia_fecha_fin',
-                'licencia_activa',
-            ])
-            ->orderBy(
-                'nombre'
-            )
-            ->get()
-            ->map(function ($empresa) {
+            if ($usuarioActual->rol !== 'superadmin') {
+                if (!$usuarioActual->empresa_id) {
+                    return $this->respuestaNoAutorizado(
+                        'El usuario no tiene una empresa asignada.'
+                    );
+                }
 
-                return [
-                    'id' =>
-                        $empresa->id,
+                $query->where(
+                    'id',
+                    $usuarioActual->empresa_id
+                );
+            }
 
-                    'nombre' =>
-                        $empresa->nombre,
+            $empresas = $query
+                ->get()
+                ->map(
+                    fn(Empresa $empresa) => [
+                        'id' =>
+                            $empresa->id,
 
-                    'rfc' =>
-                        $empresa->rfc,
+                        'nombre' =>
+                            $empresa->nombre,
 
-                    'activo' =>
-                        $empresa->activo,
+                        'rfc' =>
+                            $empresa->rfc,
 
-                    'licencia_tipo' =>
-                        $empresa->licencia_tipo,
+                        'activo' =>
+                            $empresa->activo,
 
-                    'licencia_fecha_inicio' =>
-                        $empresa->licencia_fecha_inicio,
+                        'licencia_tipo' =>
+                            $empresa->licencia_tipo,
 
-                    'licencia_fecha_fin' =>
-                        $empresa->licencia_fecha_fin,
+                        'licencia_fecha_inicio' =>
+                            $empresa->licencia_fecha_inicio,
 
-                    'licencia_activa' =>
-                        $empresa->licencia_activa,
+                        'licencia_fecha_fin' =>
+                            $empresa->licencia_fecha_fin,
 
-                    'licencia_vigente' =>
-                        $empresa->tieneLicenciaActiva(),
+                        'licencia_activa' =>
+                            $empresa->licencia_activa,
 
-                    'licencia_vencida' =>
-                        $empresa->licenciaVencida(),
+                        'licencia_vigente' =>
+                            $empresa->tieneLicenciaActiva(),
 
-                    'licencia_pendiente' =>
-                        $empresa->licenciaPendiente(),
+                        'licencia_vencida' =>
+                            $empresa->licenciaVencida(),
 
-                    'dias_restantes' =>
-                        $empresa->diasLicenciaRestantes(),
+                        'licencia_pendiente' =>
+                            $empresa->licenciaPendiente(),
 
-                    'estado_licencia' =>
-                        $empresa->estadoLicencia(),
-                ];
-            });
+                        'dias_restantes' =>
+                            $empresa->diasLicenciaRestantes(),
+
+                        'estado_licencia' =>
+                            $empresa->estadoLicencia(),
+                    ]
+                )
+                ->values();
+
+            $this->auditar(
+                $request,
+                'listar_empresas',
+                'empresas',
+                null,
+                null,
+                [
+                    'total' =>
+                        $empresas->count(),
+                ],
+                $usuarioActual->rol === 'superadmin'
+                    ? null
+                    : $usuarioActual->empresa_id
+            );
 
             return response()->json(
                 $empresas
             );
-
-        } catch (\Exception $e) {
-
-            Log::error(
-                '❌ Error al listar empresas',
-                [
-                    'error' =>
-                        $e->getMessage(),
-
-                    'trace' =>
-                        $e->getTraceAsString()
-                ]
+        } catch (Throwable $e) {
+            return $this->respuestaErrorInterno(
+                $request,
+                $e,
+                'Error al cargar empresas.',
+                'listar_empresas',
+                'empresas',
+                null,
+                $usuarioActual->empresa_id,
+                $usuarioActual->id
             );
-
-            return response()->json([
-                'message' =>
-                    'Error al cargar empresas'
-            ], 500);
         }
     }
 
@@ -634,280 +1598,292 @@ class AdminController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Obtener licencia de una empresa.
-     */
     public function obtenerLicenciaEmpresa(
+        Request $request,
         $empresaId
     ) {
+        $usuarioActual =
+            $this->usuarioAutenticado();
+
+        if (!$usuarioActual) {
+            return $this->respuestaNoAutenticado();
+        }
+
+        $id = $this->validarId($empresaId);
+
+        if ($id === null) {
+            return response()->json([
+                'message' =>
+                    'El ID de la empresa no es válido.',
+            ], 422);
+        }
+
         try {
+            if (
+                !$this->puedeAdministrarEmpresa(
+                    $usuarioActual,
+                    $id
+                )
+            ) {
+                return $this->respuestaNoAutorizado(
+                    'No tienes permiso para consultar esta empresa.'
+                );
+            }
 
             $empresa =
-                Empresa::findOrFail(
-                    $empresaId
+                Empresa::query()->find($id);
+
+            if (!$empresa) {
+                return $this->respuestaNoEncontrado(
+                    'Empresa no encontrada.'
                 );
+            }
 
-            return response()->json([
-                'empresa_id' =>
-                    $empresa->id,
+            $licencia =
+                $this->datosLicencia($empresa);
 
-                'empresa' =>
-                    $empresa->nombre,
-
-                'licencia_tipo' =>
-                    $empresa->licencia_tipo,
-
-                'licencia_fecha_inicio' =>
-                    $empresa->licencia_fecha_inicio,
-
-                'licencia_fecha_fin' =>
-                    $empresa->licencia_fecha_fin,
-
-                'licencia_activa' =>
-                    $empresa->licencia_activa,
-
-                'licencia_vigente' =>
-                    $empresa->tieneLicenciaActiva(),
-
-                'licencia_vencida' =>
-                    $empresa->licenciaVencida(),
-
-                'licencia_pendiente' =>
-                    $empresa->licenciaPendiente(),
-
-                'dias_restantes' =>
-                    $empresa->diasLicenciaRestantes(),
-
-                'estado_licencia' =>
-                    $empresa->estadoLicencia(),
-            ]);
-
-        } catch (
-            \Illuminate\Database\Eloquent\ModelNotFoundException $e
-        ) {
-
-            return response()->json([
-                'message' =>
-                    'Empresa no encontrada'
-            ], 404);
-
-        } catch (\Exception $e) {
-
-            Log::error(
-                '❌ Error obteniendo licencia',
+            $this->auditar(
+                $request,
+                'consultar_licencia_empresa',
+                'empresas',
+                $empresa->id,
+                null,
                 [
-                    'empresa_id' =>
-                        $empresaId,
+                    'licencia_tipo' =>
+                        $empresa->licencia_tipo,
 
-                    'error' =>
-                        $e->getMessage()
-                ]
+                    'licencia_activa' =>
+                        $empresa->licencia_activa,
+                ],
+                $empresa->id
             );
 
-            return response()->json([
-                'message' =>
-                    'Error al obtener licencia'
-            ], 500);
+            return response()->json(
+                $licencia
+            );
+        } catch (Throwable $e) {
+            return $this->respuestaErrorInterno(
+                $request,
+                $e,
+                'Error al obtener licencia.',
+                'consultar_licencia_empresa',
+                'empresas',
+                $id,
+                $usuarioActual->empresa_id,
+                $usuarioActual->id
+            );
         }
     }
 
-    /**
-     * Actualizar licencia de una empresa.
-     */
     public function actualizarLicenciaEmpresa(
         Request $request,
         $empresaId
     ) {
-        Log::info(
-            '🔐 Actualizando licencia de empresa',
-            [
-                'empresa_id' =>
-                    $empresaId,
+        $usuarioActual =
+            $this->usuarioAutenticado();
 
-                'datos' =>
-                    $request->all()
-            ]
-        );
+        if (!$usuarioActual) {
+            return $this->respuestaNoAutenticado();
+        }
 
-        $request->validate([
-            'licencia_tipo' => [
-                'required',
-                'in:dia,semana,quincena,mes,bimestre,trimestre,semestre,anual,permanente'
-            ],
+        $id = $this->validarId($empresaId);
 
-            'licencia_fecha_inicio' => [
-                'required',
-                'date'
-            ],
-
-            'licencia_fecha_fin' => [
-                'nullable',
-                'date',
-                'after_or_equal:licencia_fecha_inicio'
-            ],
-
-            'licencia_activa' => [
-                'required',
-                'boolean'
-            ],
-        ], [
-
-            'licencia_tipo.required' =>
-                'El tipo de licencia es obligatorio.',
-
-            'licencia_tipo.in' =>
-                'El tipo de licencia seleccionado no es válido.',
-
-            'licencia_fecha_inicio.required' =>
-                'La fecha de inicio es obligatoria.',
-
-            'licencia_fecha_inicio.date' =>
-                'La fecha de inicio no es válida.',
-
-            'licencia_fecha_fin.date' =>
-                'La fecha de fin no es válida.',
-
-            'licencia_fecha_fin.after_or_equal' =>
-                'La fecha de fin debe ser igual o posterior a la fecha de inicio.',
-
-            'licencia_activa.required' =>
-                'Debe indicar si la licencia está activa.',
-
-            'licencia_activa.boolean' =>
-                'El estado de licencia no es válido.',
-        ]);
-
-        DB::beginTransaction();
+        if ($id === null) {
+            return response()->json([
+                'message' =>
+                    'El ID de la empresa no es válido.',
+            ], 422);
+        }
 
         try {
-
-            $empresa =
-                Empresa::findOrFail(
-                    $empresaId
+            if (
+                !$this->puedeAdministrarEmpresa(
+                    $usuarioActual,
+                    $id
+                )
+            ) {
+                return $this->respuestaNoAutorizado(
+                    'No tienes permiso para modificar esta empresa.'
                 );
+            }
 
-            $fechaInicio =
-                $request->licencia_fecha_inicio;
+            $validator = Validator::make(
+                $request->all(),
+                [
+                    'licencia_tipo' => [
+                        'required',
+                        Rule::in([
+                            'dia',
+                            'semana',
+                            'quincena',
+                            'mes',
+                            'bimestre',
+                            'trimestre',
+                            'semestre',
+                            'anual',
+                            'permanente',
+                        ]),
+                    ],
 
-            $fechaFin =
-                $request->licencia_tipo === 'permanente'
-                    ? null
-                    : $request->licencia_fecha_fin;
+                    'licencia_fecha_inicio' => [
+                        'required',
+                        'date',
+                    ],
 
-            $empresa->update([
-                'licencia_tipo' =>
-                    $request->licencia_tipo,
+                    'licencia_fecha_fin' => [
+                        'nullable',
+                        'date',
+                        'after_or_equal:licencia_fecha_inicio',
+                    ],
 
-                'licencia_fecha_inicio' =>
-                    $fechaInicio,
+                    'licencia_activa' => [
+                        'required',
+                        'boolean',
+                    ],
+                ],
+                [
+                    'licencia_tipo.required' =>
+                        'El tipo de licencia es obligatorio.',
 
-                'licencia_fecha_fin' =>
-                    $fechaFin,
+                    'licencia_tipo.in' =>
+                        'El tipo de licencia seleccionado no es válido.',
 
-                'licencia_activa' =>
-                    $request->boolean(
-                        'licencia_activa'
-                    ),
-            ]);
+                    'licencia_fecha_inicio.required' =>
+                        'La fecha de inicio es obligatoria.',
 
-            $empresa->refresh();
+                    'licencia_fecha_inicio.date' =>
+                        'La fecha de inicio no es válida.',
 
-            DB::commit();
+                    'licencia_fecha_fin.date' =>
+                        'La fecha de fin no es válida.',
+
+                    'licencia_fecha_fin.after_or_equal' =>
+                        'La fecha de fin debe ser igual o posterior a la fecha de inicio.',
+
+                    'licencia_activa.required' =>
+                        'Debe indicar si la licencia está activa.',
+
+                    'licencia_activa.boolean' =>
+                        'El estado de licencia no es válido.',
+                ]
+            );
+
+            if ($validator->fails()) {
+                throw new ValidationException($validator);
+            }
+
+            $validated =
+                $validator->validated();
+
+            $resultado = DB::transaction(
+                function () use (
+                    $id,
+                    $validated
+                ) {
+                    $empresa = Empresa::query()
+                        ->lockForUpdate()
+                        ->find($id);
+
+                    if (!$empresa) {
+                        throw new ModelNotFoundException(
+                            'Empresa no encontrada.'
+                        );
+                    }
+
+                    $datosAntes =
+                        $this->datosEmpresa($empresa);
+
+                    $fechaFin =
+                        $validated['licencia_tipo']
+                            === 'permanente'
+                        ? null
+                        : (
+                            $validated['licencia_fecha_fin']
+                            ?? null
+                        );
+
+                    $empresa->update([
+                        'licencia_tipo' =>
+                            $validated['licencia_tipo'],
+
+                        'licencia_fecha_inicio' =>
+                            $validated['licencia_fecha_inicio'],
+
+                        'licencia_fecha_fin' =>
+                            $fechaFin,
+
+                        'licencia_activa' =>
+                            (bool) $validated['licencia_activa'],
+                    ]);
+
+                    $empresa->refresh();
+
+                    return [
+                        'empresa' =>
+                            $empresa,
+
+                        'datosAntes' =>
+                            $datosAntes,
+                    ];
+                }
+            );
+
+            /** @var Empresa $empresa */
+            $empresa =
+                $resultado['empresa'];
+
+            $this->auditar(
+                $request,
+                'actualizar_licencia_empresa',
+                'empresas',
+                $empresa->id,
+                $resultado['datosAntes'],
+                $this->datosEmpresa($empresa),
+                $empresa->id
+            );
 
             Log::info(
-                '✅ Licencia actualizada correctamente',
+                'Licencia actualizada correctamente.',
                 [
                     'empresa_id' =>
                         $empresa->id,
 
-                    'tipo' =>
-                        $empresa->licencia_tipo,
-
-                    'fecha_inicio' =>
-                        $empresa->licencia_fecha_inicio,
-
-                    'fecha_fin' =>
-                        $empresa->licencia_fecha_fin,
-
-                    'activa' =>
-                        $empresa->licencia_activa,
+                    'actualizado_por' =>
+                        $usuarioActual->id,
                 ]
             );
 
             return response()->json([
                 'message' =>
-                    'Licencia actualizada correctamente',
+                    'Licencia actualizada correctamente.',
 
-                'licencia' => [
-                    'empresa_id' =>
-                        $empresa->id,
-
-                    'empresa' =>
-                        $empresa->nombre,
-
-                    'licencia_tipo' =>
-                        $empresa->licencia_tipo,
-
-                    'licencia_fecha_inicio' =>
-                        $empresa->licencia_fecha_inicio,
-
-                    'licencia_fecha_fin' =>
-                        $empresa->licencia_fecha_fin,
-
-                    'licencia_activa' =>
-                        $empresa->licencia_activa,
-
-                    'licencia_vigente' =>
-                        $empresa->tieneLicenciaActiva(),
-
-                    'licencia_vencida' =>
-                        $empresa->licenciaVencida(),
-
-                    'licencia_pendiente' =>
-                        $empresa->licenciaPendiente(),
-
-                    'dias_restantes' =>
-                        $empresa->diasLicenciaRestantes(),
-
-                    'estado_licencia' =>
-                        $empresa->estadoLicencia(),
-                ]
+                'licencia' =>
+                    $this->datosLicencia($empresa),
             ]);
-
-        } catch (
-            \Illuminate\Database\Eloquent\ModelNotFoundException $e
-        ) {
-
-            DB::rollBack();
-
-            return response()->json([
-                'message' =>
-                    'Empresa no encontrada'
-            ], 404);
-
-        } catch (\Exception $e) {
-
-            DB::rollBack();
-
-            Log::error(
-                '❌ Error actualizando licencia',
-                [
-                    'empresa_id' =>
-                        $empresaId,
-
-                    'error' =>
-                        $e->getMessage(),
-
-                    'trace' =>
-                        $e->getTraceAsString()
-                ]
+        } catch (ValidationException $e) {
+            return $this->respuestaValidacion(
+                $request,
+                $e,
+                'actualizar_licencia_validacion_rechazada',
+                'empresas',
+                $id,
+                $id
             );
-
-            return response()->json([
-                'message' =>
-                    'Error al actualizar licencia: ' .
-                    $e->getMessage()
-            ], 500);
+        } catch (ModelNotFoundException $e) {
+            return $this->respuestaNoEncontrado(
+                'Empresa no encontrada.'
+            );
+        } catch (Throwable $e) {
+            return $this->respuestaErrorInterno(
+                $request,
+                $e,
+                'Error al actualizar licencia.',
+                'actualizar_licencia_empresa',
+                'empresas',
+                $id,
+                $usuarioActual->empresa_id,
+                $usuarioActual->id
+            );
         }
     }
 
@@ -917,69 +1893,182 @@ class AdminController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Obtener reportes de ventas.
-     */
     public function reportes(
         Request $request
     ) {
-        Log::info(
-            '📊 Generando reportes',
-            $request->all()
-        );
+        $usuarioActual =
+            $this->usuarioAutenticado();
+
+        if (!$usuarioActual) {
+            return $this->respuestaNoAutenticado();
+        }
 
         try {
+            $validator = Validator::make(
+                $request->all(),
+                [
+                    'fecha_desde' => [
+                        'nullable',
+                        'date',
+                    ],
 
-            $query = Venta::with([
-                'usuario',
-                'cliente'
-            ]);
+                    'fecha_hasta' => [
+                        'nullable',
+                        'date',
+                        'after_or_equal:fecha_desde',
+                    ],
 
-            if ($request->fecha_desde) {
+                    'estado' => [
+                        'nullable',
+                        Rule::in([
+                            'pendiente',
+                            'pagado',
+                            'cancelado',
+                        ]),
+                    ],
 
-                $query->whereDate(
+                    'per_page' => [
+                        'nullable',
+                        'integer',
+                        'min:1',
+                        'max:100',
+                    ],
+                ],
+                [
+                    'fecha_desde.date' =>
+                        'La fecha inicial no es válida.',
+
+                    'fecha_hasta.date' =>
+                        'La fecha final no es válida.',
+
+                    'fecha_hasta.after_or_equal' =>
+                        'La fecha final debe ser igual o posterior a la fecha inicial.',
+
+                    'estado.in' =>
+                        'El estado seleccionado no es válido.',
+
+                    'per_page.max' =>
+                        'No se pueden solicitar más de 100 registros por página.',
+                ]
+            );
+
+            if ($validator->fails()) {
+                throw new ValidationException($validator);
+            }
+
+            $query = Venta::query();
+
+            if ($usuarioActual->rol !== 'superadmin') {
+                if (!$usuarioActual->empresa_id) {
+                    return $this->respuestaNoAutorizado(
+                        'El usuario no tiene una empresa asignada.'
+                    );
+                }
+
+                $query->where(
+                    'empresa_id',
+                    $usuarioActual->empresa_id
+                );
+            }
+
+            if ($request->filled('fecha_desde')) {
+                $fechaDesde =
+                    \Carbon\Carbon::parse(
+                        $request->fecha_desde
+                    )->startOfDay();
+
+                $query->where(
                     'fecha',
                     '>=',
-                    $request->fecha_desde
+                    $fechaDesde
                 );
             }
 
-            if ($request->fecha_hasta) {
+            if ($request->filled('fecha_hasta')) {
+                $fechaHasta =
+                    \Carbon\Carbon::parse(
+                        $request->fecha_hasta
+                    )
+                    ->addDay()
+                    ->startOfDay();
 
-                $query->whereDate(
+                $query->where(
                     'fecha',
-                    '<=',
-                    $request->fecha_hasta
+                    '<',
+                    $fechaHasta
                 );
             }
 
-            if ($request->estado) {
-
+            if ($request->filled('estado')) {
                 $query->where(
                     'estado',
                     $request->estado
                 );
             }
 
-            $ventas = $query
-                ->orderBy(
-                    'fecha',
-                    'desc'
-                )
-                ->paginate(20);
+            $resumen =
+                (clone $query)
+                    ->selectRaw(
+                        'COUNT(*) as numero_tickets, COALESCE(SUM(total), 0) as total_ventas'
+                    )
+                    ->first();
 
             $totalVentas =
-                (clone $query)->sum(
-                    'total'
+                (float) (
+                    $resumen->total_ventas ?? 0
                 );
 
             $numeroTickets =
-                (clone $query)->count();
+                (int) (
+                    $resumen->numero_tickets ?? 0
+                );
 
             $ticketPromedio =
                 $numeroTickets > 0
-                    ? $totalVentas / $numeroTickets
+                    ? round(
+                        $totalVentas /
+                        $numeroTickets,
+                        2
+                    )
                     : 0;
+
+            $perPage = min(
+                max(
+                    (int) $request->input(
+                        'per_page',
+                        20
+                    ),
+                    1
+                ),
+                100
+            );
+
+            $ventas =
+                (clone $query)
+                    ->with([
+                        'usuario:id,name,numero_usuario',
+                        'cliente:id,nombre,telefono',
+                    ])
+                    ->orderByDesc('fecha')
+                    ->paginate($perPage);
+
+            $this->auditar(
+                $request,
+                'consultar_reportes_ventas',
+                'ventas',
+                null,
+                null,
+                [
+                    'total_ventas' =>
+                        $totalVentas,
+
+                    'numero_tickets' =>
+                        $numeroTickets,
+                ],
+                $usuarioActual->rol === 'superadmin'
+                    ? null
+                    : $usuarioActual->empresa_id
+            );
 
             return response()->json([
                 'data' =>
@@ -1006,47 +2095,56 @@ class AdminController extends Controller
                 'total' =>
                     $ventas->total(),
             ]);
-
-        } catch (\Exception $e) {
-
-            Log::error(
-                '❌ Error al generar reportes',
-                [
-                    'error' =>
-                        $e->getMessage(),
-
-                    'trace' =>
-                        $e->getTraceAsString()
-                ]
+        } catch (ValidationException $e) {
+            return $this->respuestaValidacion(
+                $request,
+                $e,
+                'consultar_reportes_validacion_rechazada',
+                'ventas',
+                null,
+                $usuarioActual->empresa_id
             );
-
-            return response()->json([
-                'message' =>
-                    'Error al generar reportes'
-            ], 500);
+        } catch (Throwable $e) {
+            return $this->respuestaErrorInterno(
+                $request,
+                $e,
+                'Error al generar reportes.',
+                'consultar_reportes_ventas',
+                'ventas',
+                null,
+                $usuarioActual->empresa_id,
+                $usuarioActual->id
+            );
         }
     }
 
-    /**
-     * Exportar reportes.
-     */
     public function exportarReportes(
         Request $request
     ) {
-        try {
+        $usuarioActual =
+            $this->usuarioAutenticado();
 
-            return response()->json([
-                'message' =>
-                    'Exportación en desarrollo'
-            ]);
-
-        } catch (\Exception $e) {
-
-            return response()->json([
-                'message' =>
-                    'Error al exportar reportes'
-            ], 500);
+        if (!$usuarioActual) {
+            return $this->respuestaNoAutenticado();
         }
+
+        $this->auditar(
+            $request,
+            'exportar_reportes',
+            'ventas',
+            null,
+            null,
+            [
+                'estado' =>
+                    'en_desarrollo',
+            ],
+            $usuarioActual->empresa_id
+        );
+
+        return response()->json([
+            'message' =>
+                'Exportación en desarrollo.',
+        ]);
     }
 
     /*
@@ -1055,89 +2153,123 @@ class AdminController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Actualizar configuración de empresa.
-     */
     public function actualizarConfiguracion(
         Request $request
     ) {
-        Log::info(
-            '⚙️ Actualizando configuración de empresa',
-            $request->all()
-        );
+        $usuarioActual =
+            $this->usuarioAutenticado();
 
-        $empresa =
-            $request->user()->empresa;
-
-        if (!$empresa) {
-
-            return response()->json([
-                'message' =>
-                    'Empresa no encontrada'
-            ], 404);
+        if (!$usuarioActual) {
+            return $this->respuestaNoAutenticado();
         }
 
-        $request->validate([
-            'colores' =>
-                'nullable|array',
-
-            'colores.primary' =>
-                'nullable|string',
-
-            'colores.secondary' =>
-                'nullable|string',
-
-            'colores.background' =>
-                'nullable|string',
-
-            'colores.text' =>
-                'nullable|string',
-
-            'colores.navbar' =>
-                'nullable|string',
-        ]);
-
-        DB::beginTransaction();
-
         try {
-
-            if ($request->has('colores')) {
-
-                $empresa->colores =
-                    $request->colores;
+            if (!$usuarioActual->empresa_id) {
+                return $this->respuestaNoAutorizado(
+                    'El usuario no tiene una empresa asignada.'
+                );
             }
 
-            $empresa->save();
-
-            DB::commit();
-
-            return response()->json([
-                'message' =>
-                    'Configuración actualizada correctamente',
-
-                'colores' =>
-                    $empresa->colores
-            ]);
-
-        } catch (\Exception $e) {
-
-            DB::rollBack();
-
-            Log::error(
-                '❌ Error al actualizar configuración',
+            $validator = Validator::make(
+                $request->all(),
                 [
-                    'empresa_id' =>
-                        $empresa->id,
+                    'colores' =>
+                        'nullable|array',
 
-                    'error' =>
-                        $e->getMessage()
+                    'colores.primary' =>
+                        'nullable|string|max:20',
+
+                    'colores.secondary' =>
+                        'nullable|string|max:20',
+
+                    'colores.background' =>
+                        'nullable|string|max:20',
+
+                    'colores.text' =>
+                        'nullable|string|max:20',
+
+                    'colores.navbar' =>
+                        'nullable|string|max:20',
                 ]
+            );
+
+            if ($validator->fails()) {
+                throw new ValidationException($validator);
+            }
+
+            $empresa = Empresa::query()
+                ->where(
+                    'id',
+                    $usuarioActual->empresa_id
+                )
+                ->lockForUpdate()
+                ->first();
+
+            if (!$empresa) {
+                return $this->respuestaNoEncontrado(
+                    'Empresa no encontrada.'
+                );
+            }
+
+            $datosAntes =
+                $this->datosEmpresa($empresa);
+
+            $empresa = DB::transaction(
+                function () use (
+                    $empresa,
+                    $request
+                ) {
+                    if ($request->has('colores')) {
+                        $empresa->colores =
+                            $request->input('colores');
+                    }
+
+                    $empresa->save();
+
+                    return $empresa->fresh();
+                }
+            );
+
+            $this->auditar(
+                $request,
+                'actualizar_configuracion_empresa',
+                'empresas',
+                $empresa->id,
+                $datosAntes,
+                [
+                    'colores' =>
+                        $empresa->colores,
+                ],
+                $empresa->id
             );
 
             return response()->json([
                 'message' =>
-                    'Error al actualizar configuración'
-            ], 500);
+                    'Configuración actualizada correctamente.',
+
+                'colores' =>
+                    $empresa->colores,
+            ]);
+        } catch (ValidationException $e) {
+            return $this->respuestaValidacion(
+                $request,
+                $e,
+                'actualizar_configuracion_validacion_rechazada',
+                'empresas',
+                $usuarioActual->empresa_id,
+                $usuarioActual->empresa_id
+            );
+        } catch (Throwable $e) {
+            return $this->respuestaErrorInterno(
+                $request,
+                $e,
+                'Error al actualizar configuración.',
+                'actualizar_configuracion_empresa',
+                'empresas',
+                $usuarioActual->empresa_id,
+                $usuarioActual->empresa_id,
+                $usuarioActual->id
+            );
         }
     }
 }

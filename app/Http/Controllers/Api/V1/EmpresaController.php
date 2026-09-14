@@ -5,11 +5,13 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Empresa;
 use App\Services\AuditoriaService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Intervention\Image\Drivers\Gd\Driver;
 use Intervention\Image\ImageManager;
 use Throwable;
@@ -44,25 +46,61 @@ class EmpresaController extends Controller
     // -------------------------------------------------------------------
     // INDEX
     // -------------------------------------------------------------------
+
     public function index(Request $request)
     {
-        if ($request->user()->rol !== 'superadmin') {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'No autenticado.',
+                'error'   => 'AUTH_REQUIRED',
+            ], 401);
+        }
+
+        if ($user->rol !== 'superadmin') {
+            $this->registrarAuditoriaError(
+                $request,
+                'empresas.consulta.rechazada',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'usuario_no_autorizado',
+                ]
+            );
+
             return response()->json([
                 'message' => 'No autorizado.',
+                'error'   => 'FORBIDDEN',
             ], 403);
         }
 
-        $validated = $request->validate([
-            'search'   => 'nullable|string|max:255',
-            'activo'   => 'nullable|boolean',
-            'per_page' => 'nullable|integer|min:1|max:100',
-        ]);
+        try {
+            $validated = $request->validate([
+                'search'   => 'nullable|string|max:255',
+                'activo'   => 'nullable|boolean',
+                'per_page' => 'nullable|integer|min:1|max:100',
+            ]);
+        } catch (ValidationException $e) {
+            $this->registrarAuditoriaError(
+                $request,
+                'empresas.consulta.rechazada',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'validacion',
+                    'errores' => $e->errors(),
+                ]
+            );
+
+            throw $e;
+        }
 
         try {
             $query = Empresa::query();
 
             if (!empty($validated['search'])) {
-                $search = trim($validated['search']);
+                $search = trim((string) $validated['search']);
                 $like = '%' . $search . '%';
 
                 $query->where(function ($q) use ($like) {
@@ -78,13 +116,12 @@ class EmpresaController extends Controller
                 );
             }
 
-            $perPage = (int) (
-                $validated['per_page'] ?? 20
-            );
+            $perPage = (int) ($validated['per_page'] ?? 20);
 
             $empresas = $query
                 ->orderBy('nombre', 'asc')
-                ->paginate($perPage);
+                ->paginate($perPage)
+                ->appends($request->query());
 
             $this->registrarAuditoria(
                 $request,
@@ -102,16 +139,54 @@ class EmpresaController extends Controller
             );
 
             return response()->json($empresas);
+
+        } catch (QueryException $e) {
+            Log::error(
+                'Error de base de datos listando empresas.',
+                [
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                    'code'       => $e->getCode(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresas.consulta.error',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'error_base_datos',
+                ]
+            );
+
+            return response()->json([
+                'message' => 'Error al consultar empresas.',
+                'error'   => 'DATABASE_ERROR',
+            ], 500);
+
         } catch (Throwable $e) {
             Log::error(
-                'Error listando empresas.',
+                'Error inesperado listando empresas.',
                 [
-                    'error' => $e->getMessage(),
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresas.consulta.error',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'error_interno',
                 ]
             );
 
             return response()->json([
                 'message' => 'Error al cargar empresas.',
+                'error'   => 'INTERNAL_ERROR',
             ], 500);
         }
     }
@@ -119,17 +194,45 @@ class EmpresaController extends Controller
     // -------------------------------------------------------------------
     // SHOW
     // -------------------------------------------------------------------
+
     public function show($id, Request $request)
     {
         $user = $request->user();
 
+        if (!$user) {
+            return response()->json([
+                'message' => 'No autenticado.',
+                'error'   => 'AUTH_REQUIRED',
+            ], 401);
+        }
+
         try {
             if ($user->rol === 'superadmin') {
-                $empresa = Empresa::findOrFail($id);
+                $empresa = Empresa::query()
+                    ->whereKey($id)
+                    ->first();
             } else {
                 $empresa = Empresa::query()
+                    ->whereKey($id)
                     ->where('id', $user->empresa_id)
-                    ->findOrFail($id);
+                    ->first();
+            }
+
+            if (!$empresa) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'empresa.consulta.rechazada',
+                    'empresas',
+                    is_numeric($id) ? (int) $id : null,
+                    [
+                        'motivo' => 'empresa_no_encontrada_o_no_autorizada',
+                    ]
+                );
+
+                return response()->json([
+                    'message' => 'Empresa no encontrada.',
+                    'error'   => 'EMPRESA_NOT_FOUND',
+                ], 404);
             }
 
             $this->registrarAuditoria(
@@ -142,50 +245,126 @@ class EmpresaController extends Controller
             );
 
             return response()->json($empresa);
-        } catch (Throwable $e) {
+
+        } catch (QueryException $e) {
             Log::error(
-                'Error consultando empresa.',
+                'Error de base de datos consultando empresa.',
                 [
                     'empresa_id' => $id,
-                    'usuario_id' => $user?->id,
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                    'code'       => $e->getCode(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.consulta.error',
+                'empresas',
+                is_numeric($id) ? (int) $id : null,
+                [
+                    'motivo' => 'error_base_datos',
+                ]
+            );
+
+            return response()->json([
+                'message' => 'Error al consultar empresa.',
+                'error'   => 'DATABASE_ERROR',
+            ], 500);
+
+        } catch (Throwable $e) {
+            Log::error(
+                'Error inesperado consultando empresa.',
+                [
+                    'empresa_id' => $id,
+                    'usuario_id' => $user->id,
                     'error'      => $e->getMessage(),
                 ]
             );
 
-            throw $e;
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.consulta.error',
+                'empresas',
+                is_numeric($id) ? (int) $id : null,
+                [
+                    'motivo' => 'error_interno',
+                ]
+            );
+
+            return response()->json([
+                'message' => 'Error al consultar empresa.',
+                'error'   => 'INTERNAL_ERROR',
+            ], 500);
         }
     }
 
     // -------------------------------------------------------------------
     // STORE
     // -------------------------------------------------------------------
+
     public function store(Request $request)
     {
-        if ($request->user()->rol !== 'superadmin') {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'No autenticado.',
+                'error'   => 'AUTH_REQUIRED',
+            ], 401);
+        }
+
+        if ($user->rol !== 'superadmin') {
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.creacion.rechazada',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'usuario_no_autorizado',
+                ]
+            );
+
             return response()->json([
                 'message' => 'No autorizado.',
+                'error'   => 'FORBIDDEN',
             ], 403);
         }
 
-        $request->validate([
-            'nombre'          => 'required|string|max:255',
-            'direccion'       => 'nullable|string|max:500',
-            'telefono'        => 'nullable|string|max:20',
-            'email_contacto'  => 'nullable|email|max:255',
-            'rfc'             => 'nullable|string|max:20',
-            'razon_social'    => 'nullable|string|max:255',
-            'leyenda_ticket'  => 'nullable|string|max:2000',
-            'whatsapp_numero' => 'nullable|string|max:20',
-            'colores'         => 'nullable',
-            'configuracion'   => 'nullable',
-            'logo'            => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:2048',
-            'logo_crop'       => 'nullable',
-            'logo_crop.x'     => 'nullable|integer|min:0',
-            'logo_crop.y'     => 'nullable|integer|min:0',
-            'logo_crop.width' => 'nullable|integer|min:1',
-            'logo_crop.height' => 'nullable|integer|min:1',
-            'activo'          => 'nullable|boolean',
-        ]);
+        try {
+            $validated = $request->validate([
+                'nombre'           => 'required|string|max:255',
+                'direccion'        => 'nullable|string|max:500',
+                'telefono'         => 'nullable|string|max:20',
+                'email_contacto'   => 'nullable|email|max:255',
+                'rfc'              => 'nullable|string|max:20',
+                'razon_social'     => 'nullable|string|max:255',
+                'leyenda_ticket'   => 'nullable|string|max:2000',
+                'whatsapp_numero'  => 'nullable|string|max:20',
+                'colores'          => 'nullable',
+                'configuracion'    => 'nullable',
+                'logo'             => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:2048',
+                'logo_crop'        => 'nullable',
+                'logo_crop.x'      => 'nullable|integer|min:0',
+                'logo_crop.y'      => 'nullable|integer|min:0',
+                'logo_crop.width'  => 'nullable|integer|min:1',
+                'logo_crop.height' => 'nullable|integer|min:1',
+                'activo'           => 'nullable|boolean',
+            ]);
+        } catch (ValidationException $e) {
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.creacion.rechazada',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'validacion',
+                    'errores' => $e->errors(),
+                ]
+            );
+
+            throw $e;
+        }
 
         $logoPath = null;
 
@@ -195,7 +374,7 @@ class EmpresaController extends Controller
             );
 
             $data['nombre'] = trim(
-                $data['nombre']
+                (string) $data['nombre']
             );
 
             $data['activo'] = $request->has('activo')
@@ -205,10 +384,9 @@ class EmpresaController extends Controller
             // -----------------------------------------------------------
             // COLORES
             // -----------------------------------------------------------
+
             if ($request->has('colores')) {
-                $valorColores = $request->input(
-                    'colores'
-                );
+                $valorColores = $request->input('colores');
 
                 if (!$this->estaVacioJson($valorColores)) {
                     $colores = $this->normalizarJsonArray(
@@ -216,9 +394,20 @@ class EmpresaController extends Controller
                     );
 
                     if ($colores === null) {
+                        $this->registrarAuditoriaError(
+                            $request,
+                            'empresa.creacion.rechazada',
+                            'empresas',
+                            null,
+                            [
+                                'motivo' => 'colores_json_invalido',
+                            ]
+                        );
+
                         return response()->json([
                             'message' =>
-                            'El campo colores debe contener un JSON válido.',
+                                'El campo colores debe contener un JSON válido.',
+                            'error' => 'INVALID_COLORES',
                         ], 422);
                     }
 
@@ -232,25 +421,32 @@ class EmpresaController extends Controller
             // -----------------------------------------------------------
             // CONFIGURACIÓN
             // -----------------------------------------------------------
+
             if ($request->has('configuracion')) {
                 $valorConfiguracion = $request->input(
                     'configuracion'
                 );
 
-                if (
-                    !$this->estaVacioJson(
+                if (!$this->estaVacioJson($valorConfiguracion)) {
+                    $configuracion = $this->normalizarJsonArray(
                         $valorConfiguracion
-                    )
-                ) {
-                    $configuracion =
-                        $this->normalizarJsonArray(
-                            $valorConfiguracion
-                        );
+                    );
 
                     if ($configuracion === null) {
+                        $this->registrarAuditoriaError(
+                            $request,
+                            'empresa.creacion.rechazada',
+                            'empresas',
+                            null,
+                            [
+                                'motivo' => 'configuracion_json_invalida',
+                            ]
+                        );
+
                         return response()->json([
                             'message' =>
-                            'El campo configuracion debe contener un JSON válido.',
+                                'El campo configuracion debe contener un JSON válido.',
+                            'error' => 'INVALID_CONFIGURACION',
                         ], 422);
                     }
 
@@ -261,6 +457,7 @@ class EmpresaController extends Controller
             // -----------------------------------------------------------
             // LOGO
             // -----------------------------------------------------------
+
             if ($request->hasFile('logo')) {
                 $logoPath = $this->procesarLogo(
                     $request->file('logo'),
@@ -269,6 +466,10 @@ class EmpresaController extends Controller
 
                 $data['logo'] = $logoPath;
             }
+
+            // -----------------------------------------------------------
+            // CREAR
+            // -----------------------------------------------------------
 
             $empresa = DB::transaction(
                 function () use ($data) {
@@ -289,34 +490,71 @@ class EmpresaController extends Controller
                 'message' => 'Empresa creada correctamente.',
                 'data'    => $empresa,
             ], 201);
+
+        } catch (QueryException $e) {
+            if ($logoPath) {
+                $this->eliminarArchivoSeguro(
+                    $logoPath,
+                    'logo de empresa después de error de base de datos'
+                );
+            }
+
+            Log::error(
+                'Error de base de datos creando empresa.',
+                [
+                    'usuario_id'     => $user->id,
+                    'empresa_nombre' => $request->input('nombre'),
+                    'error'          => $e->getMessage(),
+                    'code'           => $e->getCode(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.creacion.error',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'error_base_datos',
+                ]
+            );
+
+            return response()->json([
+                'message' => 'No fue posible crear la empresa.',
+                'error'   => 'DATABASE_ERROR',
+            ], 500);
+
         } catch (Throwable $e) {
             if ($logoPath) {
-                try {
-                    Storage::disk('public')->delete(
-                        $logoPath
-                    );
-                } catch (Throwable $cleanupException) {
-                    Log::warning(
-                        'No se pudo eliminar logo después de error.',
-                        [
-                            'logo'  => $logoPath,
-                            'error' => $cleanupException->getMessage(),
-                        ]
-                    );
-                }
+                $this->eliminarArchivoSeguro(
+                    $logoPath,
+                    'logo de empresa después de error'
+                );
             }
 
             Log::error(
                 'Error creando empresa.',
                 [
-                    'error'          => $e->getMessage(),
+                    'usuario_id'     => $user->id,
                     'empresa_nombre' => $request->input('nombre'),
+                    'error'          => $e->getMessage(),
                     'trace'          => $e->getTraceAsString(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.creacion.error',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'error_interno',
                 ]
             );
 
             return response()->json([
                 'message' => 'Error al crear empresa.',
+                'error'   => 'INTERNAL_ERROR',
             ], 500);
         }
     }
@@ -324,17 +562,48 @@ class EmpresaController extends Controller
     // -------------------------------------------------------------------
     // UPDATE
     // -------------------------------------------------------------------
+
     public function update(Request $request, $id)
     {
         $user = $request->user();
 
+        if (!$user) {
+            return response()->json([
+                'message' => 'No autenticado.',
+                'error'   => 'AUTH_REQUIRED',
+            ], 401);
+        }
+
+        $empresa = null;
+        $nuevoLogoPath = null;
+
         try {
             if ($user->rol === 'superadmin') {
-                $empresa = Empresa::findOrFail($id);
+                $empresa = Empresa::query()
+                    ->whereKey($id)
+                    ->first();
             } else {
                 $empresa = Empresa::query()
+                    ->whereKey($id)
                     ->where('id', $user->empresa_id)
-                    ->findOrFail($id);
+                    ->first();
+            }
+
+            if (!$empresa) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'empresa.actualizacion.rechazada',
+                    'empresas',
+                    is_numeric($id) ? (int) $id : null,
+                    [
+                        'motivo' => 'empresa_no_encontrada_o_no_autorizada',
+                    ]
+                );
+
+                return response()->json([
+                    'message' => 'Empresa no encontrada.',
+                    'error'   => 'EMPRESA_NOT_FOUND',
+                ], 404);
             }
 
             $rules = [
@@ -361,11 +630,27 @@ class EmpresaController extends Controller
                     'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:2048';
             }
 
-            $request->validate($rules);
+            try {
+                $validated = $request->validate($rules);
+            } catch (ValidationException $e) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'empresa.actualizacion.rechazada',
+                    'empresas',
+                    (int) $empresa->id,
+                    [
+                        'motivo' => 'validacion',
+                        'errores' => $e->errors(),
+                    ]
+                );
+
+                throw $e;
+            }
 
             // -----------------------------------------------------------
             // RESTRICCIÓN DE CONFIGURACIÓN
             // -----------------------------------------------------------
+
             if (
                 $user->rol !== 'superadmin' &&
                 $request->has('configuracion') &&
@@ -373,15 +658,25 @@ class EmpresaController extends Controller
                     $request->input('configuracion')
                 )
             ) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'empresa.actualizacion.rechazada',
+                    'empresas',
+                    (int) $empresa->id,
+                    [
+                        'motivo' => 'configuracion_no_autorizada',
+                    ]
+                );
+
                 return response()->json([
                     'message' =>
-                    'No autorizado para modificar la configuración de la empresa.',
+                        'No autorizado para modificar la configuración de la empresa.',
+                    'error' => 'CONFIGURATION_FORBIDDEN',
                 ], 403);
             }
 
             $datosAntes = $empresa->toArray();
             $logoAnterior = $empresa->logo;
-            $nuevoLogoPath = null;
 
             $data = $request->only(
                 self::CAMPOS_EMPRESA
@@ -389,7 +684,7 @@ class EmpresaController extends Controller
 
             if (isset($data['nombre'])) {
                 $data['nombre'] = trim(
-                    $data['nombre']
+                    (string) $data['nombre']
                 );
             }
 
@@ -401,6 +696,7 @@ class EmpresaController extends Controller
             // -----------------------------------------------------------
             // COLORES
             // -----------------------------------------------------------
+
             if ($request->has('colores')) {
                 $valorColores = $request->input(
                     'colores'
@@ -413,9 +709,20 @@ class EmpresaController extends Controller
                         );
 
                     if ($coloresNuevos === null) {
+                        $this->registrarAuditoriaError(
+                            $request,
+                            'empresa.actualizacion.rechazada',
+                            'empresas',
+                            (int) $empresa->id,
+                            [
+                                'motivo' => 'colores_json_invalido',
+                            ]
+                        );
+
                         return response()->json([
                             'message' =>
-                            'El campo colores debe contener un JSON válido.',
+                                'El campo colores debe contener un JSON válido.',
+                            'error' => 'INVALID_COLORES',
                         ], 422);
                     }
 
@@ -435,6 +742,7 @@ class EmpresaController extends Controller
             // -----------------------------------------------------------
             // CONFIGURACIÓN
             // -----------------------------------------------------------
+
             if (
                 $user->rol === 'superadmin' &&
                 $request->has('configuracion')
@@ -455,9 +763,20 @@ class EmpresaController extends Controller
                         );
 
                     if ($configuracion === null) {
+                        $this->registrarAuditoriaError(
+                            $request,
+                            'empresa.actualizacion.rechazada',
+                            'empresas',
+                            (int) $empresa->id,
+                            [
+                                'motivo' => 'configuracion_json_invalida',
+                            ]
+                        );
+
                         return response()->json([
                             'message' =>
-                            'El campo configuracion debe contener un JSON válido.',
+                                'El campo configuracion debe contener un JSON válido.',
+                            'error' => 'INVALID_CONFIGURACION',
                         ], 422);
                     }
 
@@ -469,6 +788,7 @@ class EmpresaController extends Controller
             // -----------------------------------------------------------
             // LOGO
             // -----------------------------------------------------------
+
             if ($request->hasFile('logo')) {
                 $nuevoLogoPath =
                     $this->procesarLogo(
@@ -482,6 +802,7 @@ class EmpresaController extends Controller
             // -----------------------------------------------------------
             // GUARDAR
             // -----------------------------------------------------------
+
             DB::transaction(
                 function () use ($empresa, $data) {
                     $empresa->update($data);
@@ -491,27 +812,18 @@ class EmpresaController extends Controller
             $empresa->refresh();
 
             // -----------------------------------------------------------
-            // ELIMINAR LOGO ANTERIOR
+            // ELIMINAR LOGO ANTERIOR DESPUÉS DEL COMMIT
             // -----------------------------------------------------------
+
             if (
                 $nuevoLogoPath &&
                 $logoAnterior &&
                 $logoAnterior !== $nuevoLogoPath
             ) {
-                try {
-                    Storage::disk('public')->delete(
-                        $logoAnterior
-                    );
-                } catch (Throwable $cleanupException) {
-                    Log::warning(
-                        'No se pudo eliminar logo anterior.',
-                        [
-                            'logo'       => $logoAnterior,
-                            'empresa_id' => $empresa->id,
-                            'error'      => $cleanupException->getMessage(),
-                        ]
-                    );
-                }
+                $this->eliminarArchivoSeguro(
+                    $logoAnterior,
+                    'logo anterior de empresa'
+                );
             }
 
             $this->registrarAuditoria(
@@ -527,56 +839,74 @@ class EmpresaController extends Controller
                 'message' => 'Empresa actualizada correctamente.',
                 'data'    => $empresa,
             ]);
-        } catch (Throwable $e) {
-            // -----------------------------------------------------------
-            // LIMPIAR LOGO NUEVO SI HUBO ERROR
-            // -----------------------------------------------------------
-            if (
-                isset($nuevoLogoPath) &&
-                $nuevoLogoPath
-            ) {
-                try {
-                    Storage::disk('public')->delete(
-                        $nuevoLogoPath
-                    );
-                } catch (Throwable $cleanupException) {
-                    Log::warning(
-                        'No se pudo eliminar nuevo logo después de error.',
-                        [
-                            'logo'       => $nuevoLogoPath,
-                            'empresa_id' => $empresa->id ?? $id,
-                            'error'      => $cleanupException->getMessage(),
-                        ]
-                    );
-                }
+
+        } catch (ValidationException $e) {
+            throw $e;
+
+        } catch (QueryException $e) {
+            if ($nuevoLogoPath) {
+                $this->eliminarArchivoSeguro(
+                    $nuevoLogoPath,
+                    'nuevo logo después de error de base de datos'
+                );
             }
 
-            // -----------------------------------------------------------
-            // EXCEPCIONES HTTP
-            // -----------------------------------------------------------
-            if (
-                $e instanceof
-                \Symfony\Component\HttpKernel\Exception\HttpException
-            ) {
-                throw $e;
+            Log::error(
+                'Error de base de datos actualizando empresa.',
+                [
+                    'empresa_id' => $id,
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                    'code'       => $e->getCode(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.actualizacion.error',
+                'empresas',
+                is_numeric($id) ? (int) $id : null,
+                [
+                    'motivo' => 'error_base_datos',
+                ]
+            );
+
+            return response()->json([
+                'message' => 'Error al actualizar empresa.',
+                'error'   => 'DATABASE_ERROR',
+            ], 500);
+
+        } catch (Throwable $e) {
+            if ($nuevoLogoPath) {
+                $this->eliminarArchivoSeguro(
+                    $nuevoLogoPath,
+                    'nuevo logo después de error'
+                );
             }
 
             Log::error(
                 'Error actualizando empresa.',
                 [
                     'empresa_id' => $id,
-                    'usuario_id' => $user?->id,
+                    'usuario_id' => $user->id,
                     'error'      => $e->getMessage(),
                     'trace'      => $e->getTraceAsString(),
                 ]
             );
 
-            $mensaje = config('app.debug')
-                ? $e->getMessage()
-                : 'Error al actualizar empresa.';
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.actualizacion.error',
+                'empresas',
+                is_numeric($id) ? (int) $id : null,
+                [
+                    'motivo' => 'error_interno',
+                ]
+            );
 
             return response()->json([
-                'message' => $mensaje,
+                'message' => 'Error al actualizar empresa.',
+                'error'   => 'INTERNAL_ERROR',
             ], 500);
         }
     }
@@ -584,6 +914,7 @@ class EmpresaController extends Controller
     // -------------------------------------------------------------------
     // PROCESAR LOGO
     // -------------------------------------------------------------------
+
     private function procesarLogo(
         $file,
         array $cropData = []
@@ -647,6 +978,7 @@ class EmpresaController extends Controller
     // -------------------------------------------------------------------
     // OBTENER CROP
     // -------------------------------------------------------------------
+
     private function obtenerCropData(
         Request $request
     ): array {
@@ -680,6 +1012,7 @@ class EmpresaController extends Controller
     // -------------------------------------------------------------------
     // UTILIDADES
     // -------------------------------------------------------------------
+
     private function estaVacioJson(
         $value
     ): bool {
@@ -736,69 +1069,124 @@ class EmpresaController extends Controller
      */
     public function logo(Request $request)
     {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'logo_url' => null,
+                'message'  => 'No autenticado',
+                'error'    => 'AUTH_REQUIRED',
+            ], 401);
+        }
+
         try {
-            $user = $request->user();
-
-            if (!$user) {
-                return response()->json([
-                    'logo_url' => null,
-                    'message' => 'No autenticado',
-                ], 401);
-            }
-
             $empresa = $user->empresa;
 
-            if (
-                !$empresa ||
-                !$empresa->logo
-            ) {
+            if (!$empresa) {
+                $this->registrarAuditoriaError(
+                    $request,
+                    'empresa.logo.consulta.rechazada',
+                    'empresas',
+                    null,
+                    [
+                        'motivo' => 'empresa_no_encontrada',
+                    ]
+                );
+
                 return response()->json([
                     'logo_url' => null,
-                    'message' => 'No hay logo configurado',
+                    'message'  => 'No se encontró la empresa del usuario.',
+                    'error'    => 'EMPRESA_NOT_FOUND',
+                ], 404);
+            }
+
+            if (!$empresa->logo) {
+                $this->registrarAuditoria(
+                    $request,
+                    'empresa.logo.consultado',
+                    'empresas',
+                    (int) $empresa->id,
+                    null,
+                    [
+                        'logo_url' => null,
+                        'configurado' => false,
+                    ]
+                );
+
+                return response()->json([
+                    'logo_url' => null,
+                    'message'  => 'No hay logo configurado',
                 ]);
             }
 
             $logoPath = $empresa->logo;
-
-            /*
-         * IMPORTANTE:
-         * Usamos el mismo accessor utilizado
-         * por uploadLogo().
-         *
-         * Así evitamos que:
-         *
-         * upload -> https://apis...
-         *
-         * GET    -> http://localhost...
-         *
-         * tengan comportamientos diferentes.
-         */
             $logoUrl = $empresa->logo_url;
 
             Log::info(
-                'Logo path: ' . $logoPath
+                'Logo de empresa consultado.',
+                [
+                    'empresa_id' => $empresa->id,
+                    'logo_path'  => $logoPath,
+                ]
             );
 
-            Log::info(
-                'Logo URL generated: ' . ($logoUrl ?? 'null')
+            $this->registrarAuditoria(
+                $request,
+                'empresa.logo.consultado',
+                'empresas',
+                (int) $empresa->id,
+                null,
+                [
+                    'logo_url' => $logoUrl,
+                    'configurado' => true,
+                ]
             );
 
             return response()->json([
                 'logo_url' => $logoUrl,
-                'logo' => $logoPath,
-                'message' => 'Logo encontrado',
+                'logo'     => $logoPath,
+                'message'  => 'Logo encontrado',
             ]);
-        } catch (\Exception $e) {
+
+        } catch (QueryException $e) {
             Log::error(
-                'Error obteniendo logo: ' .
-                    $e->getMessage()
+                'Error de base de datos obteniendo logo.',
+                [
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                    'code'       => $e->getCode(),
+                ]
             );
 
             return response()->json([
                 'logo_url' => null,
-                'message' =>
-                'Error al obtener logo: ' .
-                    $e->getMessage(),
+                'message'  => 'Error al obtener logo.',
+                'error'    => 'DATABASE_ERROR',
+            ], 500);
+
+        } catch (Throwable $e) {
+            Log::error(
+                'Error obteniendo logo.',
+                [
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.logo.consulta.error',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'error_interno',
+                ]
+            );
+
+            return response()->json([
+                'logo_url' => null,
+                'message'  => 'Error al obtener logo.',
+                'error'    => 'INTERNAL_ERROR',
             ], 500);
         }
     }
@@ -809,34 +1197,61 @@ class EmpresaController extends Controller
     public function uploadLogo(
         Request $request
     ) {
-        $request->validate([
-            'logo' => [
-                'required',
-                'image',
-                'mimes:jpeg,png,jpg,gif,webp',
-                'max:2048',
-            ],
-            'crop' => 'nullable|array',
-            'crop.x' => 'nullable|integer|min:0',
-            'crop.y' => 'nullable|integer|min:0',
-            'crop.width' => 'nullable|integer|min:1',
-            'crop.height' => 'nullable|integer|min:1',
-        ]);
-
         $user = $request->user();
 
         if (!$user) {
             return response()->json([
                 'message' => 'No autenticado',
+                'error'   => 'AUTH_REQUIRED',
             ], 401);
+        }
+
+        try {
+            $validated = $request->validate([
+                'logo' => [
+                    'required',
+                    'image',
+                    'mimes:jpeg,png,jpg,gif,webp',
+                    'max:2048',
+                ],
+                'crop' => 'nullable|array',
+                'crop.x' => 'nullable|integer|min:0',
+                'crop.y' => 'nullable|integer|min:0',
+                'crop.width' => 'nullable|integer|min:1',
+                'crop.height' => 'nullable|integer|min:1',
+            ]);
+        } catch (ValidationException $e) {
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.logo.subida.rechazada',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'validacion',
+                    'errores' => $e->errors(),
+                ]
+            );
+
+            throw $e;
         }
 
         $empresa = $user->empresa;
 
         if (!$empresa) {
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.logo.subida.rechazada',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'empresa_no_encontrada',
+                ]
+            );
+
             return response()->json([
                 'message' =>
-                'No se encontró la empresa del usuario.',
+                    'No se encontró la empresa del usuario.',
+                'error' => 'EMPRESA_NOT_FOUND',
             ], 404);
         }
 
@@ -886,65 +1301,109 @@ class EmpresaController extends Controller
             // -----------------------------------------------------------
             // ELIMINAR LOGO ANTERIOR DESPUÉS DEL COMMIT
             // -----------------------------------------------------------
+
             if (
                 $logoAnterior &&
                 $logoAnterior !== $nuevoLogoPath
             ) {
-                try {
-                    Storage::disk('public')->delete(
-                        $logoAnterior
-                    );
-                } catch (Throwable $cleanupException) {
-                    Log::warning(
-                        'No se pudo eliminar logo anterior después de actualizar.',
-                        [
-                            'logo'       => $logoAnterior,
-                            'empresa_id' => $empresa->id,
-                            'error'      => $cleanupException->getMessage(),
-                        ]
-                    );
-                }
+                $this->eliminarArchivoSeguro(
+                    $logoAnterior,
+                    'logo anterior después de actualización'
+                );
             }
 
-            return response()->json([
-                'message' =>
-                'Logo actualizado correctamente',
+            $empresa->refresh();
 
-                'logo_url' =>
-                $empresa->getLogoUrlAttribute(),
-
-                'logo' =>
-                $empresa->logo,
-            ]);
-        } catch (\Exception $e) {
-            DB::rollBack();
-
-            if ($nuevoLogoPath) {
-                try {
-                    Storage::disk('public')->delete(
-                        $nuevoLogoPath
-                    );
-                } catch (Throwable $cleanupException) {
-                    Log::warning(
-                        'No se pudo eliminar logo nuevo después de error.',
-                        [
-                            'logo'       => $nuevoLogoPath,
-                            'empresa_id' => $empresa->id ?? null,
-                            'error'      => $cleanupException->getMessage(),
-                        ]
-                    );
-                }
-            }
-
-            Log::error(
-                'Error subiendo logo: ' .
-                    $e->getMessage()
+            $this->registrarAuditoria(
+                $request,
+                'empresa.logo.actualizado',
+                'empresas',
+                (int) $empresa->id,
+                [
+                    'logo' => $logoAnterior,
+                ],
+                [
+                    'logo' => $empresa->logo,
+                    'logo_url' => $empresa->logo_url,
+                ]
             );
 
             return response()->json([
                 'message' =>
-                'Error al subir logo: ' .
-                    $e->getMessage(),
+                    'Logo actualizado correctamente',
+                'logo_url' =>
+                    $empresa->getLogoUrlAttribute(),
+                'logo' =>
+                    $empresa->logo,
+            ]);
+
+        } catch (QueryException $e) {
+            DB::rollBack();
+
+            if ($nuevoLogoPath) {
+                $this->eliminarArchivoSeguro(
+                    $nuevoLogoPath,
+                    'logo nuevo después de error de base de datos'
+                );
+            }
+
+            Log::error(
+                'Error de base de datos subiendo logo.',
+                [
+                    'empresa_id' => $empresa->id,
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                    'code'       => $e->getCode(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.logo.actualizacion.error',
+                'empresas',
+                (int) $empresa->id,
+                [
+                    'motivo' => 'error_base_datos',
+                ]
+            );
+
+            return response()->json([
+                'message' => 'Error al actualizar logo.',
+                'error'   => 'DATABASE_ERROR',
+            ], 500);
+
+        } catch (Throwable $e) {
+            DB::rollBack();
+
+            if ($nuevoLogoPath) {
+                $this->eliminarArchivoSeguro(
+                    $nuevoLogoPath,
+                    'logo nuevo después de error'
+                );
+            }
+
+            Log::error(
+                'Error subiendo logo.',
+                [
+                    'empresa_id' => $empresa->id,
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.logo.actualizacion.error',
+                'empresas',
+                (int) $empresa->id,
+                [
+                    'motivo' => 'error_interno',
+                ]
+            );
+
+            return response()->json([
+                'message' => 'Error al subir logo.',
+                'error'   => 'INTERNAL_ERROR',
             ], 500);
         }
     }
@@ -960,28 +1419,36 @@ class EmpresaController extends Controller
         if (!$user) {
             return response()->json([
                 'message' => 'No autenticado',
+                'error'   => 'AUTH_REQUIRED',
             ], 401);
         }
 
         $empresa = $user->empresa;
 
         if (!$empresa) {
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.logo.eliminacion.rechazada',
+                'empresas',
+                null,
+                [
+                    'motivo' => 'empresa_no_encontrada',
+                ]
+            );
+
             return response()->json([
                 'message' =>
-                'No se encontró la empresa del usuario.',
+                    'No se encontró la empresa del usuario.',
+                'error' => 'EMPRESA_NOT_FOUND',
             ], 404);
         }
 
         DB::beginTransaction();
 
         try {
-            if ($empresa->logo) {
-                $logoAnterior = $empresa->logo;
+            $logoAnterior = $empresa->logo;
 
-                Storage::disk('public')->delete(
-                    $logoAnterior
-                );
-
+            if ($logoAnterior) {
                 $empresa->update([
                     'logo' => null,
                 ]);
@@ -989,24 +1456,90 @@ class EmpresaController extends Controller
 
             DB::commit();
 
-            return response()->json([
-                'message' =>
-                'Logo eliminado correctamente',
-                'logo_url' => null,
-                'logo'     => null,
-            ]);
-        } catch (\Exception $e) {
-            DB::rollBack();
+            // -----------------------------------------------------------
+            // ELIMINAR ARCHIVO DESPUÉS DEL COMMIT
+            // -----------------------------------------------------------
 
-            Log::error(
-                'Error eliminando logo: ' .
-                    $e->getMessage()
+            if ($logoAnterior) {
+                $this->eliminarArchivoSeguro(
+                    $logoAnterior,
+                    'logo eliminado'
+                );
+            }
+
+            $this->registrarAuditoria(
+                $request,
+                'empresa.logo.eliminado',
+                'empresas',
+                (int) $empresa->id,
+                [
+                    'logo' => $logoAnterior,
+                ],
+                [
+                    'logo' => null,
+                ]
             );
 
             return response()->json([
                 'message' =>
-                'Error al eliminar logo: ' .
-                    $e->getMessage(),
+                    'Logo eliminado correctamente',
+                'logo_url' => null,
+                'logo'     => null,
+            ]);
+
+        } catch (QueryException $e) {
+            DB::rollBack();
+
+            Log::error(
+                'Error de base de datos eliminando logo.',
+                [
+                    'empresa_id' => $empresa->id,
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                    'code'       => $e->getCode(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.logo.eliminacion.error',
+                'empresas',
+                (int) $empresa->id,
+                [
+                    'motivo' => 'error_base_datos',
+                ]
+            );
+
+            return response()->json([
+                'message' => 'Error al eliminar logo.',
+                'error'   => 'DATABASE_ERROR',
+            ], 500);
+
+        } catch (Throwable $e) {
+            DB::rollBack();
+
+            Log::error(
+                'Error eliminando logo.',
+                [
+                    'empresa_id' => $empresa->id,
+                    'usuario_id' => $user->id,
+                    'error'      => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoriaError(
+                $request,
+                'empresa.logo.eliminacion.error',
+                'empresas',
+                (int) $empresa->id,
+                [
+                    'motivo' => 'error_interno',
+                ]
+            );
+
+            return response()->json([
+                'message' => 'Error al eliminar logo.',
+                'error'   => 'INTERNAL_ERROR',
             ], 500);
         }
     }
@@ -1014,16 +1547,48 @@ class EmpresaController extends Controller
     // -------------------------------------------------------------------
     // DESTROY
     // -------------------------------------------------------------------
+
     public function destroy(
         $id,
         Request $request
     ) {
-        // ... (sin cambios)
+        /*
+         * IMPORTANTE:
+         * La implementación original de destroy no fue incluida
+         * en el código proporcionado. El código recibido contiene
+         * literalmente:
+         *
+         *     // ... (sin cambios)
+         *
+         * No se agrega una implementación inventada para evitar
+         * modificar accidentalmente la lógica de eliminación de
+         * empresas, relaciones o reglas de negocio existentes.
+         *
+         * Sustituir este bloque por la implementación original de
+         * destroy y aplicar el mismo patrón de auditoría, aislamiento
+         * por empresa y manejo de errores.
+         */
+        return response()->json([
+            'message' => 'Método destroy pendiente de la implementación original.',
+            'error'   => 'METHOD_IMPLEMENTATION_MISSING',
+        ], 500);
     }
 
     // -------------------------------------------------------------------
     // AUDITORÍA
     // -------------------------------------------------------------------
+
+    /**
+     * Registrar auditoría de operación exitosa.
+     *
+     * La auditoría NO debe impedir que la operación principal
+     * termine correctamente.
+     *
+     * Importante:
+     * - Se auditan también las acciones del superadmin.
+     * - El AuditoriaService recibe el Request y puede obtener
+     *   de ahí el usuario autenticado.
+     */
     private function registrarAuditoria(
         Request $request,
         string $accion,
@@ -1032,13 +1597,6 @@ class EmpresaController extends Controller
         ?array $datosAntes,
         ?array $datosDespues
     ): void {
-        if (
-            $request->user()?->rol ===
-            'superadmin'
-        ) {
-            return;
-        }
-
         try {
             $this->auditoriaService->registrar(
                 $request,
@@ -1055,7 +1613,55 @@ class EmpresaController extends Controller
                     'accion'      => $accion,
                     'tabla'       => $tabla,
                     'registro_id' => $registroId,
+                    'usuario_id'  => $request->user()?->id,
+                    'empresa_id'  => $request->user()?->empresa_id,
                     'error'       => $e->getMessage(),
+                ]
+            );
+        }
+    }
+
+    /**
+     * Registrar auditoría de errores o rechazos.
+     */
+    private function registrarAuditoriaError(
+        Request $request,
+        string $accion,
+        string $tabla,
+        ?int $registroId,
+        ?array $datos
+    ): void {
+        $this->registrarAuditoria(
+            $request,
+            $accion,
+            $tabla,
+            $registroId,
+            null,
+            $datos
+        );
+    }
+
+    /**
+     * Eliminar archivo sin permitir que un problema de storage
+     * rompa la operación principal.
+     */
+    private function eliminarArchivoSeguro(
+        ?string $path,
+        string $contexto
+    ): void {
+        if (!$path) {
+            return;
+        }
+
+        try {
+            Storage::disk('public')->delete($path);
+        } catch (Throwable $e) {
+            Log::warning(
+                'No se pudo eliminar archivo de empresa.',
+                [
+                    'path'     => $path,
+                    'contexto' => $contexto,
+                    'error'    => $e->getMessage(),
                 ]
             );
         }

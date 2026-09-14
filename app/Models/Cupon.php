@@ -1,5 +1,4 @@
 <?php
-// app/Models/Cupon.php
 
 namespace App\Models;
 

@@ -1,7 +1,5 @@
 <?php
 
-// routes/api.php
-
 use App\Http\Controllers\Api\V1\AdminController;
 use App\Http\Controllers\Api\V1\AuditoriaController;
 use App\Http\Controllers\Api\V1\AuthController;
@@ -24,76 +22,59 @@ use App\Http\Controllers\Api\V1\UnidadMedidaController;
 use App\Http\Controllers\Api\V1\VentaController;
 use Illuminate\Support\Facades\Route;
 
-/*
-|--------------------------------------------------------------------------
-| API Routes - Laravel 12
-|--------------------------------------------------------------------------
-|
-| Todas las rutas quedan bajo:
-|
-| /api/v1/...
-|
-*/
-
 Route::prefix('v1')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | RUTAS PÚBLICAS
+    | Rutas públicas
     |--------------------------------------------------------------------------
     */
 
     Route::post('/login', [
         AuthController::class,
-        'login'
+        'login',
     ]);
 
     Route::post('/password/forgot', [
         AuthController::class,
-        'forgotPassword'
+        'forgotPassword',
     ])->middleware('throttle:5,1');
 
     Route::post('/password/reset', [
         AuthController::class,
-        'resetPassword'
+        'resetPassword',
     ])->middleware('throttle:5,1');
 
 
     /*
     |--------------------------------------------------------------------------
-    | ESTADO DE LICENCIA
+    | Estado de licencia
     |--------------------------------------------------------------------------
     |
-    | IMPORTANTE:
-    |
-    | Esta ruta NO utiliza check.license.
-    |
-    | Motivo:
-    | El usuario debe poder consultar el estado de su licencia incluso
-    | cuando esta se encuentre vencida.
-    |
-    | Solo requiere autenticación mediante Sanctum.
+    | Esta ruta no utiliza check.license para poder consultar el estado
+    | incluso cuando la licencia está vencida.
     |
     */
 
-    Route::middleware('auth:sanctum')->get('/licencia/estado', [
-        LicenseController::class,
-        'status'
-    ]);
+    Route::middleware('auth:sanctum')->group(function () {
+
+        Route::get('/licencia/estado', [
+            LicenseController::class,
+            'status',
+        ]);
+
+    });
 
 
     /*
     |--------------------------------------------------------------------------
-    | ADMINISTRACIÓN DE LICENCIAS
+    | Panel administrativo
     |--------------------------------------------------------------------------
     |
-    | Estas rutas NO utilizan check.license.
+    | Estas rutas no utilizan check.license.
     |
-    | Esto permite que un SUPERADMIN pueda administrar la licencia de
-    | una empresa aunque dicha empresa tenga la licencia vencida.
-    |
-    | LicenseController::show() y LicenseController::update()
-    | deben validar internamente que el usuario sea superadmin.
+    | La validación de permisos/rol debe realizarse dentro de
+    | AdminController y/o mediante la lógica de autorización existente.
     |
     */
 
@@ -101,462 +82,590 @@ Route::prefix('v1')->group(function () {
         ->middleware('auth:sanctum')
         ->group(function () {
 
+            /*
+            |--------------------------------------------------------------------------
+            | Usuarios
+            |--------------------------------------------------------------------------
+            */
+
+            Route::get('/usuarios', [
+                AdminController::class,
+                'usuarios',
+            ]);
+
+            Route::post('/usuarios', [
+                AdminController::class,
+                'crearUsuario',
+            ]);
+
+            Route::put('/usuarios/{id}', [
+                AdminController::class,
+                'actualizarUsuario',
+            ]);
+
+            Route::delete('/usuarios/{id}', [
+                AdminController::class,
+                'eliminarUsuario',
+            ]);
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Empresas del panel administrativo
+            |--------------------------------------------------------------------------
+            |
+            | GET /api/v1/admin/empresas
+            |
+            */
+
+            Route::get('/empresas', [
+                AdminController::class,
+                'empresas',
+            ]);
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Licencias
+            |--------------------------------------------------------------------------
+            |
+            | Se conserva LicenseController para no romper las llamadas
+            | existentes del frontend u otros clientes.
+            |
+            */
+
             Route::get('/empresas/{empresaId}/licencia', [
                 LicenseController::class,
-                'show'
+                'show',
             ]);
 
             Route::put('/empresas/{empresaId}/licencia', [
                 LicenseController::class,
-                'update'
+                'update',
             ]);
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Reportes administrativos
+            |--------------------------------------------------------------------------
+            */
+
+            Route::get('/reportes', [
+                AdminController::class,
+                'reportes',
+            ]);
+
+            Route::get('/reportes/exportar', [
+                AdminController::class,
+                'exportarReportes',
+            ]);
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Configuración de empresa
+            |--------------------------------------------------------------------------
+            */
+
+            Route::get('/empresa/config', [
+                AdminController::class,
+                'configuracion',
+            ]);
+
+            Route::put('/empresa/config', [
+                AdminController::class,
+                'actualizarConfiguracion',
+            ]);
+
         });
 
 
     /*
     |--------------------------------------------------------------------------
-    | RUTAS PROTEGIDAS
+    | Rutas protegidas por licencia
     |--------------------------------------------------------------------------
     |
-    | Requieren:
-    |
-    | auth:sanctum
-    | check.license
+    | Se conserva auth:sanctum + check.license para las operaciones
+    | normales de la APK.
     |
     */
 
     Route::middleware([
         'auth:sanctum',
-        'check.license'
+        'check.license',
     ])->group(function () {
 
         /*
-    |--------------------------------------------------------------------------
-    | LOGO DE EMPRESA
-    |--------------------------------------------------------------------------
-    */
+        |--------------------------------------------------------------------------
+        | Logo de empresa
+        |--------------------------------------------------------------------------
+        */
 
         Route::prefix('empresa')->group(function () {
 
             Route::get('/logo', [
                 EmpresaController::class,
-                'logo'
+                'logo',
             ]);
 
             Route::post('/logo', [
                 EmpresaController::class,
-                'uploadLogo'
+                'uploadLogo',
             ]);
 
             Route::delete('/logo', [
                 EmpresaController::class,
-                'deleteLogo'
+                'deleteLogo',
             ]);
+
         });
+
+
         /*
         |--------------------------------------------------------------------------
-        | AUTENTICACIÓN / USUARIO ACTUAL
+        | Usuario autenticado
         |--------------------------------------------------------------------------
         */
 
         Route::post('/logout', [
             AuthController::class,
-            'logout'
+            'logout',
         ]);
 
         Route::get('/user', [
             AuthController::class,
-            'user'
+            'user',
         ]);
 
         Route::patch('/user/profile', [
             AuthController::class,
-            'updateProfile'
+            'updateProfile',
         ]);
 
         Route::post('/user/password', [
             AuthController::class,
-            'changePassword'
+            'changePassword',
         ])->middleware('throttle:5,1');
 
         Route::get('/me/permissions', [
             AuthController::class,
-            'permissions'
+            'permissions',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | OPERACIÓN
+        | Operación
         |--------------------------------------------------------------------------
         */
 
         Route::get('/operacion/estado', [
             OperacionController::class,
-            'estado'
+            'estado',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | CATÁLOGOS
+        | Catálogos
         |--------------------------------------------------------------------------
         */
 
         Route::get('/catalogos', [
             CatalogController::class,
-            'index'
+            'index',
         ]);
 
         Route::get('/catalogos/productos', [
             CatalogController::class,
-            'productos'
+            'productos',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | CATEGORÍAS
+        | Categorías
         |--------------------------------------------------------------------------
         */
 
         Route::get('/categorias', [
             CategoriaController::class,
-            'index'
+            'index',
         ]);
 
         Route::post('/categorias', [
             CategoriaController::class,
-            'store'
+            'store',
         ]);
 
         Route::put('/categorias/{id}', [
             CategoriaController::class,
-            'update'
+            'update',
         ]);
 
         Route::delete('/categorias/{id}', [
             CategoriaController::class,
-            'destroy'
+            'destroy',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | UNIDADES DE MEDIDA
+        | Unidades
         |--------------------------------------------------------------------------
         */
 
         Route::get('/unidades', [
             UnidadMedidaController::class,
-            'index'
+            'index',
         ]);
 
         Route::post('/unidades', [
             UnidadMedidaController::class,
-            'store'
+            'store',
         ]);
 
         Route::put('/unidades/{id}', [
             UnidadMedidaController::class,
-            'update'
+            'update',
         ]);
 
         Route::delete('/unidades/{id}', [
             UnidadMedidaController::class,
-            'destroy'
+            'destroy',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | PROMOCIONES
+        | Promociones
         |--------------------------------------------------------------------------
         */
 
         Route::get('/promociones', [
             PromocionController::class,
-            'index'
+            'index',
         ]);
 
         Route::post('/promociones', [
             PromocionController::class,
-            'store'
+            'store',
         ]);
 
         Route::put('/promociones/{id}', [
             PromocionController::class,
-            'update'
+            'update',
         ]);
 
         Route::delete('/promociones/{id}', [
             PromocionController::class,
-            'destroy'
+            'destroy',
         ]);
 
         Route::post('/promociones/aplicar', [
             PromocionController::class,
-            'aplicar'
+            'aplicar',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | CUPONES
+        | Cupones
         |--------------------------------------------------------------------------
         */
 
         Route::get('/cupones', [
             CuponController::class,
-            'index'
+            'index',
         ]);
 
         Route::post('/cupones', [
             CuponController::class,
-            'store'
+            'store',
         ]);
 
         Route::put('/cupones/{id}', [
             CuponController::class,
-            'update'
+            'update',
         ]);
 
         Route::delete('/cupones/{id}', [
             CuponController::class,
-            'destroy'
+            'destroy',
         ]);
 
         Route::post('/cupones/validar', [
             CuponController::class,
-            'validar'
+            'validar',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | SINCRONIZACIÓN
+        | Sincronización de la APK
         |--------------------------------------------------------------------------
         */
 
         Route::post('/sync', [
             SyncController::class,
-            'sync'
+            'sync',
         ]);
 
         Route::post('/sync/offline', [
             SyncController::class,
-            'syncOffline'
+            'syncOffline',
         ]);
 
         Route::get('/sync/pull', [
             SyncController::class,
-            'pull'
+            'pull',
         ]);
+
         Route::post('/sync/procesar-pendientes', [
             SyncController::class,
-            'procesarVentasPendientes'
+            'procesarVentasPendientes',
         ]);
 
         Route::post('/sync/archive', [
             SyncController::class,
-            'archive'
+            'archive',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | REPORTES DIARIOS
+        | Reportes diarios
         |--------------------------------------------------------------------------
         */
 
         Route::post('/reports/daily/share', [
             ReportShareController::class,
-            'dailyShare'
+            'dailyShare',
         ])->middleware('throttle:10,1');
 
 
         /*
         |--------------------------------------------------------------------------
-        | AUDITORÍA
+        | Auditoría
         |--------------------------------------------------------------------------
         */
 
         Route::get('/auditoria/exportar', [
             AuditoriaController::class,
-            'exportar'
+            'exportar',
         ]);
 
         Route::get('/auditoria/{id}', [
             AuditoriaController::class,
-            'show'
+            'show',
         ]);
 
         Route::get('/auditoria', [
             AuditoriaController::class,
-            'index'
+            'index',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | VENTAS
+        | Ventas
         |--------------------------------------------------------------------------
         |
-        | Las rutas específicas deben declararse antes de:
-        |
-        | /ventas/{id}
+        | Las rutas específicas se declaran antes de /ventas/{id}.
         |
         */
 
         Route::get('/ventas/pendiente/actual', [
             VentaController::class,
-            'pendienteActual'
+            'pendienteActual',
         ]);
 
         Route::post('/ventas/pendiente/guardar', [
             VentaController::class,
-            'guardarPendiente'
+            'guardarPendiente',
         ]);
 
         Route::delete('/ventas/pendiente/eliminar', [
             VentaController::class,
-            'eliminarPendiente'
+            'eliminarPendiente',
         ]);
 
         Route::get('/ventas/exportar', [
             VentaController::class,
-            'exportar'
+            'exportar',
         ]);
 
         Route::get('/ventas/pendientes', [
             VentaController::class,
-            'pendientes'
+            'pendientes',
         ]);
 
         Route::post('/ventas/{id}/pagar', [
             VentaController::class,
-            'pagar'
+            'pagar',
         ]);
 
         Route::get('/ventas/{id}/ticket', [
             VentaController::class,
-            'ticket'
+            'ticket',
         ]);
 
         Route::post('/ventas/{id}/anular', [
             VentaController::class,
-            'anular'
+            'anular',
         ]);
 
         Route::post('/ventas/{id}/devolver', [
             VentaController::class,
-            'devolver'
+            'devolver',
         ]);
 
         Route::get('/ventas/{id}', [
             VentaController::class,
-            'show'
+            'show',
         ]);
 
         Route::post('/ventas', [
             VentaController::class,
-            'store'
+            'store',
         ]);
 
         Route::get('/ventas', [
             VentaController::class,
-            'index'
+            'index',
         ]);
 
-        /* |-------------------------------------------------------------------------- | CAJAS Y MOVIMIENTOS DE CAJA |-------------------------------------------------------------------------- | | IMPORTANTE: | Las rutas específicas deben estar antes de las rutas | que utilizan parámetros dinámicos. | */
-        Route::get('/cajas/actual', [CajaController::class, 'actual',]); /* |-------------------------------------------------------------------------- | CONSULTA DE OPERACIONES / MOVIMIENTOS |-------------------------------------------------------------------------- | | Se mantienen las dos variantes: | | /cajas/operaciones | /caja/operaciones | | porque el APK actual intenta ambas. | */
-        Route::get('/cajas/operaciones', [CajaController::class, 'operaciones',]);
-        Route::get('/caja/operaciones', [CajaController::class, 'operaciones',]);
-        Route::get('/cajas/{id}/operaciones', [CajaController::class, 'operaciones',]); /* |-------------------------------------------------------------------------- | MOVIMIENTOS |-------------------------------------------------------------------------- */
-        Route::post('/cajas/movimientos', [CajaController::class, 'registrarMovimiento',]);
-        Route::post('/cajas/{id}/movimientos', [CajaController::class, 'registrarMovimiento',]); /* |-------------------------------------------------------------------------- | APERTURA Y CIERRE |-------------------------------------------------------------------------- */
-        Route::post('/cajas/abrir', [CajaController::class, 'abrir',]);
-        Route::post('/cajas/{id}/cerrar', [CajaController::class, 'cerrar',]);
 
         /*
         |--------------------------------------------------------------------------
-        | MESAS
+        | Cajas
+        |--------------------------------------------------------------------------
+        |
+        | Se conservan las variantes existentes para no romper la APK.
+        |
+        */
+
+        Route::get('/cajas/actual', [
+            CajaController::class,
+            'actual',
+        ]);
+
+        Route::get('/cajas/operaciones', [
+            CajaController::class,
+            'operaciones',
+        ]);
+
+        Route::get('/caja/operaciones', [
+            CajaController::class,
+            'operaciones',
+        ]);
+
+        Route::get('/cajas/{id}/operaciones', [
+            CajaController::class,
+            'operaciones',
+        ]);
+
+        Route::post('/cajas/movimientos', [
+            CajaController::class,
+            'registrarMovimiento',
+        ]);
+
+        Route::post('/cajas/{id}/movimientos', [
+            CajaController::class,
+            'registrarMovimiento',
+        ]);
+
+        Route::post('/cajas/abrir', [
+            CajaController::class,
+            'abrir',
+        ]);
+
+        Route::post('/cajas/{id}/cerrar', [
+            CajaController::class,
+            'cerrar',
+        ]);
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Mesas
         |--------------------------------------------------------------------------
         */
 
         Route::get('/mesas', [
             MesaController::class,
-            'index'
+            'index',
         ]);
 
         Route::post('/mesas', [
             MesaController::class,
-            'store'
+            'store',
         ]);
 
         Route::put('/mesas/{id}', [
             MesaController::class,
-            'update'
+            'update',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | ESTADÍSTICAS
+        | Estadísticas
         |--------------------------------------------------------------------------
         */
 
         Route::get('/estadisticas/dia', [
             EstadisticasController::class,
-            'dia'
+            'dia',
         ]);
 
         Route::get('/estadisticas/rango', [
             EstadisticasController::class,
-            'rango'
+            'rango',
         ]);
 
         Route::get('/estadisticas/semana', [
             EstadisticasController::class,
-            'semana'
+            'semana',
         ]);
 
         Route::get('/estadisticas/mes', [
             EstadisticasController::class,
-            'mes'
+            'mes',
         ]);
 
         Route::get('/estadisticas/productos-top', [
             EstadisticasController::class,
-            'productosTop'
+            'productosTop',
         ]);
 
         Route::get('/dashboard', [
             EstadisticasController::class,
-            'dashboard'
+            'dashboard',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | CONFIGURACIÓN DEL TICKET
+        | Configuración del ticket
         |--------------------------------------------------------------------------
         */
 
         Route::get('/ticket/config', [
             TicketConfigController::class,
-            'index'
+            'index',
         ]);
 
         Route::put('/ticket/config', [
             TicketConfigController::class,
-            'update'
+            'update',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | EMPRESAS
+        | Empresas
         |--------------------------------------------------------------------------
         |
         | CRUD general de empresas.
@@ -565,215 +674,129 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/empresas', [
             EmpresaController::class,
-            'index'
+            'index',
         ]);
 
         Route::get('/empresas/{id}', [
             EmpresaController::class,
-            'show'
+            'show',
         ]);
 
         Route::post('/empresas', [
             EmpresaController::class,
-            'store'
+            'store',
         ]);
 
         Route::put('/empresas/{id}', [
             EmpresaController::class,
-            'update'
+            'update',
         ]);
 
         Route::delete('/empresas/{id}', [
             EmpresaController::class,
-            'destroy'
+            'destroy',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | PANEL DE ADMINISTRACIÓN
+        | Productos
         |--------------------------------------------------------------------------
         |
-        | Todas las rutas aquí quedan bajo:
-        |
-        | /api/v1/admin/...
-        |
-        */
-
-        Route::prefix('admin')->group(function () {
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | USUARIOS
-            |--------------------------------------------------------------------------
-            */
-
-            Route::get('/usuarios', [
-                AdminController::class,
-                'usuarios'
-            ]);
-
-            Route::post('/usuarios', [
-                AdminController::class,
-                'crearUsuario'
-            ]);
-
-            Route::put('/usuarios/{id}', [
-                AdminController::class,
-                'actualizarUsuario'
-            ]);
-
-            Route::delete('/usuarios/{id}', [
-                AdminController::class,
-                'eliminarUsuario'
-            ]);
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | EMPRESAS
-            |--------------------------------------------------------------------------
-            */
-
-            Route::get('/empresas', [
-                AdminController::class,
-                'empresas'
-            ]);
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | REPORTES
-            |--------------------------------------------------------------------------
-            */
-
-            Route::get('/reportes', [
-                AdminController::class,
-                'reportes'
-            ]);
-
-            Route::get('/reportes/exportar', [
-                AdminController::class,
-                'exportarReportes'
-            ]);
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | CONFIGURACIÓN DE EMPRESA
-            |--------------------------------------------------------------------------
-            */
-
-            Route::get('/empresa/config', [
-                AdminController::class,
-                'configuracion'
-            ]);
-
-            Route::put('/empresa/config', [
-                AdminController::class,
-                'actualizarConfiguracion'
-            ]);
-        });
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | PRODUCTOS
-        |--------------------------------------------------------------------------
-        |
-        | Rutas específicas antes de /productos/{id}.
+        | Las rutas específicas se declaran antes de /productos/{id}.
         |
         */
 
         Route::get('/productos/stock/bajo', [
             ProductoController::class,
-            'stockBajo'
+            'stockBajo',
         ]);
 
         Route::get('/productos/stock/agotados', [
             ProductoController::class,
-            'agotados'
+            'agotados',
         ]);
 
         Route::get('/productos', [
             ProductoController::class,
-            'index'
+            'index',
         ]);
 
         Route::post('/productos', [
             ProductoController::class,
-            'store'
+            'store',
         ]);
 
         Route::post('/productos/{id}/restore', [
             ProductoController::class,
-            'restore'
+            'restore',
         ]);
 
         Route::post('/productos/{id}/stock', [
             ProductoController::class,
-            'ajustarStock'
+            'ajustarStock',
         ]);
 
         Route::put('/productos/{id}', [
             ProductoController::class,
-            'update'
+            'update',
         ]);
 
         Route::delete('/productos/{id}', [
             ProductoController::class,
-            'destroy'
+            'destroy',
         ]);
 
         Route::get('/productos/{id}', [
             ProductoController::class,
-            'show'
+            'show',
         ]);
 
 
         /*
         |--------------------------------------------------------------------------
-        | CLIENTES
+        | Clientes
         |--------------------------------------------------------------------------
         |
-        | Rutas específicas antes de /clientes/{id}.
+        | Las rutas específicas se declaran antes de /clientes/{id}.
         |
         */
 
         Route::get('/clientes', [
             ClienteController::class,
-            'index'
+            'index',
         ]);
 
         Route::post('/clientes', [
             ClienteController::class,
-            'store'
+            'store',
         ]);
 
         Route::post('/clientes/{id}/restore', [
             ClienteController::class,
-            'restore'
+            'restore',
         ]);
 
         Route::get('/clientes/{id}/historial', [
             ClienteController::class,
-            'historial'
+            'historial',
         ]);
 
         Route::get('/clientes/{id}', [
             ClienteController::class,
-            'show'
+            'show',
         ]);
 
         Route::put('/clientes/{id}', [
             ClienteController::class,
-            'update'
+            'update',
         ]);
 
         Route::delete('/clientes/{id}', [
             ClienteController::class,
-            'destroy'
+            'destroy',
         ]);
+
     });
+
 });

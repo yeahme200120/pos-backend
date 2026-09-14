@@ -16,13 +16,29 @@ use App\Models\UnidadMedida;
 use App\Models\User;
 use App\Models\Venta;
 use App\Services\AuditoriaService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class SyncController extends Controller
 {
+    /**
+     * Catálogos que pueden sincronizarse automáticamente.
+     */
+    private const TABLAS_SINCRONIZABLES = [
+        'productos' => Producto::class,
+        'clientes' => Cliente::class,
+        'impuestos' => Impuesto::class,
+        'formas_pago' => FormaPago::class,
+        'unidades_medida' => UnidadMedida::class,
+        'categorias' => Categoria::class,
+        'promociones' => Promocion::class,
+        'cupones' => Cupon::class,
+    ];
+
     public function __construct(
         private readonly AuditoriaService $auditoriaService
     ) {}
@@ -38,34 +54,54 @@ class SyncController extends Controller
         if (!$user) {
             return response()->json([
                 'message' => 'Usuario no autenticado.',
+                'code' => 'SYNC_UNAUTHENTICATED',
             ], 401);
         }
 
         if (!$user->empresa_id || !$user->empresa) {
             return response()->json([
                 'message' => 'El usuario no tiene una empresa asociada.',
+                'code' => 'SYNC_EMPRESA_NO_ASOCIADA',
             ], 403);
         }
 
-        $validated = $request->validate([
-            'cambios' => [
-                'nullable',
-                'array',
-                'max:100',
-            ],
+        try {
+            $validated = $request->validate([
+                'cambios' => [
+                    'nullable',
+                    'array',
+                    'max:100',
+                ],
 
-            'cursor' => [
-                'nullable',
-                'date',
-            ],
+                'cursor' => [
+                    'nullable',
+                    'date',
+                ],
 
-            'ultima_sync' => [
-                'nullable',
-                'date',
-            ],
-        ]);
+                'ultima_sync' => [
+                    'nullable',
+                    'date',
+                ],
+            ]);
+        } catch (ValidationException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'sync_validation_error',
+                'sync',
+                null,
+                null,
+                [
+                    'error_tipo' => ValidationException::class,
+                    'campos' => array_keys($e->errors()),
+                ],
+                (int) $user->empresa_id,
+                (int) $user->id
+            );
 
-        $empresaId = $this->obtenerEmpresaIdUsuario($user);
+            throw $e;
+        }
+
+        $empresaId = (int) $user->empresa_id;
         $usuarioId = (int) $user->id;
 
         $cambiosCliente = $validated['cambios'] ?? [];
@@ -73,12 +109,15 @@ class SyncController extends Controller
         if (!is_array($cambiosCliente)) {
             return response()->json([
                 'message' => 'El campo cambios debe ser un objeto o arreglo válido.',
+                'code' => 'SYNC_CAMBIOS_INVALIDOS',
             ], 422);
         }
 
         try {
             /*
-             * 1. Procesar cambios enviados por el cliente.
+             * ---------------------------------------------------------
+             * 1. PROCESAR CAMBIOS ENVIADOS POR EL CLIENTE
+             * ---------------------------------------------------------
              */
             $this->procesarCambiosCliente(
                 $request,
@@ -88,16 +127,25 @@ class SyncController extends Controller
             );
 
             /*
-             * 2. Obtener cursor recibido.
+             * ---------------------------------------------------------
+             * 2. CURSOR RECIBIDO
+             * ---------------------------------------------------------
              */
             $fechaSync = $validated['cursor']
                 ?? $validated['ultima_sync']
                 ?? '1970-01-01 00:00:00';
 
+            /*
+             * El cursor se toma después de procesar los cambios.
+             * Así los cambios producidos durante esta operación
+             * quedan correctamente delimitados.
+             */
             $cursorFinal = now()->toIso8601String();
 
             /*
-             * 3. Obtener cambios del servidor.
+             * ---------------------------------------------------------
+             * 3. CAMBIOS DEL SERVIDOR
+             * ---------------------------------------------------------
              */
             $cambiosServidor = $this->obtenerCambiosServidor(
                 $empresaId,
@@ -105,7 +153,19 @@ class SyncController extends Controller
             );
 
             /*
-             * 4. Obtener eliminaciones.
+             * ---------------------------------------------------------
+             * 4. VENTAS
+             * ---------------------------------------------------------
+             */
+            $cambiosServidor['ventas'] = $this->obtenerVentasServidor(
+                $empresaId,
+                $fechaSync
+            );
+
+            /*
+             * ---------------------------------------------------------
+             * 5. ELIMINACIONES
+             * ---------------------------------------------------------
              */
             $tombstones = $this->obtenerTombstones(
                 $empresaId,
@@ -113,7 +173,9 @@ class SyncController extends Controller
             );
 
             /*
-             * 5. Actualizar metadatos.
+             * ---------------------------------------------------------
+             * 6. METADATOS
+             * ---------------------------------------------------------
              */
             SyncMetadata::updateOrCreate(
                 [
@@ -126,12 +188,55 @@ class SyncController extends Controller
                 ]
             );
 
+            $this->registrarAuditoria(
+                $request,
+                'sync_completa',
+                'sync',
+                null,
+                null,
+                [
+                    'cursor_recibido' => $fechaSync,
+                    'cursor_nuevo' => $cursorFinal,
+                    'tablas_recibidas' => array_keys($cambiosCliente),
+                ],
+                $empresaId,
+                $usuarioId
+            );
+
             return response()->json([
                 'message' => 'Sincronización completada',
                 'cambios' => $cambiosServidor,
                 'tombstones' => $tombstones,
                 'cursor' => $cursorFinal,
             ]);
+        } catch (QueryException $e) {
+            Log::error(
+                'Error de base de datos durante sincronización.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $usuarioId,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'sync_db_error',
+                'sync',
+                null,
+                null,
+                [
+                    'error_tipo' => get_class($e),
+                ],
+                $empresaId,
+                $usuarioId
+            );
+
+            return response()->json([
+                'message' => 'No fue posible completar la sincronización por un error de base de datos.',
+                'code' => 'SYNC_DATABASE_ERROR',
+            ], 500);
         } catch (Throwable $e) {
             Log::error(
                 'Error general en sincronización.',
@@ -143,8 +248,22 @@ class SyncController extends Controller
                 ]
             );
 
+            $this->registrarAuditoria(
+                $request,
+                'sync_error',
+                'sync',
+                null,
+                null,
+                [
+                    'error_tipo' => get_class($e),
+                ],
+                $empresaId,
+                $usuarioId
+            );
+
             return response()->json([
                 'message' => 'No fue posible completar la sincronización.',
+                'code' => 'SYNC_INTERNAL_ERROR',
             ], 500);
         }
     }
@@ -159,23 +278,44 @@ class SyncController extends Controller
         if (!$user) {
             return response()->json([
                 'message' => 'Usuario no autenticado.',
+                'code' => 'SYNC_PULL_UNAUTHENTICATED',
             ], 401);
         }
 
         if (!$user->empresa_id || !$user->empresa) {
             return response()->json([
                 'message' => 'El usuario no tiene una empresa asociada.',
+                'code' => 'SYNC_PULL_EMPRESA_NO_ASOCIADA',
             ], 403);
         }
 
-        $validated = $request->validate([
-            'cursor' => [
-                'nullable',
-                'date',
-            ],
-        ]);
+        try {
+            $validated = $request->validate([
+                'cursor' => [
+                    'nullable',
+                    'date',
+                ],
+            ]);
+        } catch (ValidationException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'sync_pull_validation_error',
+                'sync',
+                null,
+                null,
+                [
+                    'error_tipo' => ValidationException::class,
+                    'campos' => array_keys($e->errors()),
+                ],
+                (int) $user->empresa_id,
+                (int) $user->id
+            );
 
-        $empresaId = $this->obtenerEmpresaIdUsuario($user);
+            throw $e;
+        }
+
+        $empresaId = (int) $user->empresa_id;
+        $usuarioId = (int) $user->id;
 
         $cursor = $validated['cursor']
             ?? '1970-01-01 00:00:00';
@@ -193,30 +333,89 @@ class SyncController extends Controller
                 $cursor
             );
 
+            $tombstones = $this->obtenerTombstones(
+                $empresaId,
+                $cursor
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'sync_pull',
+                'sync',
+                null,
+                null,
+                [
+                    'cursor_recibido' => $cursor,
+                    'cursor_nuevo' => $cursorFinal,
+                ],
+                $empresaId,
+                $usuarioId
+            );
+
             return response()->json([
                 'cambios' => $cambios,
-
-                'tombstones' => $this->obtenerTombstones(
-                    $empresaId,
-                    $cursor
-                ),
-
+                'tombstones' => $tombstones,
                 'cursor' => $cursorFinal,
             ]);
-        } catch (Throwable $e) {
+        } catch (QueryException $e) {
             Log::error(
-                'Error al obtener cambios de sincronización.',
+                'Error de base de datos al obtener cambios.',
                 [
                     'empresa_id' => $empresaId,
-                    'usuario_id' => $user->id,
+                    'usuario_id' => $usuarioId,
                     'cursor' => $cursor,
                     'error' => $e->getMessage(),
                     'exception' => get_class($e),
                 ]
             );
 
+            $this->registrarAuditoria(
+                $request,
+                'sync_pull_db_error',
+                'sync',
+                null,
+                null,
+                [
+                    'error_tipo' => get_class($e),
+                    'cursor' => $cursor,
+                ],
+                $empresaId,
+                $usuarioId
+            );
+
+            return response()->json([
+                'message' => 'No fue posible obtener los cambios por un error de base de datos.',
+                'code' => 'SYNC_PULL_DATABASE_ERROR',
+            ], 500);
+        } catch (Throwable $e) {
+            Log::error(
+                'Error al obtener cambios de sincronización.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $usuarioId,
+                    'cursor' => $cursor,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'sync_pull_error',
+                'sync',
+                null,
+                null,
+                [
+                    'error_tipo' => get_class($e),
+                    'cursor' => $cursor,
+                ],
+                $empresaId,
+                $usuarioId
+            );
+
             return response()->json([
                 'message' => 'No fue posible obtener los cambios.',
+                'code' => 'SYNC_PULL_INTERNAL_ERROR',
             ], 500);
         }
     }
@@ -232,26 +431,21 @@ class SyncController extends Controller
         $finHoy = now()->endOfDay();
 
         $ventas = Venta::query()
-            ->where(
-                'empresa_id',
-                $empresaId
-            )
+            ->where('empresa_id', $empresaId)
             ->where(function ($query) use (
                 $cursor,
                 $inicioHoy,
                 $finHoy
             ) {
-                $query->where(
-                    'updated_at',
-                    '>',
-                    $cursor
-                )->orWhereBetween(
-                    'created_at',
-                    [
-                        $inicioHoy,
-                        $finHoy,
-                    ]
-                );
+                $query
+                    ->where('updated_at', '>', $cursor)
+                    ->orWhereBetween(
+                        'created_at',
+                        [
+                            $inicioHoy,
+                            $finHoy,
+                        ]
+                    );
             })
             ->with([
                 'cliente',
@@ -259,14 +453,8 @@ class SyncController extends Controller
                 'detalles.producto',
                 'pagos',
             ])
-            ->orderBy(
-                'created_at',
-                'desc'
-            )
-            ->orderBy(
-                'id',
-                'desc'
-            )
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
             ->get();
 
         /*
@@ -274,11 +462,11 @@ class SyncController extends Controller
          */
         $ventasUnicas = $ventas
             ->filter(
-                fn($venta) =>
+                fn ($venta) =>
                 !empty($venta->uuid)
             )
             ->keyBy(
-                fn($venta) =>
+                fn ($venta) =>
                 (string) $venta->uuid
             )
             ->values();
@@ -286,50 +474,21 @@ class SyncController extends Controller
         return $ventasUnicas
             ->map(function ($venta) {
                 return [
-                    'id' =>
-                    $venta->id,
-
-                    'uuid' =>
-                    (string) $venta->uuid,
-
-                    'folio' =>
-                    $venta->folio,
-
-                    'empresa_id' =>
-                    $venta->empresa_id,
-
-                    'usuario_id' =>
-                    $venta->usuario_id,
-
-                    'cliente_id' =>
-                    $venta->cliente_id,
-
-                    'fecha' =>
-                    $venta->fecha,
-
-                    'subtotal' =>
-                    (float) $venta->subtotal,
-
-                    'total' =>
-                    (float) $venta->total,
-
-                    'descuento' =>
-                    (float) $venta->descuento,
-
-                    'impuesto' =>
-                    (float) $venta->impuesto,
-
-                    'estado' =>
-                    $venta->estado,
-
-                    'dispositivo_id' =>
-                    $venta->dispositivo_id,
-
-                    'sincronizado' =>
-                    (bool) $venta->sincronizado,
-
-                    'fecha_sincronizacion' =>
-                    $venta->fecha_sincronizacion,
+                    'id' => $venta->id,
+                    'uuid' => (string) $venta->uuid,
+                    'folio' => $venta->folio,
+                    'empresa_id' => $venta->empresa_id,
+                    'usuario_id' => $venta->usuario_id,
+                    'cliente_id' => $venta->cliente_id,
+                    'fecha' => $venta->fecha,
+                    'subtotal' => (float) $venta->subtotal,
+                    'total' => (float) $venta->total,
+                    'descuento' => (float) $venta->descuento,
+                    'impuesto' => (float) $venta->impuesto,
+                    'estado' => $venta->estado,
+                    'dispositivo_id' => $venta->dispositivo_id,
+                    'sincronizado' => (bool) $venta->sincronizado,
+                    'fecha_sincronizacion' => $venta->fecha_sincronizacion,
 
                     'created_at' =>
                     $venta->created_at?->toIso8601String(),
@@ -351,8 +510,7 @@ class SyncController extends Controller
                     $venta->detalles
                         ->map(function ($detalle) {
                             return [
-                                'id' =>
-                                $detalle->id,
+                                'id' => $detalle->id,
 
                                 'producto_id' =>
                                 $detalle->producto_id,
@@ -365,26 +523,22 @@ class SyncController extends Controller
 
                                 'descuento' =>
                                 (float) (
-                                    $detalle->descuento
-                                    ?? 0
+                                    $detalle->descuento ?? 0
                                 ),
 
                                 'impuesto' =>
                                 (float) (
-                                    $detalle->impuesto
-                                    ?? 0
+                                    $detalle->impuesto ?? 0
                                 ),
 
                                 'subtotal' =>
                                 (float) (
-                                    $detalle->subtotal
-                                    ?? 0
+                                    $detalle->subtotal ?? 0
                                 ),
 
                                 'total' =>
                                 (float) (
-                                    $detalle->total
-                                    ?? 0
+                                    $detalle->total ?? 0
                                 ),
 
                                 'producto' =>
@@ -400,8 +554,7 @@ class SyncController extends Controller
                     $venta->pagos
                         ->map(function ($pago) {
                             return [
-                                'id' =>
-                                $pago->id,
+                                'id' => $pago->id,
 
                                 'forma_pago' =>
                                 $pago->forma_pago,
@@ -411,8 +564,7 @@ class SyncController extends Controller
 
                                 'cambio' =>
                                 (float) (
-                                    $pago->cambio
-                                    ?? 0
+                                    $pago->cambio ?? 0
                                 ),
 
                                 'referencia' =>
@@ -429,6 +581,15 @@ class SyncController extends Controller
 
     /**
      * Procesar cambios enviados por el cliente.
+     *
+     * IMPORTANTE:
+     *
+     * Si un catálogo enviado como UPDATE no existe:
+     * se crea automáticamente.
+     *
+     * Esto evita que una sincronización offline se pierda
+     * simplemente porque el registro todavía no existía
+     * en el servidor.
      */
     private function procesarCambiosCliente(
         Request $request,
@@ -460,6 +621,19 @@ class SyncController extends Controller
                         'empresa_id' => $empresaId,
                         'usuario_id' => $userId,
                     ]
+                );
+
+                $this->registrarAuditoria(
+                    $request,
+                    'sync_tabla_no_permitida',
+                    'sync',
+                    null,
+                    null,
+                    [
+                        'tabla' => $tabla,
+                    ],
+                    $empresaId,
+                    $userId
                 );
 
                 continue;
@@ -499,135 +673,294 @@ class SyncController extends Controller
                 $datosDespues = null;
 
                 try {
-                    switch ($operacion) {
-                        /*
-                         * INSERT
-                         */
-                        case 'insert':
-                            $datos = $registro['datos'] ?? [];
+                    /*
+                     * Cada operación tiene su propia transacción.
+                     * Así un error en un registro no revierte
+                     * los demás registros enviados.
+                     */
+                    DB::transaction(function () use (
+                        $request,
+                        $tabla,
+                        $modelo,
+                        $registro,
+                        $operacion,
+                        $empresaId,
+                        $userId,
+                        &$registroId,
+                        &$datosAntes,
+                        &$datosDespues
+                    ) {
+                        switch ($operacion) {
+                            /*
+                             * -------------------------------------------------
+                             * INSERT
+                             * -------------------------------------------------
+                             */
+                            case 'insert':
+                                $datos = $registro['datos'] ?? [];
 
-                            if (!is_array($datos)) {
-                                continue 2;
-                            }
+                                if (!is_array($datos)) {
+                                    throw new \RuntimeException(
+                                        'Los datos del registro no son válidos.'
+                                    );
+                                }
 
-                            unset(
-                                $datos['id'],
-                                $datos['empresa_id'],
-                                $datos['created_at'],
-                                $datos['updated_at'],
-                                $datos['deleted_at']
-                            );
+                                /*
+                                 * Si el registro es un producto, aseguramos
+                                 * previamente sus catálogos relacionados.
+                                 */
+                                if ($tabla === 'productos') {
+                                    $datos = $this->normalizarDatosProductoSync(
+                                        $datos,
+                                        $empresaId
+                                    );
+                                }
 
-                            $datos['empresa_id'] = $empresaId;
-
-                            $nuevo = $modelo::create($datos);
-
-                            $registroId = (int) $nuevo->id;
-
-                            $datosDespues = $nuevo
-                                ->fresh()
-                                ?->toArray();
-
-                            break;
-
-                        /*
-                         * UPDATE
-                         */
-                        case 'update':
-                            $id = filter_var(
-                                $registro['id'] ?? null,
-                                FILTER_VALIDATE_INT
-                            );
-
-                            if ($id === false || $id < 1) {
-                                continue 2;
-                            }
-
-                            $existe = $modelo::where(
-                                'empresa_id',
-                                $empresaId
-                            )->find($id);
-
-                            if (!$existe) {
-                                Log::warning(
-                                    'Registro no encontrado para actualización.',
-                                    [
-                                        'tabla' => $tabla,
-                                        'registro_id' => $id,
-                                        'empresa_id' => $empresaId,
-                                        'usuario_id' => $userId,
-                                    ]
+                                unset(
+                                    $datos['id'],
+                                    $datos['empresa_id'],
+                                    $datos['created_at'],
+                                    $datos['updated_at'],
+                                    $datos['deleted_at']
                                 );
 
-                                continue 2;
-                            }
+                                $datos['empresa_id'] = $empresaId;
 
-                            $datos = $registro['datos'] ?? [];
+                                /*
+                                 * Evitar duplicados por código cuando el
+                                 * producto ya existe.
+                                 */
+                                if (
+                                    $tabla === 'productos'
+                                    && !empty($datos['codigo'])
+                                ) {
+                                    $existente = $modelo::query()
+                                        ->where(
+                                            'empresa_id',
+                                            $empresaId
+                                        )
+                                        ->where(
+                                            'codigo',
+                                            $datos['codigo']
+                                        )
+                                        ->lockForUpdate()
+                                        ->first();
 
-                            if (!is_array($datos)) {
-                                continue 2;
-                            }
+                                    if ($existente) {
+                                        $datosAntes = $existente->toArray();
 
-                            unset(
-                                $datos['id'],
-                                $datos['empresa_id'],
-                                $datos['created_at'],
-                                $datos['updated_at'],
-                                $datos['deleted_at']
-                            );
+                                        $existente->fill(
+                                            $datos
+                                        );
 
-                            $datosAntes = $existe->toArray();
+                                        $existente->save();
 
-                            $existe->update($datos);
+                                        $registroId =
+                                            (int) $existente->id;
 
-                            $registroId = (int) $existe->id;
+                                        $datosDespues =
+                                            $existente
+                                                ->fresh()
+                                                ?->toArray();
 
-                            $datosDespues = $existe
-                                ->fresh()
-                                ?->toArray();
+                                        return;
+                                    }
+                                }
 
-                            break;
-
-                        /*
-                         * DELETE
-                         */
-                        case 'delete':
-                            $id = filter_var(
-                                $registro['id'] ?? null,
-                                FILTER_VALIDATE_INT
-                            );
-
-                            if ($id === false || $id < 1) {
-                                continue 2;
-                            }
-
-                            $existe = $modelo::where(
-                                'empresa_id',
-                                $empresaId
-                            )->find($id);
-
-                            if (!$existe) {
-                                Log::warning(
-                                    'Registro no encontrado para eliminación.',
-                                    [
-                                        'tabla' => $tabla,
-                                        'registro_id' => $id,
-                                        'empresa_id' => $empresaId,
-                                        'usuario_id' => $userId,
-                                    ]
+                                $nuevo = $modelo::create(
+                                    $datos
                                 );
 
-                                continue 2;
-                            }
+                                $registroId =
+                                    (int) $nuevo->id;
 
-                            $datosAntes = $existe->toArray();
+                                $datosDespues =
+                                    $nuevo
+                                        ->fresh()
+                                        ?->toArray();
 
-                            $registroId = (int) $existe->id;
+                                break;
 
-                            $existe->delete();
+                            /*
+                             * -------------------------------------------------
+                             * UPDATE
+                             * -------------------------------------------------
+                             */
+                            case 'update':
+                                $id = filter_var(
+                                    $registro['id'] ?? null,
+                                    FILTER_VALIDATE_INT
+                                );
 
-                            break;
-                    }
+                                if (
+                                    $id === false
+                                    || $id < 1
+                                ) {
+                                    throw new \RuntimeException(
+                                        'El identificador del registro no es válido.'
+                                    );
+                                }
+
+                                $existe = $modelo::query()
+                                    ->where(
+                                        'empresa_id',
+                                        $empresaId
+                                    )
+                                    ->whereKey($id)
+                                    ->lockForUpdate()
+                                    ->first();
+
+                                $datos = $registro['datos'] ?? [];
+
+                                if (!is_array($datos)) {
+                                    throw new \RuntimeException(
+                                        'Los datos del registro no son válidos.'
+                                    );
+                                }
+
+                                /*
+                                 * Si el catálogo no existe, CREARLO.
+                                 */
+                                if (!$existe) {
+                                    if ($tabla === 'productos') {
+                                        $datos =
+                                            $this->normalizarDatosProductoSync(
+                                                $datos,
+                                                $empresaId
+                                            );
+                                    }
+
+                                    unset(
+                                        $datos['id'],
+                                        $datos['empresa_id'],
+                                        $datos['created_at'],
+                                        $datos['updated_at'],
+                                        $datos['deleted_at']
+                                    );
+
+                                    $datos['empresa_id'] =
+                                        $empresaId;
+
+                                    $nuevo = $modelo::create(
+                                        $datos
+                                    );
+
+                                    $registroId =
+                                        (int) $nuevo->id;
+
+                                    $datosDespues =
+                                        $nuevo
+                                            ->fresh()
+                                            ?->toArray();
+
+                                    Log::info(
+                                        'Registro de catálogo creado automáticamente durante UPDATE de sincronización.',
+                                        [
+                                            'tabla' => $tabla,
+                                            'id_solicitado' => $id,
+                                            'id_creado' => $registroId,
+                                            'empresa_id' => $empresaId,
+                                            'usuario_id' => $userId,
+                                        ]
+                                    );
+
+                                    return;
+                                }
+
+                                /*
+                                 * Producto: resolver catálogos relacionados
+                                 * antes de guardar.
+                                 */
+                                if ($tabla === 'productos') {
+                                    $datos =
+                                        $this->normalizarDatosProductoSync(
+                                            $datos,
+                                            $empresaId
+                                        );
+                                }
+
+                                unset(
+                                    $datos['id'],
+                                    $datos['empresa_id'],
+                                    $datos['created_at'],
+                                    $datos['updated_at'],
+                                    $datos['deleted_at']
+                                );
+
+                                $datosAntes =
+                                    $existe->toArray();
+
+                                $existe->fill($datos);
+                                $existe->save();
+
+                                $registroId =
+                                    (int) $existe->id;
+
+                                $datosDespues =
+                                    $existe
+                                        ->fresh()
+                                        ?->toArray();
+
+                                break;
+
+                            /*
+                             * -------------------------------------------------
+                             * DELETE
+                             * -------------------------------------------------
+                             */
+                            case 'delete':
+                                $id = filter_var(
+                                    $registro['id'] ?? null,
+                                    FILTER_VALIDATE_INT
+                                );
+
+                                if (
+                                    $id === false
+                                    || $id < 1
+                                ) {
+                                    throw new \RuntimeException(
+                                        'El identificador del registro no es válido.'
+                                    );
+                                }
+
+                                $existe = $modelo::query()
+                                    ->where(
+                                        'empresa_id',
+                                        $empresaId
+                                    )
+                                    ->whereKey($id)
+                                    ->lockForUpdate()
+                                    ->first();
+
+                                /*
+                                 * Si no existe, la operación DELETE
+                                 * ya está satisfecha.
+                                 */
+                                if (!$existe) {
+                                    Log::info(
+                                        'DELETE de sincronización ignorado porque el registro ya no existe.',
+                                        [
+                                            'tabla' => $tabla,
+                                            'registro_id' => $id,
+                                            'empresa_id' => $empresaId,
+                                            'usuario_id' => $userId,
+                                        ]
+                                    );
+
+                                    return;
+                                }
+
+                                $datosAntes =
+                                    $existe->toArray();
+
+                                $registroId =
+                                    (int) $existe->id;
+
+                                $existe->delete();
+
+                                break;
+                        }
+                    });
 
                     if ($registroId !== null) {
                         $this->registrarAuditoria(
@@ -679,24 +1012,17 @@ class SyncController extends Controller
         int $empresaId,
         $fechaSync
     ): array {
-        $tablas = [
-            'productos' => Producto::class,
-            'clientes' => Cliente::class,
-            'impuestos' => Impuesto::class,
-            'formas_pago' => FormaPago::class,
-            'unidades_medida' => UnidadMedida::class,
-            'categorias' => Categoria::class,
-            'promociones' => Promocion::class,
-            'cupones' => Cupon::class,
-        ];
-
         $cambios = [];
 
-        foreach ($tablas as $nombre => $clase) {
-            $registros = $clase::where(
-                'empresa_id',
-                $empresaId
-            )
+        foreach (
+            self::TABLAS_SINCRONIZABLES
+            as $nombre => $clase
+        ) {
+            $registros = $clase::query()
+                ->where(
+                    'empresa_id',
+                    $empresaId
+                )
                 ->where(
                     'updated_at',
                     '>',
@@ -728,7 +1054,8 @@ class SyncController extends Controller
                 continue;
             }
 
-            $cambios[$nombre] = $registros;
+            $cambios[$nombre] =
+                $registros->values()->all();
         }
 
         return $cambios;
@@ -741,26 +1068,21 @@ class SyncController extends Controller
         int $empresaId,
         $fechaSync
     ): array {
-        $tablas = [
-            'productos' => Producto::class,
-            'clientes' => Cliente::class,
-            'impuestos' => Impuesto::class,
-            'formas_pago' => FormaPago::class,
-            'unidades_medida' => UnidadMedida::class,
-            'categorias' => Categoria::class,
-            'promociones' => Promocion::class,
-            'cupones' => Cupon::class,
-        ];
-
         $resultado = [];
 
-        foreach ($tablas as $nombre => $clase) {
-            if (!in_array(
-                \Illuminate\Database\Eloquent\SoftDeletes::class,
-                class_uses_recursive($clase),
-                true
-            )) {
+        foreach (
+            self::TABLAS_SINCRONIZABLES
+            as $nombre => $clase
+        ) {
+            if (
+                !in_array(
+                    \Illuminate\Database\Eloquent\SoftDeletes::class,
+                    class_uses_recursive($clase),
+                    true
+                )
+            ) {
                 $resultado[$nombre] = [];
+
                 continue;
             }
 
@@ -779,7 +1101,7 @@ class SyncController extends Controller
                     'deleted_at',
                 ])
                 ->map(
-                    static fn($item) => [
+                    static fn ($item) => [
                         'id' => $item->id,
                         'deleted_at' => $item->deleted_at,
                     ]
@@ -794,20 +1116,11 @@ class SyncController extends Controller
     /**
      * Obtener el modelo correspondiente a una tabla permitida.
      */
-    private function obtenerModelo(?string $tabla): ?string
-    {
-        $mapa = [
-            'productos' => Producto::class,
-            'clientes' => Cliente::class,
-            'impuestos' => Impuesto::class,
-            'formas_pago' => FormaPago::class,
-            'unidades_medida' => UnidadMedida::class,
-            'categorias' => Categoria::class,
-            'promociones' => Promocion::class,
-            'cupones' => Cupon::class,
-        ];
-
-        return $mapa[$tabla] ?? null;
+    private function obtenerModelo(
+        ?string $tabla
+    ): ?string {
+        return self::TABLAS_SINCRONIZABLES[$tabla]
+            ?? null;
     }
 
     /**
@@ -820,12 +1133,14 @@ class SyncController extends Controller
         if (!$user) {
             return response()->json([
                 'message' => 'Usuario no autenticado.',
+                'code' => 'SYNC_OFFLINE_UNAUTHENTICATED',
             ], 401);
         }
 
         if (!$user->empresa_id || !$user->empresa) {
             return response()->json([
                 'message' => 'El usuario no tiene una empresa asociada.',
+                'code' => 'SYNC_OFFLINE_EMPRESA_NO_ASOCIADA',
             ], 403);
         }
 
@@ -841,6 +1156,7 @@ class SyncController extends Controller
         if (!is_array($ventas)) {
             return response()->json([
                 'message' => 'El campo ventas debe ser un arreglo válido.',
+                'code' => 'SYNC_OFFLINE_VENTAS_INVALIDAS',
                 'errors' => [
                     'ventas' => [
                         'El campo ventas debe ser un arreglo válido.',
@@ -852,6 +1168,7 @@ class SyncController extends Controller
         if (count($ventas) > 100) {
             return response()->json([
                 'message' => 'El campo ventas no puede contener más de 100 registros.',
+                'code' => 'SYNC_OFFLINE_LIMITE_VENTAS',
                 'errors' => [
                     'ventas' => [
                         'El campo ventas no puede contener más de 100 registros.',
@@ -872,185 +1189,218 @@ class SyncController extends Controller
             ], 200);
         }
 
-        $validated = $request->validate([
-            'ventas' => [
-                'required',
-                'array',
-                'min:1',
-                'max:100',
-            ],
+        try {
+            $validated = $request->validate([
+                'ventas' => [
+                    'required',
+                    'array',
+                    'min:1',
+                    'max:100',
+                ],
 
-            'ventas.*.uuid_local' => [
-                'required',
-                'string',
-                'max:100',
-            ],
+                'ventas.*.uuid_local' => [
+                    'required',
+                    'string',
+                    'max:100',
+                ],
 
-            'ventas.*.cliente_id' => [
-                'nullable',
-                'integer',
-                'min:1',
-            ],
+                'ventas.*.cliente_id' => [
+                    'nullable',
+                    'integer',
+                    'min:1',
+                ],
 
-            'ventas.*.productos' => [
-                'required',
-                'array',
-                'min:1',
-                'max:500',
-            ],
+                'ventas.*.productos' => [
+                    'required',
+                    'array',
+                    'min:1',
+                    'max:500',
+                ],
 
-            'ventas.*.productos.*.producto_local_id' => [
-                'required',
-                'integer',
-                'min:1',
-            ],
+                'ventas.*.productos.*.producto_local_id' => [
+                    'required',
+                    'integer',
+                    'min:1',
+                ],
 
-            'ventas.*.productos.*.producto_id' => [
-                'nullable',
-                'integer',
-                'min:1',
-            ],
+                'ventas.*.productos.*.producto_id' => [
+                    'nullable',
+                    'integer',
+                    'min:1',
+                ],
 
-            'ventas.*.productos.*.codigo' => [
-                'nullable',
-                'string',
-                'max:255',
-            ],
+                'ventas.*.productos.*.codigo' => [
+                    'nullable',
+                    'string',
+                    'max:255',
+                ],
 
-            'ventas.*.productos.*.nombre' => [
-                'nullable',
-                'string',
-                'max:255',
-            ],
+                'ventas.*.productos.*.nombre' => [
+                    'nullable',
+                    'string',
+                    'max:255',
+                ],
 
-            'ventas.*.productos.*.descripcion' => [
-                'nullable',
-                'string',
-            ],
+                'ventas.*.productos.*.descripcion' => [
+                    'nullable',
+                    'string',
+                ],
 
-            'ventas.*.productos.*.cantidad' => [
-                'required',
-                'numeric',
-                'gt:0',
-            ],
+                'ventas.*.productos.*.cantidad' => [
+                    'required',
+                    'numeric',
+                    'gt:0',
+                ],
 
-            'ventas.*.productos.*.precio_unitario' => [
-                'required',
-                'numeric',
-                'min:0',
-            ],
+                'ventas.*.productos.*.precio_unitario' => [
+                    'required',
+                    'numeric',
+                    'min:0',
+                ],
 
-            'ventas.*.productos.*.costo' => [
-                'nullable',
-                'numeric',
-                'min:0',
-            ],
+                'ventas.*.productos.*.costo' => [
+                    'nullable',
+                    'numeric',
+                    'min:0',
+                ],
 
-            'ventas.*.productos.*.impuesto' => [
-                'nullable',
-                'numeric',
-                'min:0',
-            ],
+                'ventas.*.productos.*.impuesto' => [
+                    'nullable',
+                    'numeric',
+                    'min:0',
+                ],
 
-            'ventas.*.productos.*.stock' => [
-                'nullable',
-                'numeric',
-            ],
+                'ventas.*.productos.*.stock' => [
+                    'nullable',
+                    'numeric',
+                ],
 
-            'ventas.*.productos.*.stock_minimo' => [
-                'nullable',
-                'numeric',
-                'min:0',
-            ],
+                'ventas.*.productos.*.stock_minimo' => [
+                    'nullable',
+                    'numeric',
+                    'min:0',
+                ],
 
-            'ventas.*.productos.*.activo' => [
-                'nullable',
-                'boolean',
-            ],
+                'ventas.*.productos.*.activo' => [
+                    'nullable',
+                    'boolean',
+                ],
 
-            'ventas.*.productos.*.is_inventariable' => [
-                'nullable',
-                'boolean',
-            ],
+                'ventas.*.productos.*.is_inventariable' => [
+                    'nullable',
+                    'boolean',
+                ],
 
-            'ventas.*.productos.*.descuento' => [
-                'nullable',
-                'numeric',
-                'min:0',
-            ],
+                /*
+                 * Catálogos opcionales enviados por Flutter.
+                 */
+                'ventas.*.productos.*.categoria_id' => [
+                    'nullable',
+                    'integer',
+                    'min:1',
+                ],
 
-            'ventas.*.pagos' => [
-                'nullable',
-                'array',
-                'min:1',
-                'max:50',
-            ],
+                'ventas.*.productos.*.unidad_medida_id' => [
+                    'nullable',
+                    'integer',
+                    'min:1',
+                ],
 
-            'ventas.*.pagos.*.forma_pago' => [
-                'required',
-                'string',
-                'max:100',
-            ],
+                'ventas.*.productos.*.descuento' => [
+                    'nullable',
+                    'numeric',
+                    'min:0',
+                ],
 
-            'ventas.*.pagos.*.monto' => [
-                'required',
-                'numeric',
-                'gt:0',
-            ],
+                'ventas.*.pagos' => [
+                    'nullable',
+                    'array',
+                    'min:1',
+                    'max:50',
+                ],
 
-            'ventas.*.pagos.*.referencia' => [
-                'nullable',
-                'string',
-                'max:255',
-            ],
+                'ventas.*.pagos.*.forma_pago' => [
+                    'required',
+                    'string',
+                    'max:100',
+                ],
 
-            'ventas.*.pagos.*.cambio' => [
-                'nullable',
-                'numeric',
-                'min:0',
-            ],
+                'ventas.*.pagos.*.monto' => [
+                    'required',
+                    'numeric',
+                    'gt:0',
+                ],
 
-            'ventas.*.forma_pago' => [
-                'required_without:ventas.*.pagos',
-                'string',
-                'max:100',
-            ],
+                'ventas.*.pagos.*.referencia' => [
+                    'nullable',
+                    'string',
+                    'max:255',
+                ],
 
-            'ventas.*.monto_pagado' => [
-                'required_without:ventas.*.pagos',
-                'numeric',
-                'gt:0',
-            ],
+                'ventas.*.pagos.*.cambio' => [
+                    'nullable',
+                    'numeric',
+                    'min:0',
+                ],
 
-            'ventas.*.referencia' => [
-                'nullable',
-                'string',
-                'max:255',
-            ],
+                'ventas.*.forma_pago' => [
+                    'required_without:ventas.*.pagos',
+                    'string',
+                    'max:100',
+                ],
 
-            'ventas.*.descuento_global' => [
-                'nullable',
-                'numeric',
-                'min:0',
-            ],
+                'ventas.*.monto_pagado' => [
+                    'required_without:ventas.*.pagos',
+                    'numeric',
+                    'gt:0',
+                ],
 
-            'ventas.*.impuesto_global' => [
-                'nullable',
-                'numeric',
-                'min:0',
-            ],
+                'ventas.*.referencia' => [
+                    'nullable',
+                    'string',
+                    'max:255',
+                ],
 
-            'ventas.*.dispositivo_id' => [
-                'nullable',
-                'string',
-                'max:255',
-            ],
+                'ventas.*.descuento_global' => [
+                    'nullable',
+                    'numeric',
+                    'min:0',
+                ],
 
-            'ventas.*.fecha_venta' => [
-                'required',
-                'date',
-            ],
-        ]);
+                'ventas.*.impuesto_global' => [
+                    'nullable',
+                    'numeric',
+                    'min:0',
+                ],
+
+                'ventas.*.dispositivo_id' => [
+                    'nullable',
+                    'string',
+                    'max:255',
+                ],
+
+                'ventas.*.fecha_venta' => [
+                    'required',
+                    'date',
+                ],
+            ]);
+        } catch (ValidationException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'sync_offline_validation_error',
+                'ventas',
+                null,
+                null,
+                [
+                    'error_tipo' => ValidationException::class,
+                    'campos' => array_keys($e->errors()),
+                ],
+                (int) $user->empresa_id,
+                (int) $user->id
+            );
+
+            throw $e;
+        }
 
         $empresaId = (int) $user->empresa_id;
         $usuarioId = (int) $user->id;
@@ -1068,10 +1418,11 @@ class SyncController extends Controller
                  */
                 if (
                     !empty($ventaData['cliente_id'])
-                    && !Cliente::where(
-                        'id',
-                        $ventaData['cliente_id']
-                    )
+                    && !Cliente::query()
+                        ->where(
+                            'id',
+                            $ventaData['cliente_id']
+                        )
                         ->where(
                             'empresa_id',
                             $empresaId
@@ -1086,10 +1437,11 @@ class SyncController extends Controller
                 /*
                  * Idempotencia por UUID.
                  */
-                $ventaExistente = Venta::where(
-                    'empresa_id',
-                    $empresaId
-                )
+                $ventaExistente = Venta::query()
+                    ->where(
+                        'empresa_id',
+                        $empresaId
+                    )
                     ->where(
                         'uuid',
                         $ventaData['uuid_local']
@@ -1145,14 +1497,16 @@ class SyncController extends Controller
                 /*
                  * Buscar registro existente en cola.
                  */
-                $syncRecord = SyncQueue::where(
-                    'empresa_id',
-                    $empresaId
-                )
+                $syncRecord = SyncQueue::query()
+                    ->where(
+                        'empresa_id',
+                        $empresaId
+                    )
                     ->where(
                         'uuid_local',
                         $ventaData['uuid_local']
                     )
+                    ->lockForUpdate()
                     ->first();
 
                 /*
@@ -1197,10 +1551,11 @@ class SyncController extends Controller
                 } elseif (
                     $syncRecord->estado === 'enviado'
                 ) {
-                    $ventaDeCola = Venta::where(
-                        'empresa_id',
-                        $empresaId
-                    )
+                    $ventaDeCola = Venta::query()
+                        ->where(
+                            'empresa_id',
+                            $empresaId
+                        )
                         ->where(
                             'uuid',
                             $ventaData['uuid_local']
@@ -1327,49 +1682,71 @@ class SyncController extends Controller
                     'idempotente' =>
                     false,
                 ];
+            } catch (QueryException $e) {
+                $this->marcarSyncQueueError(
+                    $syncRecord,
+                    $empresaId,
+                    $usuarioId,
+                    $ventaData['uuid_local']
+                );
+
+                $this->registrarAuditoria(
+                    $request,
+                    'sync_offline_db_error',
+                    'sync_queue',
+                    $syncRecord?->id,
+                    null,
+                    [
+                        'uuid_local' =>
+                        $ventaData['uuid_local'],
+
+                        'error_tipo' =>
+                        get_class($e),
+                    ],
+                    $empresaId,
+                    $usuarioId
+                );
+
+                Log::error(
+                    'Error de base de datos procesando venta offline.',
+                    [
+                        'empresa_id' =>
+                        $empresaId,
+
+                        'usuario_id' =>
+                        $usuarioId,
+
+                        'uuid_local' =>
+                        $ventaData['uuid_local'],
+
+                        'sync_queue_id' =>
+                        $syncRecord?->id,
+
+                        'error' =>
+                        $e->getMessage(),
+
+                        'exception' =>
+                        get_class($e),
+                    ]
+                );
+
+                $errores[] = [
+                    'uuid_local' =>
+                    $ventaData['uuid_local'],
+
+                    'error' =>
+                    'No fue posible procesar la venta por un error de base de datos.',
+
+                    'code' =>
+                    'SYNC_OFFLINE_DATABASE_ERROR',
+                ];
             } catch (Throwable $e) {
-                try {
-                    if (!$syncRecord) {
-                        $syncRecord = SyncQueue::where(
-                            'empresa_id',
-                            $empresaId
-                        )
-                            ->where(
-                                'uuid_local',
-                                $ventaData['uuid_local']
-                            )
-                            ->first();
-                    }
-
-                    if ($syncRecord) {
-                        $syncRecord->update([
-                            'estado' =>
-                            'error',
-
-                            'intentos' => ((int) $syncRecord->intentos) + 1,
-                        ]);
-                    }
-                } catch (Throwable $queueException) {
-                    Log::error(
-                        'No se pudo actualizar SyncQueue después de un error.',
-                        [
-                            'empresa_id' =>
-                            $empresaId,
-
-                            'usuario_id' =>
-                            $usuarioId,
-
-                            'uuid_local' =>
-                            $ventaData['uuid_local'],
-
-                            'error' =>
-                            $queueException->getMessage(),
-
-                            'exception' =>
-                            get_class($queueException),
-                        ]
-                    );
-                }
+                $this->marcarSyncQueueError(
+                    $syncRecord,
+                    $empresaId,
+                    $usuarioId,
+                    $ventaData['uuid_local']
+                );
 
                 $this->registrarAuditoria(
                     $request,
@@ -1411,12 +1788,20 @@ class SyncController extends Controller
                     ]
                 );
 
+                /*
+                 * IMPORTANTE:
+                 * Conservamos el mensaje funcional que ya recibía
+                 * Flutter para errores de negocio.
+                 */
                 $errores[] = [
                     'uuid_local' =>
                     $ventaData['uuid_local'],
 
                     'error' =>
                     $e->getMessage(),
+
+                    'code' =>
+                    'SYNC_OFFLINE_BUSINESS_ERROR',
                 ];
             }
         }
@@ -1482,12 +1867,6 @@ class SyncController extends Controller
             $productosSincronizados = [];
 
             foreach ($data['productos'] as $item) {
-                /*
-                 * ----------------------------------------------------
-                 * DATOS DEL PRODUCTO LOCAL
-                 * ----------------------------------------------------
-                 */
-
                 $productoLocalId = (int) (
                     $item['producto_local_id'] ?? 0
                 );
@@ -1497,12 +1876,6 @@ class SyncController extends Controller
                         'El producto no contiene un producto_local_id válido.'
                     );
                 }
-
-                /*
-                 * ----------------------------------------------------
-                 * RESOLVER PRODUCTO REAL DEL SERVIDOR
-                 * ----------------------------------------------------
-                 */
 
                 $resuelto = $this->resolverProductoOffline(
                     $item,
@@ -1516,12 +1889,6 @@ class SyncController extends Controller
                     $resuelto['creado'] ?? false
                 );
 
-                /*
-                 * ----------------------------------------------------
-                 * CANTIDAD
-                 * ----------------------------------------------------
-                 */
-
                 $cantidad = (float) $item['cantidad'];
 
                 if ($cantidad <= 0) {
@@ -1530,35 +1897,12 @@ class SyncController extends Controller
                     );
                 }
 
-                /*
-                 * ----------------------------------------------------
-                 * INVENTARIO
-                 * ----------------------------------------------------
-                 *
-                 * Para productos existentes, resolverProductoOffline()
-                 * ya sincronizó is_inventariable cuando Flutter lo envió.
-                 *
-                 * Si Flutter envía false:
-                 *   BD = false
-                 *   no se valida stock.
-                 *
-                 * Si Flutter envía true:
-                 *   BD = true
-                 *   sí se valida y descuenta.
-                 *
-                 * Si Flutter no envía el campo:
-                 *   se conserva el valor actual de BD.
-                 */
-
-                $isInventariable = $producto->is_inventariable === null
+                $isInventariable =
+                    $producto->is_inventariable === null
                     ? true
                     : (bool) $producto->is_inventariable;
 
                 if ($isInventariable) {
-                    /*
-                     * Producto inventariable:
-                     * debe existir stock suficiente.
-                     */
                     if (
                         $producto->stock === null
                         || (float) $producto->stock < $cantidad
@@ -1568,10 +1912,6 @@ class SyncController extends Controller
                         );
                     }
 
-                    /*
-                     * Descontar únicamente productos
-                     * que realmente controlan inventario.
-                     */
                     $producto->stock = round(
                         (float) $producto->stock - $cantidad,
                         2
@@ -1579,12 +1919,6 @@ class SyncController extends Controller
 
                     $producto->save();
                 }
-
-                /*
-                 * ----------------------------------------------------
-                 * PRECIO
-                 * ----------------------------------------------------
-                 */
 
                 $precioUnitario = (float) (
                     $item['precio_unitario'] ?? 0
@@ -1596,12 +1930,6 @@ class SyncController extends Controller
                     );
                 }
 
-                /*
-                 * ----------------------------------------------------
-                 * DESCUENTO DEL ITEM
-                 * ----------------------------------------------------
-                 */
-
                 $descuentoItem = (float) (
                     $item['descuento'] ?? 0
                 );
@@ -1611,12 +1939,6 @@ class SyncController extends Controller
                         'El descuento del producto no puede ser negativo.'
                     );
                 }
-
-                /*
-                 * ----------------------------------------------------
-                 * SUBTOTAL
-                 * ----------------------------------------------------
-                 */
 
                 $subtotal = (
                     $cantidad * $precioUnitario
@@ -1629,12 +1951,6 @@ class SyncController extends Controller
                 }
 
                 $total += $subtotal;
-
-                /*
-                 * ----------------------------------------------------
-                 * DETALLE REAL DE LA VENTA
-                 * ----------------------------------------------------
-                 */
 
                 $detalles[] = [
                     'producto_id' =>
@@ -1655,12 +1971,6 @@ class SyncController extends Controller
                         2
                     ),
                 ];
-
-                /*
-                 * ----------------------------------------------------
-                 * MAPEO LOCAL -> SERVIDOR
-                 * ----------------------------------------------------
-                 */
 
                 $this->agregarMapeoProducto(
                     $productosSincronizados,
@@ -1684,9 +1994,9 @@ class SyncController extends Controller
             }
 
             /*
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              * DESCUENTOS E IMPUESTOS
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              */
 
             $descuentoGlobal = (float) (
@@ -1720,17 +2030,17 @@ class SyncController extends Controller
 
             $totalFinal = round(
                 $totalConDescuento
-                    + (
-                        $totalConDescuento
-                        * ($impuestoGlobal / 100)
-                    ),
+                + (
+                    $totalConDescuento
+                    * ($impuestoGlobal / 100)
+                ),
                 2
             );
 
             /*
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              * PAGOS
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              */
 
             $pagos = $data['pagos'] ?? [
@@ -1760,7 +2070,7 @@ class SyncController extends Controller
 
             $totalPagos = round(
                 collect($pagos)->sum(
-                    static fn($pago) =>
+                    static fn ($pago) =>
                     (float) ($pago['monto'] ?? 0)
                 ),
                 2
@@ -1775,9 +2085,9 @@ class SyncController extends Controller
             }
 
             /*
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              * CREAR VENTA
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              */
 
             $venta = Venta::create([
@@ -1830,9 +2140,9 @@ class SyncController extends Controller
             ]);
 
             /*
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              * DETALLES
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              */
 
             foreach ($detalles as $detalle) {
@@ -1842,9 +2152,9 @@ class SyncController extends Controller
             }
 
             /*
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              * PAGOS
-             * --------------------------------------------------------
+             * ---------------------------------------------------------
              */
 
             foreach ($pagos as $pago) {
@@ -1890,6 +2200,9 @@ class SyncController extends Controller
                 return response()->json([
                     'message' =>
                     'Usuario no autenticado.',
+
+                    'code' =>
+                    'SYNC_QUEUE_UNAUTHENTICATED',
                 ], 401);
             }
 
@@ -1900,6 +2213,9 @@ class SyncController extends Controller
                 return response()->json([
                     'message' =>
                     'El usuario no tiene una empresa asociada.',
+
+                    'code' =>
+                    'SYNC_QUEUE_EMPRESA_NO_ASOCIADA',
                 ], 403);
             }
         }
@@ -1907,10 +2223,11 @@ class SyncController extends Controller
         $userId = $user?->id;
         $empresaId = $user?->empresa_id;
 
-        $query = SyncQueue::where(
-            'estado',
-            'pendiente'
-        )
+        $query = SyncQueue::query()
+            ->where(
+                'estado',
+                'pendiente'
+            )
             ->where(
                 'tabla',
                 'ventas'
@@ -1972,14 +2289,16 @@ class SyncController extends Controller
                         );
                     }
 
-                    $ventaExistente = Venta::where(
-                        'empresa_id',
-                        $item->empresa_id
-                    )
+                    $ventaExistente = Venta::query()
+                        ->where(
+                            'empresa_id',
+                            $item->empresa_id
+                        )
                         ->where(
                             'uuid',
                             $item->uuid_local
                         )
+                        ->lockForUpdate()
                         ->first();
 
                     if ($ventaExistente) {
@@ -2005,13 +2324,15 @@ class SyncController extends Controller
                         return;
                     }
 
-                    $resultado = $this->procesarVentaOffline(
-                        $datos,
-                        $usuario,
-                        (int) $item->empresa_id
-                    );
+                    $resultado =
+                        $this->procesarVentaOffline(
+                            $datos,
+                            $usuario,
+                            (int) $item->empresa_id
+                        );
 
-                    $venta = $resultado['venta'];
+                    $venta =
+                        $resultado['venta'];
 
                     $item->update([
                         'estado' =>
@@ -2133,17 +2454,21 @@ class SyncController extends Controller
      */
     public function archive(Request $request)
     {
-        $request->validate([
-            'ventas' => [
-                'required_without:archived_sales',
-                'array',
-            ],
+        try {
+            $request->validate([
+                'ventas' => [
+                    'required_without:archived_sales',
+                    'array',
+                ],
 
-            'archived_sales' => [
-                'required_without:ventas',
-                'array',
-            ],
-        ]);
+                'archived_sales' => [
+                    'required_without:ventas',
+                    'array',
+                ],
+            ]);
+        } catch (ValidationException $e) {
+            throw $e;
+        }
 
         $request->merge([
             'ventas' => $request->input(
@@ -2172,17 +2497,22 @@ class SyncController extends Controller
             ->lockForUpdate()
             ->first();
 
-        $ultimaVenta = Venta::where(
-            'empresa_id',
-            $empresaId
-        )
-            ->whereYear(
+        $ultimaVenta = Venta::query()
+            ->where(
+                'empresa_id',
+                $empresaId
+            )
+            ->whereBetween(
                 'created_at',
-                now()->year
+                [
+                    now()->startOfYear(),
+                    now()->endOfYear(),
+                ]
             )
             ->orderByDesc(
                 'id'
             )
+            ->lockForUpdate()
             ->first();
 
         $numero = 1;
@@ -2233,15 +2563,33 @@ class SyncController extends Controller
         }
 
         try {
+            $datosDespues = $this->datosAuditoria(
+                $datosDespues
+            );
+
+            /*
+             * El contexto de servidor siempre tiene prioridad.
+             */
+            if ($datosDespues !== null) {
+                $datosDespues = array_merge(
+                    $datosDespues,
+                    [
+                        'empresa_id' =>
+                        $empresaId,
+
+                        'usuario_id' =>
+                        $usuarioId,
+                    ]
+                );
+            }
+
             $this->auditoriaService->registrar(
                 $request,
                 $accion,
                 $tabla,
                 $registroId,
                 $datosAntes,
-                $this->datosAuditoria(
-                    $datosDespues
-                ),
+                $datosDespues,
                 $empresaId,
                 $usuarioId
             );
@@ -2290,15 +2638,30 @@ class SyncController extends Controller
         }
 
         try {
+            $datosDespues = $this->datosAuditoria(
+                $datosDespues
+            );
+
+            if ($datosDespues !== null) {
+                $datosDespues = array_merge(
+                    $datosDespues,
+                    [
+                        'empresa_id' =>
+                        $usuario->empresa_id,
+
+                        'usuario_id' =>
+                        $usuario->id,
+                    ]
+                );
+            }
+
             $this->auditoriaService->registrarUsuario(
                 $usuario,
                 $accion,
                 $tabla,
                 $registroId,
                 $datosAntes,
-                $this->datosAuditoria(
-                    $datosDespues
-                )
+                $datosDespues
             );
         } catch (Throwable $e) {
             Log::warning(
@@ -2339,14 +2702,29 @@ class SyncController extends Controller
         ?int $usuarioId
     ): void {
         try {
+            $datosDespues = $this->datosAuditoria(
+                $datosDespues
+            );
+
+            if ($datosDespues !== null) {
+                $datosDespues = array_merge(
+                    $datosDespues,
+                    [
+                        'empresa_id' =>
+                        $empresaId,
+
+                        'usuario_id' =>
+                        $usuarioId,
+                    ]
+                );
+            }
+
             $this->auditoriaService->registrarSistema(
                 $accion,
                 $tabla,
                 $registroId,
                 $datosAntes,
-                $this->datosAuditoria(
-                    $datosDespues
-                ),
+                $datosDespues,
                 $empresaId,
                 $usuarioId
             );
@@ -2418,6 +2796,62 @@ class SyncController extends Controller
     }
 
     /**
+     * Marcar SyncQueue como error.
+     */
+    private function marcarSyncQueueError(
+        ?SyncQueue $syncRecord,
+        int $empresaId,
+        int $usuarioId,
+        string $uuidLocal
+    ): void {
+        try {
+            if (!$syncRecord) {
+                $syncRecord = SyncQueue::query()
+                    ->where(
+                        'empresa_id',
+                        $empresaId
+                    )
+                    ->where(
+                        'uuid_local',
+                        $uuidLocal
+                    )
+                    ->first();
+            }
+
+            if ($syncRecord) {
+                $syncRecord->increment(
+                    'intentos'
+                );
+
+                $syncRecord->update([
+                    'estado' =>
+                    'error',
+                ]);
+            }
+        } catch (Throwable $queueException) {
+            Log::error(
+                'No se pudo actualizar SyncQueue después de un error.',
+                [
+                    'empresa_id' =>
+                    $empresaId,
+
+                    'usuario_id' =>
+                    $usuarioId,
+
+                    'uuid_local' =>
+                    $uuidLocal,
+
+                    'error' =>
+                    $queueException->getMessage(),
+
+                    'exception' =>
+                    get_class($queueException),
+                ]
+            );
+        }
+    }
+
+    /**
      * Resolver producto enviado desde Flutter.
      *
      * Prioridad:
@@ -2426,16 +2860,14 @@ class SyncController extends Controller
      * 2. código.
      * 3. creación del producto.
      *
-     * Para productos existentes:
+     * Además asegura que las referencias de catálogo del producto
+     * existan antes de guardar:
      *
-     * - Si Flutter envía is_inventariable, se sincroniza
-     *   inmediatamente con la BD.
-     * - Si Flutter NO envía is_inventariable, se conserva
-     *   el valor existente en servidor.
+     * - categoría
+     * - unidad de medida
      *
-     * Para productos nuevos:
-     *
-     * - Se utiliza is_inventariable enviado por Flutter.
+     * Si una referencia no existe pero Flutter envió los datos
+     * del catálogo, se crea automáticamente.
      */
     private function resolverProductoOffline(
         array $item,
@@ -2490,13 +2922,7 @@ class SyncController extends Controller
         /*
          * IMPORTANTE:
          *
-         * array_key_exists() permite distinguir:
-         *
-         *   is_inventariable = false
-         *
-         * de:
-         *
-         *   is_inventariable no enviado.
+         * false es un valor válido.
          */
         $isInventariable = array_key_exists(
             'is_inventariable',
@@ -2517,15 +2943,31 @@ class SyncController extends Controller
 
         /*
          * ------------------------------------------------------------
+         * ASEGURAR CATÁLOGOS DEL PRODUCTO
+         * ------------------------------------------------------------
+         */
+        $categoriaId = $this->resolverCategoriaProducto(
+            $item,
+            $empresaId
+        );
+
+        $unidadMedidaId =
+            $this->resolverUnidadMedidaProducto(
+                $item,
+                $empresaId
+            );
+
+        /*
+         * ------------------------------------------------------------
          * 1. BUSCAR POR ID DEL SERVIDOR
          * ------------------------------------------------------------
          */
-
         if ($productoId > 0) {
-            $producto = Producto::where(
-                'id',
-                $productoId
-            )
+            $producto = Producto::query()
+                ->where(
+                    'id',
+                    $productoId
+                )
                 ->where(
                     'empresa_id',
                     $empresaId
@@ -2534,30 +2976,6 @@ class SyncController extends Controller
                 ->first();
 
             if ($producto) {
-                /*
-                 * ----------------------------------------------------
-                 * SINCRONIZAR is_inventariable
-                 * ----------------------------------------------------
-                 *
-                 * Este era el punto que faltaba.
-                 *
-                 * Si Flutter manda:
-                 *
-                 *   false
-                 *
-                 * debemos guardar:
-                 *
-                 *   false
-                 *
-                 * en la BD antes de que
-                 * procesarVentaOffline() evalúe el stock.
-                 *
-                 * NO usamos:
-                 *
-                 *   $item['is_inventariable'] ?? ...
-                 *
-                 * porque false es un valor válido.
-                 */
                 if (array_key_exists(
                     'is_inventariable',
                     $item
@@ -2599,13 +3017,41 @@ class SyncController extends Controller
 
                         $producto->save();
 
-                        /*
-                         * Refrescar el modelo para garantizar que
-                         * la siguiente validación utilice el valor
-                         * realmente almacenado.
-                         */
                         $producto->refresh();
                     }
+                }
+
+                /*
+                 * Si Flutter trae referencias de catálogo,
+                 * también las actualizamos.
+                 */
+                $actualizarCatalogo = false;
+
+                if (
+                    $categoriaId !== null
+                    && (int) $producto->categoria_id
+                    !== $categoriaId
+                ) {
+                    $producto->categoria_id =
+                        $categoriaId;
+
+                    $actualizarCatalogo = true;
+                }
+
+                if (
+                    $unidadMedidaId !== null
+                    && (int) $producto->unidad_medida_id
+                    !== $unidadMedidaId
+                ) {
+                    $producto->unidad_medida_id =
+                        $unidadMedidaId;
+
+                    $actualizarCatalogo = true;
+                }
+
+                if ($actualizarCatalogo) {
+                    $producto->save();
+                    $producto->refresh();
                 }
 
                 return [
@@ -2623,12 +3069,12 @@ class SyncController extends Controller
          * 2. BUSCAR POR CÓDIGO
          * ------------------------------------------------------------
          */
-
         if ($codigo !== '') {
-            $producto = Producto::where(
-                'codigo',
-                $codigo
-            )
+            $producto = Producto::query()
+                ->where(
+                    'codigo',
+                    $codigo
+                )
                 ->where(
                     'empresa_id',
                     $empresaId
@@ -2637,14 +3083,6 @@ class SyncController extends Controller
                 ->first();
 
             if ($producto) {
-                /*
-                 * ----------------------------------------------------
-                 * SINCRONIZAR is_inventariable
-                 * ----------------------------------------------------
-                 *
-                 * También debemos hacerlo cuando el producto
-                 * fue resuelto por código y no por producto_id.
-                 */
                 if (array_key_exists(
                     'is_inventariable',
                     $item
@@ -2661,40 +3099,42 @@ class SyncController extends Controller
                         $valorInventariableServidor
                         !== $valorInventariableCliente
                     ) {
-                        Log::info(
-                            'Sincronizando is_inventariable de producto existente por código.',
-                            [
-                                'producto_id' =>
-                                $producto->id,
-
-                                'empresa_id' =>
-                                $empresaId,
-
-                                'codigo' =>
-                                $producto->codigo,
-
-                                'valor_anterior' =>
-                                $valorInventariableServidor,
-
-                                'valor_cliente' =>
-                                $valorInventariableCliente,
-
-                                'stock_actual' =>
-                                $producto->stock,
-                            ]
-                        );
-
                         $producto->is_inventariable =
                             $valorInventariableCliente;
 
                         $producto->save();
 
-                        /*
-                         * Garantizar que el modelo tenga el valor
-                         * persistido en BD.
-                         */
                         $producto->refresh();
                     }
+                }
+
+                $actualizarCatalogo = false;
+
+                if (
+                    $categoriaId !== null
+                    && (int) $producto->categoria_id
+                    !== $categoriaId
+                ) {
+                    $producto->categoria_id =
+                        $categoriaId;
+
+                    $actualizarCatalogo = true;
+                }
+
+                if (
+                    $unidadMedidaId !== null
+                    && (int) $producto->unidad_medida_id
+                    !== $unidadMedidaId
+                ) {
+                    $producto->unidad_medida_id =
+                        $unidadMedidaId;
+
+                    $actualizarCatalogo = true;
+                }
+
+                if ($actualizarCatalogo) {
+                    $producto->save();
+                    $producto->refresh();
                 }
 
                 return [
@@ -2712,7 +3152,6 @@ class SyncController extends Controller
          * 3. CREAR PRODUCTO
          * ------------------------------------------------------------
          */
-
         if ($nombre === '') {
             throw new \RuntimeException(
                 'No se puede crear el producto porque no contiene nombre.'
@@ -2731,10 +3170,11 @@ class SyncController extends Controller
                     )
                 );
         } else {
-            $codigoExistente = Producto::where(
-                'codigo',
-                $codigo
-            )
+            $codigoExistente = Producto::query()
+                ->where(
+                    'codigo',
+                    $codigo
+                )
                 ->lockForUpdate()
                 ->first();
 
@@ -2755,22 +3195,8 @@ class SyncController extends Controller
         }
 
         /*
-         * ------------------------------------------------------------
          * STOCK INICIAL
-         * ------------------------------------------------------------
-         *
-         * Si el producto ES inventariable:
-         *
-         *   stock servidor inicial =
-         *   stock local después de la venta + cantidad vendida
-         *
-         * Después procesarVentaOffline() descuenta la cantidad.
-         *
-         * Si NO es inventariable:
-         *
-         *   no debemos fabricar stock artificialmente.
          */
-
         $stockInicial = $isInventariable
             ? round(
                 max(0, $stockLocal) + $cantidad,
@@ -2786,10 +3212,10 @@ class SyncController extends Controller
             $empresaId,
 
             'categoria_id' =>
-            null,
+            $categoriaId,
 
             'unidad_medida_id' =>
-            null,
+            $unidadMedidaId,
 
             'codigo' =>
             $codigo,
@@ -2847,6 +3273,360 @@ class SyncController extends Controller
     }
 
     /**
+     * Normalizar producto proveniente del catálogo general.
+     *
+     * Si trae categoria_id o unidad_medida_id y el catálogo
+     * no existe, intenta crearlo con los datos que vienen
+     * dentro del registro.
+     */
+    private function normalizarDatosProductoSync(
+        array $datos,
+        int $empresaId
+    ): array {
+        /*
+         * Categoría.
+         */
+        if (
+            array_key_exists(
+                'categoria_id',
+                $datos
+            )
+            && !empty($datos['categoria_id'])
+        ) {
+            $datos['categoria_id'] =
+                $this->asegurarCategoria(
+                    (int) $datos['categoria_id'],
+                    $datos,
+                    $empresaId
+                );
+        }
+
+        /*
+         * Unidad de medida.
+         */
+        if (
+            array_key_exists(
+                'unidad_medida_id',
+                $datos
+            )
+            && !empty($datos['unidad_medida_id'])
+        ) {
+            $datos['unidad_medida_id'] =
+                $this->asegurarUnidadMedida(
+                    (int) $datos['unidad_medida_id'],
+                    $datos,
+                    $empresaId
+                );
+        }
+
+        /*
+         * Normalizar is_inventariable.
+         */
+        if (array_key_exists(
+            'is_inventariable',
+            $datos
+        )) {
+            $datos['is_inventariable'] =
+                (bool) $datos['is_inventariable'];
+        }
+
+        return $datos;
+    }
+
+    /**
+     * Resolver categoría recibida desde una venta offline.
+     */
+    private function resolverCategoriaProducto(
+        array $item,
+        int $empresaId
+    ): ?int {
+        if (
+            !array_key_exists(
+                'categoria_id',
+                $item
+            )
+            || empty($item['categoria_id'])
+        ) {
+            return null;
+        }
+
+        return $this->asegurarCategoria(
+            (int) $item['categoria_id'],
+            $item,
+            $empresaId
+        );
+    }
+
+    /**
+     * Resolver unidad de medida recibida desde una venta offline.
+     */
+    private function resolverUnidadMedidaProducto(
+        array $item,
+        int $empresaId
+    ): ?int {
+        if (
+            !array_key_exists(
+                'unidad_medida_id',
+                $item
+            )
+            || empty($item['unidad_medida_id'])
+        ) {
+            return null;
+        }
+
+        return $this->asegurarUnidadMedida(
+            (int) $item['unidad_medida_id'],
+            $item,
+            $empresaId
+        );
+    }
+
+    /**
+     * Asegurar categoría.
+     *
+     * Si existe para la empresa, se reutiliza.
+     *
+     * Si no existe, se intenta crear con los datos enviados
+     * por Flutter.
+     */
+    private function asegurarCategoria(
+        int $categoriaId,
+        array $datos,
+        int $empresaId
+    ): ?int {
+        if ($categoriaId <= 0) {
+            return null;
+        }
+
+        $categoria = Categoria::query()
+            ->where(
+                'id',
+                $categoriaId
+            )
+            ->where(
+                'empresa_id',
+                $empresaId
+            )
+            ->lockForUpdate()
+            ->first();
+
+        if ($categoria) {
+            return (int) $categoria->id;
+        }
+
+        /*
+         * Buscar nombre enviado.
+         */
+        $nombre = trim(
+            (string) (
+                $datos['categoria_nombre']
+                ?? $datos['categoria']
+                ?? ''
+            )
+        );
+
+        if ($nombre !== '') {
+            $categoriaExistente = Categoria::query()
+                ->where(
+                    'empresa_id',
+                    $empresaId
+                )
+                ->whereRaw(
+                    'LOWER(nombre) = LOWER(?)',
+                    [$nombre]
+                )
+                ->lockForUpdate()
+                ->first();
+
+            if ($categoriaExistente) {
+                return (int) $categoriaExistente->id;
+            }
+
+            /*
+             * Crear automáticamente.
+             *
+             * No intentamos reutilizar el ID local porque el ID
+             * puede pertenecer a otra empresa.
+             */
+            $nuevo = Categoria::create([
+                'empresa_id' =>
+                $empresaId,
+
+                'nombre' =>
+                $nombre,
+
+                'descripcion' =>
+                $datos['categoria_descripcion']
+                ?? null,
+
+                'activo' =>
+                array_key_exists(
+                    'categoria_activo',
+                    $datos
+                )
+                    ? (bool) $datos['categoria_activo']
+                    : true,
+            ]);
+
+            Log::info(
+                'Categoría creada automáticamente durante sincronización.',
+                [
+                    'categoria_id' =>
+                    $nuevo->id,
+
+                    'empresa_id' =>
+                    $empresaId,
+
+                    'nombre' =>
+                    $nombre,
+                ]
+            );
+
+            return (int) $nuevo->id;
+        }
+
+        /*
+         * Si no tenemos suficiente información para crearla,
+         * dejamos la relación en null en lugar de inventar
+         * información.
+         */
+        Log::warning(
+            'No fue posible crear categoría faltante durante sincronización porque no se recibió nombre.',
+            [
+                'categoria_id' =>
+                $categoriaId,
+
+                'empresa_id' =>
+                $empresaId,
+            ]
+        );
+
+        return null;
+    }
+
+    /**
+     * Asegurar unidad de medida.
+     */
+    private function asegurarUnidadMedida(
+        int $unidadId,
+        array $datos,
+        int $empresaId
+    ): ?int {
+        if ($unidadId <= 0) {
+            return null;
+        }
+
+        $unidad = UnidadMedida::query()
+            ->where(
+                'id',
+                $unidadId
+            )
+            ->where(
+                'empresa_id',
+                $empresaId
+            )
+            ->lockForUpdate()
+            ->first();
+
+        if ($unidad) {
+            return (int) $unidad->id;
+        }
+
+        $nombre = trim(
+            (string) (
+                $datos['unidad_medida_nombre']
+                ?? $datos['unidad_nombre']
+                ?? ''
+            )
+        );
+
+        if ($nombre !== '') {
+            $unidadExistente = UnidadMedida::query()
+                ->where(
+                    'empresa_id',
+                    $empresaId
+                )
+                ->whereRaw(
+                    'LOWER(nombre) = LOWER(?)',
+                    [$nombre]
+                )
+                ->lockForUpdate()
+                ->first();
+
+            if ($unidadExistente) {
+                return (int) $unidadExistente->id;
+            }
+
+            $nuevo = UnidadMedida::create([
+                'empresa_id' =>
+                $empresaId,
+
+                'nombre' =>
+                $nombre,
+
+                'abreviatura' =>
+                $datos['unidad_medida_abreviatura']
+                ?? $datos['abreviatura']
+                ?? null,
+
+                'tipo' =>
+                $datos['unidad_medida_tipo']
+                ?? $datos['tipo']
+                ?? 'unidad',
+
+                'fraccionable' =>
+                array_key_exists(
+                    'unidad_medida_fraccionable',
+                    $datos
+                )
+                    ? (bool) $datos['unidad_medida_fraccionable']
+                    : false,
+
+                'factor_conversion' =>
+                $datos['unidad_medida_factor_conversion']
+                ?? 1,
+
+                'activo' =>
+                array_key_exists(
+                    'unidad_medida_activo',
+                    $datos
+                )
+                    ? (bool) $datos['unidad_medida_activo']
+                    : true,
+            ]);
+
+            Log::info(
+                'Unidad de medida creada automáticamente durante sincronización.',
+                [
+                    'unidad_medida_id' =>
+                    $nuevo->id,
+
+                    'empresa_id' =>
+                    $empresaId,
+
+                    'nombre' =>
+                    $nombre,
+                ]
+            );
+
+            return (int) $nuevo->id;
+        }
+
+        Log::warning(
+            'No fue posible crear unidad de medida faltante durante sincronización porque no se recibió nombre.',
+            [
+                'unidad_medida_id' =>
+                $unidadId,
+
+                'empresa_id' =>
+                $empresaId,
+            ]
+        );
+
+        return null;
+    }
+
+    /**
      * Generar código para producto creado offline.
      */
     private function generarCodigoProductoOffline(
@@ -2864,10 +3644,12 @@ class SyncController extends Controller
         $contador = 1;
 
         while (
-            Producto::where(
-                'codigo',
-                $codigo
-            )->exists()
+            Producto::query()
+                ->where(
+                    'codigo',
+                    $codigo
+                )
+                ->exists()
         ) {
             $codigo =
                 $base
@@ -2902,10 +3684,6 @@ class SyncController extends Controller
             return;
         }
 
-        /*
-         * Un mismo producto puede aparecer más de una vez
-         * en una venta. No queremos mandar duplicados.
-         */
         foreach (
             $mapeos
             as $index => $existente
@@ -2967,10 +3745,11 @@ class SyncController extends Controller
              * Primero por producto_id.
              */
             if ($productoIdRequest > 0) {
-                $productoServidor = Producto::where(
-                    'id',
-                    $productoIdRequest
-                )
+                $productoServidor = Producto::query()
+                    ->where(
+                        'id',
+                        $productoIdRequest
+                    )
                     ->where(
                         'empresa_id',
                         $empresaId
@@ -2985,10 +3764,11 @@ class SyncController extends Controller
                 !$productoServidor
                 && $codigoRequest !== ''
             ) {
-                $productoServidor = Producto::where(
-                    'codigo',
-                    $codigoRequest
-                )
+                $productoServidor = Producto::query()
+                    ->where(
+                        'codigo',
+                        $codigoRequest
+                    )
                     ->where(
                         'empresa_id',
                         $empresaId
@@ -3032,6 +3812,38 @@ class SyncController extends Controller
 
                         break;
                     }
+                }
+            }
+
+            /*
+             * Si el producto ya existía pero el mapping local
+             * no tenía producto_id, intentamos resolverlo por
+             * los datos de la solicitud.
+             */
+            if (!$productoServidor) {
+                try {
+                    $resuelto =
+                        $this->resolverProductoOffline(
+                            $item,
+                            $empresaId
+                        );
+
+                    $productoServidor =
+                        $resuelto['producto'];
+                } catch (Throwable $e) {
+                    Log::warning(
+                        'No fue posible resolver producto durante recuperación de venta idempotente.',
+                        [
+                            'empresa_id' =>
+                            $empresaId,
+
+                            'producto_local_id' =>
+                            $productoLocalId,
+
+                            'error' =>
+                            $e->getMessage(),
+                        ]
+                    );
                 }
             }
 

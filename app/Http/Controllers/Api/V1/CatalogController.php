@@ -36,39 +36,70 @@ class CatalogController extends Controller
 
         if (!$user) {
             return response()->json([
-                'message' =>
-                    'Usuario no autenticado.',
+                'message' => 'Usuario no autenticado.',
+                'error' => 'UNAUTHENTICATED',
             ], 401);
         }
 
-        $request->validate([
-            'desde' => [
-                'nullable',
-                'date',
-            ],
-        ]);
+        try {
+            $validated = $request->validate([
+                'desde' => [
+                    'nullable',
+                    'date',
+                ],
+            ]);
+        } catch (ValidationException $e) {
+            $this->registrarErrorAuditoria(
+                $request,
+                'catalogo.validacion_fallida',
+                'catalogos',
+                null,
+                null,
+                [
+                    'errores' => $e->errors(),
+                    'query' => $request->query(),
+                ],
+                (int) ($user->empresa_id ?? 0),
+                (int) $user->id
+            );
 
-        $empresaId =
-            (int) $user->empresa_id;
+            return response()->json([
+                'message' => 'Los parámetros enviados para sincronizar el catálogo no son válidos.',
+                'error' => 'VALIDATION_ERROR',
+                'errors' => $e->errors(),
+            ], 422);
+        }
+
+        $empresaId = (int) $user->empresa_id;
 
         if ($empresaId <= 0) {
+            $this->registrarErrorAuditoria(
+                $request,
+                'catalogo.empresa_invalida',
+                'catalogos',
+                null,
+                null,
+                [
+                    'motivo' => 'El usuario no tiene empresa asociada.',
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
             return response()->json([
-                'message' =>
-                    'El usuario no tiene una empresa asociada.',
+                'message' => 'El usuario no tiene una empresa asociada.',
+                'error' => 'EMPRESA_NO_ASOCIADA',
             ], 422);
         }
 
         try {
-            $fechaSync =
-                $request->input('desde');
+            $fechaSync = $validated['desde'] ?? null;
 
             /*
-             * =====================================================
-             * EMPRESA
-             * =====================================================
+             * La empresa siempre se obtiene por el empresa_id
+             * del usuario autenticado.
              *
-             * Se limita la información devuelta a datos propios
-             * de configuración del cliente.
+             * No se acepta empresa_id enviado por el cliente.
              */
             $empresa = Empresa::query()
                 ->whereKey($empresaId)
@@ -85,102 +116,90 @@ class CatalogController extends Controller
                 ]);
 
             if (!$empresa) {
+                $this->registrarErrorAuditoria(
+                    $request,
+                    'catalogo.empresa_no_encontrada',
+                    'empresas',
+                    $empresaId,
+                    null,
+                    [
+                        'empresa_id' => $empresaId,
+                    ],
+                    $empresaId,
+                    (int) $user->id
+                );
+
                 return response()->json([
-                    'message' =>
-                        'Empresa no encontrada.',
+                    'message' => 'Empresa no encontrada.',
+                    'error' => 'EMPRESA_NO_ENCONTRADA',
+                    'empresa_id' => $empresaId,
                 ], 404);
             }
 
-            /*
-             * =====================================================
-             * CATÁLOGOS
-             * =====================================================
-             */
             $response = [
-                'empresa' =>
-                    $empresa,
+                'empresa' => $empresa,
 
-                'productos' =>
-                    $this->getCatalog(
-                        Producto::class,
-                        $empresaId,
-                        $fechaSync
-                    ),
+                'productos' => $this->getCatalog(
+                    Producto::class,
+                    $empresaId,
+                    $fechaSync
+                ),
 
-                'clientes' =>
-                    $this->getCatalog(
-                        Cliente::class,
-                        $empresaId,
-                        $fechaSync
-                    ),
+                'clientes' => $this->getCatalog(
+                    Cliente::class,
+                    $empresaId,
+                    $fechaSync
+                ),
 
-                'impuestos' =>
-                    $this->getCatalog(
-                        Impuesto::class,
-                        $empresaId,
-                        $fechaSync
-                    ),
+                'impuestos' => $this->getCatalog(
+                    Impuesto::class,
+                    $empresaId,
+                    $fechaSync
+                ),
 
-                'formas_pago' =>
-                    $this->getCatalog(
-                        FormaPago::class,
-                        $empresaId,
-                        $fechaSync
-                    ),
+                'formas_pago' => $this->getCatalog(
+                    FormaPago::class,
+                    $empresaId,
+                    $fechaSync
+                ),
 
-                'unidades_medida' =>
-                    $this->getCatalog(
-                        UnidadMedida::class,
-                        $empresaId,
-                        $fechaSync
-                    ),
+                'unidades_medida' => $this->getCatalog(
+                    UnidadMedida::class,
+                    $empresaId,
+                    $fechaSync
+                ),
 
-                'categorias' =>
-                    $this->getCatalog(
-                        Categoria::class,
-                        $empresaId,
-                        $fechaSync
-                    ),
+                'categorias' => $this->getCatalog(
+                    Categoria::class,
+                    $empresaId,
+                    $fechaSync
+                ),
 
-                'promociones' =>
-                    $this->getCatalog(
-                        Promocion::class,
-                        $empresaId,
-                        $fechaSync
-                    ),
+                'promociones' => $this->getCatalog(
+                    Promocion::class,
+                    $empresaId,
+                    $fechaSync
+                ),
 
-                'cupones' =>
-                    $this->getCatalog(
-                        Cupon::class,
-                        $empresaId,
-                        $fechaSync
-                    ),
+                'cupones' => $this->getCatalog(
+                    Cupon::class,
+                    $empresaId,
+                    $fechaSync
+                ),
 
-                /*
-                 * Las versiones se devuelven SIEMPRE.
-                 */
-                'versiones' =>
-                    $this->getVersions(
-                        $empresaId
-                    ),
+                'versiones' => $this->getVersions($empresaId),
 
-                /*
-                 * Tombstones.
-                 */
-                'tombstones' =>
-                    $this->buildTombstones(
-                        $empresaId,
-                        $fechaSync
-                    ),
+                'tombstones' => $this->buildTombstones(
+                    $empresaId,
+                    $fechaSync
+                ),
             ];
 
             /*
-             * =====================================================
-             * COMPATIBILIDAD CON FORMATO ANTERIOR
-             * =====================================================
+             * Se conservan las respuestas individuales de eliminados
+             * por compatibilidad con los clientes actuales.
              */
-            $tombstones =
-                $response['tombstones'];
+            $tombstones = $response['tombstones'];
 
             $response['productos_eliminados'] =
                 $tombstones['productos'] ?? [];
@@ -206,90 +225,118 @@ class CatalogController extends Controller
             $response['cupones_eliminados'] =
                 $tombstones['cupones'] ?? [];
 
-            app(AuditoriaService::class)->registrar(
+            /*
+             * Auditoría de sincronización exitosa.
+             *
+             * El empresa_id se toma directamente de la sesión
+             * autenticada y no del request.
+             */
+            $this->registrarAuditoria(
                 $request,
                 'catalogo.sincronizado',
                 'catalogos',
                 null,
                 null,
                 [
-                    'desde' =>
-                        $fechaSync,
+                    'desde' => $fechaSync,
+                    'productos' => $response['productos']->count(),
+                    'clientes' => $response['clientes']->count(),
+                    'impuestos' => $response['impuestos']->count(),
+                    'formas_pago' => $response['formas_pago']->count(),
+                    'unidades_medida' => $response['unidades_medida']->count(),
+                    'categorias' => $response['categorias']->count(),
+                    'promociones' => $response['promociones']->count(),
+                    'cupones' => $response['cupones']->count(),
 
-                    'productos' =>
-                        $response['productos']->count(),
+                    'productos_eliminados' =>
+                        count($response['productos_eliminados']),
 
-                    'clientes' =>
-                        $response['clientes']->count(),
+                    'clientes_eliminados' =>
+                        count($response['clientes_eliminados']),
 
-                    'impuestos' =>
-                        $response['impuestos']->count(),
+                    'impuestos_eliminados' =>
+                        count($response['impuestos_eliminados']),
 
-                    'formas_pago' =>
-                        $response['formas_pago']->count(),
+                    'formas_pago_eliminadas' =>
+                        count($response['formas_pago_eliminadas']),
 
-                    'unidades_medida' =>
-                        $response['unidades_medida']->count(),
+                    'unidades_medida_eliminadas' =>
+                        count($response['unidades_medida_eliminadas']),
 
-                    'categorias' =>
-                        $response['categorias']->count(),
+                    'categorias_eliminadas' =>
+                        count($response['categorias_eliminadas']),
 
-                    'promociones' =>
-                        $response['promociones']->count(),
+                    'promociones_eliminadas' =>
+                        count($response['promociones_eliminadas']),
 
-                    'cupones' =>
-                        $response['cupones']->count(),
+                    'cupones_eliminados' =>
+                        count($response['cupones_eliminados']),
                 ],
                 $empresaId,
-                $user->id
+                (int) $user->id
             );
 
-            return response()->json(
-                $response
-            );
-        } catch (ValidationException $e) {
-            throw $e;
+            return response()->json($response);
         } catch (\Throwable $e) {
             Log::error(
-                '❌ Error al sincronizar catálogo: ' .
-                $e->getMessage()
+                'Error al sincronizar catálogo.',
+                [
+                    'controller' => self::class,
+                    'method' => __FUNCTION__,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => (int) $user->id,
+                    'desde' => $request->input('desde'),
+                    'exception' => get_class($e),
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ]
+            );
+
+            $this->registrarErrorAuditoria(
+                $request,
+                'catalogo.error_interno',
+                'catalogos',
+                null,
+                null,
+                [
+                    'empresa_id' => $empresaId,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ],
+                $empresaId,
+                (int) $user->id
             );
 
             return response()->json([
-                'message' =>
-                    'Error al cargar el catálogo.',
+                'message' => 'No fue posible sincronizar el catálogo.',
+                'error' => 'CATALOGO_SYNC_ERROR',
             ], 500);
         }
     }
 
     /**
-     * Obtener catálogo completo o incremental.
+     * Obtener registros de un catálogo filtrados por empresa
+     * y opcionalmente por fecha de sincronización.
+     *
+     * @param class-string<Model> $modelClass
      */
     private function getCatalog(
         string $modelClass,
         int $empresaId,
         ?string $fechaSync
     ) {
-        /** @var Model $model */
-        $query = $modelClass::query()
-            ->where(
-                'empresa_id',
-                $empresaId
-            );
-
         /*
-         * Eloquent excluye automáticamente los soft deleted
-         * cuando el modelo usa SoftDeletes.
+         * Eloquent utiliza consultas parametrizadas internamente.
+         *
+         * No se construyen consultas SQL concatenando valores
+         * provenientes del request.
          */
-        if (
-            $fechaSync !== null &&
-            trim($fechaSync) !== ''
-        ) {
-            $query->where(
-                'updated_at',
-                '>',
-                $fechaSync
-            );
+        $query = $modelClass::query()
+            ->where('empresa_id', $empresaId);
+
+        if ($fechaSync !== null && trim($fechaSync) !== '') {
+            $query->where('updated_at', '>', $fechaSync);
         }
 
         return $query
@@ -298,270 +345,345 @@ class CatalogController extends Controller
     }
 
     /**
-     * Obtener versión de todos los catálogos.
+     * Obtener las versiones de los catálogos.
+     *
+     * Todas las consultas están aisladas por empresa.
      */
-    private function getVersions(
-        int $empresaId
-    ): array {
+    private function getVersions(int $empresaId): array
+    {
         return [
-            'empresa' =>
-                Empresa::query()
-                    ->whereKey(
-                        $empresaId
-                    )
-                    ->max('updated_at'),
+            'empresa' => Empresa::query()
+                ->whereKey($empresaId)
+                ->max('updated_at'),
 
-            'productos' =>
-                Producto::query()
-                    ->where(
-                        'empresa_id',
-                        $empresaId
-                    )
-                    ->max('updated_at'),
+            'productos' => Producto::query()
+                ->where('empresa_id', $empresaId)
+                ->max('updated_at'),
 
-            'clientes' =>
-                Cliente::query()
-                    ->where(
-                        'empresa_id',
-                        $empresaId
-                    )
-                    ->max('updated_at'),
+            'clientes' => Cliente::query()
+                ->where('empresa_id', $empresaId)
+                ->max('updated_at'),
 
-            'impuestos' =>
-                Impuesto::query()
-                    ->where(
-                        'empresa_id',
-                        $empresaId
-                    )
-                    ->max('updated_at'),
+            'impuestos' => Impuesto::query()
+                ->where('empresa_id', $empresaId)
+                ->max('updated_at'),
 
-            'formas_pago' =>
-                FormaPago::query()
-                    ->where(
-                        'empresa_id',
-                        $empresaId
-                    )
-                    ->max('updated_at'),
+            'formas_pago' => FormaPago::query()
+                ->where('empresa_id', $empresaId)
+                ->max('updated_at'),
 
-            'unidades_medida' =>
-                UnidadMedida::query()
-                    ->where(
-                        'empresa_id',
-                        $empresaId
-                    )
-                    ->max('updated_at'),
+            'unidades_medida' => UnidadMedida::query()
+                ->where('empresa_id', $empresaId)
+                ->max('updated_at'),
 
-            'categorias' =>
-                Categoria::query()
-                    ->where(
-                        'empresa_id',
-                        $empresaId
-                    )
-                    ->max('updated_at'),
+            'categorias' => Categoria::query()
+                ->where('empresa_id', $empresaId)
+                ->max('updated_at'),
 
-            'promociones' =>
-                Promocion::query()
-                    ->where(
-                        'empresa_id',
-                        $empresaId
-                    )
-                    ->max('updated_at'),
+            'promociones' => Promocion::query()
+                ->where('empresa_id', $empresaId)
+                ->max('updated_at'),
 
-            'cupones' =>
-                Cupon::query()
-                    ->where(
-                        'empresa_id',
-                        $empresaId
-                    )
-                    ->max('updated_at'),
+            'cupones' => Cupon::query()
+                ->where('empresa_id', $empresaId)
+                ->max('updated_at'),
         ];
     }
 
     /**
-     * Construir registros eliminados.
+     * Construir tombstones para registros eliminados.
+     *
+     * Solamente se consultan modelos que realmente implementan
+     * SoftDeletes.
      */
     private function buildTombstones(
         int $empresaId,
         ?string $fechaSync
     ): array {
         $models = [
-            'productos' =>
-                Producto::class,
-
-            'clientes' =>
-                Cliente::class,
-
-            'impuestos' =>
-                Impuesto::class,
-
-            'formas_pago' =>
-                FormaPago::class,
-
-            'unidades_medida' =>
-                UnidadMedida::class,
-
-            'categorias' =>
-                Categoria::class,
-
-            'promociones' =>
-                Promocion::class,
-
-            'cupones' =>
-                Cupon::class,
+            'productos' => Producto::class,
+            'clientes' => Cliente::class,
+            'impuestos' => Impuesto::class,
+            'formas_pago' => FormaPago::class,
+            'unidades_medida' => UnidadMedida::class,
+            'categorias' => Categoria::class,
+            'promociones' => Promocion::class,
+            'cupones' => Cupon::class,
         ];
 
         $tombstones = [];
 
-        foreach (
-            $models as
-            $key => $modelClass
-        ) {
-            $usesSoftDeletes =
-                in_array(
+        foreach ($models as $key => $modelClass) {
+            try {
+                $usesSoftDeletes = in_array(
                     \Illuminate\Database\Eloquent\SoftDeletes::class,
-                    class_uses_recursive(
-                        $modelClass
-                    ),
+                    class_uses_recursive($modelClass),
                     true
                 );
 
-            if (!$usesSoftDeletes) {
-                $tombstones[$key] = [];
+                if (!$usesSoftDeletes) {
+                    $tombstones[$key] = [];
+                    continue;
+                }
 
-                continue;
-            }
+                $query = $modelClass::withTrashed()
+                    ->where('empresa_id', $empresaId)
+                    ->whereNotNull('deleted_at');
 
-            $query = $modelClass
-                ::withTrashed()
-                ->where(
-                    'empresa_id',
-                    $empresaId
-                )
-                ->whereNotNull(
-                    'deleted_at'
-                );
+                if ($fechaSync !== null && trim($fechaSync) !== '') {
+                    $query->where('deleted_at', '>', $fechaSync);
+                }
 
-            if (
-                $fechaSync !== null &&
-                trim($fechaSync) !== ''
-            ) {
-                $query->where(
-                    'deleted_at',
-                    '>',
-                    $fechaSync
-                );
-            }
-
-            $tombstones[$key] =
-                $query
+                $tombstones[$key] = $query
                     ->orderBy('id')
                     ->get([
                         'id',
                         'deleted_at',
                     ])
-                    ->map(
-                        function ($item) {
-                            return [
-                                'id' =>
-                                    (int) $item->id,
-
-                                'deleted_at' =>
-                                    $item->deleted_at
-                                        ?->toIso8601String(),
-                            ];
-                        }
-                    )
+                    ->map(function ($item) {
+                        return [
+                            'id' => (int) $item->id,
+                            'deleted_at' => $item->deleted_at
+                                ?->toIso8601String(),
+                        ];
+                    })
                     ->values()
                     ->all();
+            } catch (\Throwable $e) {
+                /*
+                 * Un error en un catálogo concreto no debe quedar
+                 * oculto ni generar una respuesta inconsistente.
+                 */
+                Log::error(
+                    'Error al construir tombstones del catálogo.',
+                    [
+                        'controller' => self::class,
+                        'catalogo' => $key,
+                        'model' => $modelClass,
+                        'empresa_id' => $empresaId,
+                        'exception' => get_class($e),
+                        'message' => $e->getMessage(),
+                    ]
+                );
+
+                throw $e;
+            }
         }
 
         return $tombstones;
     }
 
     /**
-     * Obtener solamente productos.
+     * Listar productos de la empresa autenticada.
      */
-    public function productos(
-        Request $request
-    ) {
+    public function productos(Request $request)
+    {
         $user = $request->user();
 
         if (!$user) {
             return response()->json([
-                'message' =>
-                    'Usuario no autenticado.',
+                'message' => 'Usuario no autenticado.',
+                'error' => 'UNAUTHENTICATED',
             ], 401);
         }
 
-        $request->validate([
-            'per_page' => [
-                'nullable',
-                'integer',
-                'min:1',
-                'max:100',
-            ],
-        ]);
+        try {
+            $validated = $request->validate([
+                'per_page' => [
+                    'nullable',
+                    'integer',
+                    'min:1',
+                    'max:100',
+                ],
+            ]);
+        } catch (ValidationException $e) {
+            $this->registrarErrorAuditoria(
+                $request,
+                'productos.validacion_fallida',
+                'productos',
+                null,
+                null,
+                [
+                    'errores' => $e->errors(),
+                ],
+                (int) ($user->empresa_id ?? 0),
+                (int) $user->id
+            );
 
-        $empresaId =
-            (int) $user->empresa_id;
+            return response()->json([
+                'message' => 'El parámetro per_page no es válido.',
+                'error' => 'VALIDATION_ERROR',
+                'errors' => $e->errors(),
+            ], 422);
+        }
+
+        $empresaId = (int) $user->empresa_id;
 
         if ($empresaId <= 0) {
+            $this->registrarErrorAuditoria(
+                $request,
+                'productos.empresa_invalida',
+                'productos',
+                null,
+                null,
+                [
+                    'motivo' => 'El usuario no tiene empresa asociada.',
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
             return response()->json([
-                'message' =>
-                    'El usuario no tiene una empresa asociada.',
+                'message' => 'El usuario no tiene una empresa asociada.',
+                'error' => 'EMPRESA_NO_ASOCIADA',
             ], 422);
         }
 
         try {
-            $perPage = (int) $request->input(
-                'per_page',
-                50
-            );
+            $perPage = (int) ($validated['per_page'] ?? 50);
 
+            /*
+             * La consulta siempre queda restringida a la empresa
+             * del usuario autenticado.
+             */
             $productos = Producto::query()
-                ->where(
-                    'empresa_id',
-                    $empresaId
-                )
+                ->where('empresa_id', $empresaId)
                 ->orderBy('id')
                 ->paginate($perPage)
-                ->appends(
-                    $request->query()
-                );
+                ->appends($request->query());
 
-            app(AuditoriaService::class)->registrar(
+            $this->registrarAuditoria(
                 $request,
                 'productos.consultados',
                 'productos',
                 null,
                 null,
                 [
-                    'pagina' =>
-                        $productos->currentPage(),
-
-                    'total' =>
-                        $productos->total(),
-
-                    'per_page' =>
-                        $productos->perPage(),
+                    'pagina' => $productos->currentPage(),
+                    'total' => $productos->total(),
+                    'per_page' => $productos->perPage(),
                 ],
                 $empresaId,
-                $user->id
+                (int) $user->id
             );
 
-            return response()->json(
-                $productos
-            );
+            return response()->json($productos);
         } catch (\Throwable $e) {
             Log::error(
-                '❌ Error al listar productos: ' .
-                $e->getMessage()
+                'Error al listar productos.',
+                [
+                    'controller' => self::class,
+                    'method' => __FUNCTION__,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => (int) $user->id,
+                    'per_page' => $request->input('per_page'),
+                    'exception' => get_class($e),
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ]
+            );
+
+            $this->registrarErrorAuditoria(
+                $request,
+                'productos.error_interno',
+                'productos',
+                null,
+                null,
+                [
+                    'empresa_id' => $empresaId,
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ],
+                $empresaId,
+                (int) $user->id
             );
 
             return response()->json([
-                'message' =>
-                    'Error al cargar productos.',
+                'message' => 'No fue posible cargar los productos.',
+                'error' => 'PRODUCTOS_QUERY_ERROR',
             ], 500);
         }
+    }
+
+    /**
+     * Registrar una auditoría sin permitir que un problema
+     * del sistema de auditoría rompa la operación principal.
+     */
+    private function registrarAuditoria(
+        Request $request,
+        string $accion,
+        string $entidad,
+        $entidadId,
+        $folio,
+        array $datos,
+        int $empresaId,
+        int $usuarioId
+    ): void {
+        try {
+            app(AuditoriaService::class)->registrar(
+                $request,
+                $accion,
+                $entidad,
+                $entidadId,
+                $folio,
+                $datos,
+                $empresaId,
+                $usuarioId
+            );
+        } catch (\Throwable $e) {
+            /*
+             * La auditoría es importante, pero nunca debe provocar
+             * que una consulta de catálogo falle.
+             */
+            Log::warning(
+                'No fue posible registrar la auditoría del catálogo.',
+                [
+                    'controller' => self::class,
+                    'accion' => $accion,
+                    'entidad' => $entidad,
+                    'entidad_id' => $entidadId,
+                    'folio' => $folio,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $usuarioId,
+                    'exception' => get_class($e),
+                    'message' => $e->getMessage(),
+                ]
+            );
+        }
+    }
+
+    /**
+     * Registrar errores de auditoría de forma segura.
+     *
+     * El método auxiliar evita duplicar manejo de excepciones
+     * en cada endpoint.
+     */
+    private function registrarErrorAuditoria(
+        Request $request,
+        string $accion,
+        string $entidad,
+        $entidadId,
+        $folio,
+        array $datos,
+        int $empresaId,
+        int $usuarioId
+    ): void {
+        /*
+         * No lanzamos excepciones desde aquí.
+         *
+         * Un error al auditar un error no debe reemplazar
+         * la respuesta real que corresponde al cliente.
+         */
+        $this->registrarAuditoria(
+            $request,
+            $accion,
+            $entidad,
+            $entidadId,
+            $folio,
+            $datos,
+            $empresaId,
+            $usuarioId
+        );
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Empresa;
 use App\Models\LogAuditoria;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -11,9 +12,12 @@ use Throwable;
 class AuditoriaService
 {
     /**
-     * Registrar una acción en la auditoría.
+     * Registra una acción realizada desde una petición HTTP.
      *
-     * Las acciones realizadas por superadmin no se registran.
+     * $empresaId representa la empresa AFECTADA por la operación.
+     * $usuarioId representa al ACTOR que realizó la operación.
+     *
+     * El superadmin también queda registrado.
      */
     public function registrar(
         Request $request,
@@ -26,23 +30,71 @@ class AuditoriaService
         ?int $usuarioId = null
     ): ?LogAuditoria {
         try {
-            $usuario = $request->user();
+            $usuarioAutenticado = $request->user();
 
-            if (!$usuario && $usuarioId) {
+            /*
+             * El actor real siempre es el usuario autenticado.
+             * No permitimos que el controlador falsifique usuario_id.
+             */
+            if ($usuarioAutenticado) {
+                $usuario = $usuarioAutenticado;
+                $usuarioId = (int) $usuario->id;
+            } elseif ($usuarioId !== null) {
                 $usuario = User::find($usuarioId);
+            } else {
+                $usuario = null;
             }
 
-            // Superadmin queda excluido de la auditoría.
-            if ($usuario && $this->esSuperAdmin($usuario)) {
+            /*
+             * Si no se especificó empresa afectada, usamos la empresa
+             * del actor cuando exista.
+             */
+            if ($empresaId === null && $usuario) {
+                $empresaId = $usuario->empresa_id !== null
+                    ? (int) $usuario->empresa_id
+                    : null;
+            }
+
+            /*
+             * Usuarios normales únicamente pueden registrar acciones
+             * dentro de su propia empresa.
+             *
+             * Superadmin puede actuar sobre cualquier empresa.
+             */
+            if (
+                $usuario &&
+                !$this->esSuperAdmin($usuario) &&
+                $empresaId !== null &&
+                (int) $usuario->empresa_id !== (int) $empresaId
+            ) {
+                Log::warning('Intento de auditoría fuera de empresa.', [
+                    'usuario_id' => $usuario->id,
+                    'empresa_usuario' => $usuario->empresa_id,
+                    'empresa_solicitada' => $empresaId,
+                    'accion' => $accion,
+                    'tabla' => $tabla,
+                    'registro_id' => $registroId,
+                ]);
+
                 return null;
             }
 
-            if ($empresaId === null && $usuario) {
-                $empresaId = $usuario->empresa_id;
-            }
+            /*
+             * Si existe empresa afectada, debe existir realmente.
+             */
+            if ($empresaId !== null) {
+                if (!Empresa::query()->whereKey($empresaId)->exists()) {
+                    Log::warning(
+                        'Empresa inexistente al registrar auditoría.',
+                        [
+                            'empresa_id' => $empresaId,
+                            'usuario_id' => $usuarioId,
+                            'accion' => $accion,
+                        ]
+                    );
 
-            if ($usuarioId === null && $usuario) {
-                $usuarioId = $usuario->id;
+                    return null;
+                }
             }
 
             $datosAntes = $this->sanitizarDatos($datosAntes);
@@ -51,8 +103,8 @@ class AuditoriaService
             return LogAuditoria::create([
                 'empresa_id' => $empresaId,
                 'usuario_id' => $usuarioId,
-                'accion' => $accion,
-                'tabla' => $tabla ?: 'sistema',
+                'accion' => trim($accion),
+                'tabla' => $tabla ? trim($tabla) : 'sistema',
                 'registro_id' => $registroId,
                 'datos_antes' => $datosAntes,
                 'datos_despues' => $datosDespues,
@@ -60,14 +112,14 @@ class AuditoriaService
                 'user_agent' => $this->obtenerUserAgent($request),
             ]);
         } catch (Throwable $e) {
-            // La auditoría nunca debe romper la operación principal.
-            Log::error('Error al registrar auditoría', [
+            Log::error('Error al registrar auditoría.', [
                 'accion' => $accion,
                 'tabla' => $tabla,
                 'registro_id' => $registroId,
                 'empresa_id' => $empresaId,
                 'usuario_id' => $usuarioId,
                 'error' => $e->getMessage(),
+                'exception' => get_class($e),
             ]);
 
             return null;
@@ -75,7 +127,12 @@ class AuditoriaService
     }
 
     /**
-     * Registrar una acción utilizando directamente un usuario.
+     * Registra una acción utilizando directamente un usuario.
+     *
+     * $usuario es el ACTOR.
+     *
+     * $empresaId representa la empresa afectada y puede ser diferente
+     * a la empresa del actor únicamente cuando el actor es superadmin.
      */
     public function registrarUsuario(
         ?User $usuario,
@@ -84,34 +141,65 @@ class AuditoriaService
         ?int $registroId = null,
         ?array $datosAntes = null,
         ?array $datosDespues = null,
-        ?Request $request = null
+        ?Request $request = null,
+        ?int $empresaId = null
     ): ?LogAuditoria {
         try {
-            if ($usuario && $this->esSuperAdmin($usuario)) {
+            if ($empresaId === null && $usuario) {
+                $empresaId = $usuario->empresa_id !== null
+                    ? (int) $usuario->empresa_id
+                    : null;
+            }
+
+            if (
+                $usuario &&
+                !$this->esSuperAdmin($usuario) &&
+                $empresaId !== null &&
+                (int) $usuario->empresa_id !== (int) $empresaId
+            ) {
+                Log::warning(
+                    'Intento de registrar auditoría fuera de empresa.',
+                    [
+                        'usuario_id' => $usuario->id,
+                        'empresa_usuario' => $usuario->empresa_id,
+                        'empresa_solicitada' => $empresaId,
+                        'accion' => $accion,
+                    ]
+                );
+
                 return null;
             }
 
-            $datosAntes = $this->sanitizarDatos($datosAntes);
-            $datosDespues = $this->sanitizarDatos($datosDespues);
+            if ($empresaId !== null) {
+                if (!Empresa::query()->whereKey($empresaId)->exists()) {
+                    return null;
+                }
+            }
 
             return LogAuditoria::create([
-                'empresa_id' => $usuario?->empresa_id,
+                'empresa_id' => $empresaId,
                 'usuario_id' => $usuario?->id,
-                'accion' => $accion,
-                'tabla' => $tabla ?: 'sistema',
+                'accion' => trim($accion),
+                'tabla' => $tabla ? trim($tabla) : 'sistema',
                 'registro_id' => $registroId,
-                'datos_antes' => $datosAntes,
-                'datos_despues' => $datosDespues,
-                'ip' => $request ? $this->obtenerIp($request) : null,
-                'user_agent' => $request ? $this->obtenerUserAgent($request) : null,
+                'datos_antes' => $this->sanitizarDatos($datosAntes),
+                'datos_despues' => $this->sanitizarDatos($datosDespues),
+                'ip' => $request
+                    ? $this->obtenerIp($request)
+                    : null,
+                'user_agent' => $request
+                    ? $this->obtenerUserAgent($request)
+                    : null,
             ]);
         } catch (Throwable $e) {
-            Log::error('Error al registrar auditoría por usuario', [
+            Log::error('Error al registrar auditoría por usuario.', [
                 'accion' => $accion,
                 'tabla' => $tabla,
                 'registro_id' => $registroId,
                 'usuario_id' => $usuario?->id,
+                'empresa_id' => $empresaId,
                 'error' => $e->getMessage(),
+                'exception' => get_class($e),
             ]);
 
             return null;
@@ -119,9 +207,9 @@ class AuditoriaService
     }
 
     /**
-     * Registrar una acción del sistema.
+     * Registra una acción del sistema.
      *
-     * Puede utilizarse para acciones sin autenticación.
+     * Puede utilizarse cuando no existe usuario autenticado.
      */
     public function registrarSistema(
         string $accion,
@@ -134,36 +222,79 @@ class AuditoriaService
         ?Request $request = null
     ): ?LogAuditoria {
         try {
+            $usuario = null;
+
             if ($usuarioId !== null) {
                 $usuario = User::find($usuarioId);
 
-                if ($usuario && $this->esSuperAdmin($usuario)) {
+                if (!$usuario) {
+                    Log::warning(
+                        'Usuario inexistente al registrar auditoría del sistema.',
+                        [
+                            'usuario_id' => $usuarioId,
+                            'empresa_id' => $empresaId,
+                            'accion' => $accion,
+                        ]
+                    );
+
+                    return null;
+                }
+
+                if ($empresaId === null) {
+                    $empresaId = $usuario->empresa_id !== null
+                        ? (int) $usuario->empresa_id
+                        : null;
+                }
+
+                if (
+                    !$this->esSuperAdmin($usuario) &&
+                    $empresaId !== null &&
+                    (int) $usuario->empresa_id !== (int) $empresaId
+                ) {
+                    Log::warning(
+                        'Auditoría del sistema fuera de empresa.',
+                        [
+                            'usuario_id' => $usuario->id,
+                            'empresa_usuario' => $usuario->empresa_id,
+                            'empresa_solicitada' => $empresaId,
+                            'accion' => $accion,
+                        ]
+                    );
+
                     return null;
                 }
             }
 
-            $datosAntes = $this->sanitizarDatos($datosAntes);
-            $datosDespues = $this->sanitizarDatos($datosDespues);
+            if ($empresaId !== null) {
+                if (!Empresa::query()->whereKey($empresaId)->exists()) {
+                    return null;
+                }
+            }
 
             return LogAuditoria::create([
                 'empresa_id' => $empresaId,
                 'usuario_id' => $usuarioId,
-                'accion' => $accion,
-                'tabla' => $tabla ?: 'sistema',
+                'accion' => trim($accion),
+                'tabla' => $tabla ? trim($tabla) : 'sistema',
                 'registro_id' => $registroId,
-                'datos_antes' => $datosAntes,
-                'datos_despues' => $datosDespues,
-                'ip' => $request ? $this->obtenerIp($request) : null,
-                'user_agent' => $request ? $this->obtenerUserAgent($request) : null,
+                'datos_antes' => $this->sanitizarDatos($datosAntes),
+                'datos_despues' => $this->sanitizarDatos($datosDespues),
+                'ip' => $request
+                    ? $this->obtenerIp($request)
+                    : null,
+                'user_agent' => $request
+                    ? $this->obtenerUserAgent($request)
+                    : null,
             ]);
         } catch (Throwable $e) {
-            Log::error('Error al registrar auditoría del sistema', [
+            Log::error('Error al registrar auditoría del sistema.', [
                 'accion' => $accion,
                 'tabla' => $tabla,
                 'registro_id' => $registroId,
                 'empresa_id' => $empresaId,
                 'usuario_id' => $usuarioId,
                 'error' => $e->getMessage(),
+                'exception' => get_class($e),
             ]);
 
             return null;
@@ -171,15 +302,27 @@ class AuditoriaService
     }
 
     /**
-     * Determinar si un usuario es superadmin.
+     * Determina si un usuario es superadmin.
      */
-    private function esSuperAdmin(User $usuario): bool
+    public function esSuperAdmin(User $usuario): bool
     {
         return strtolower(trim((string) $usuario->rol)) === 'superadmin';
     }
 
     /**
-     * Obtener IP.
+     * Determina si un usuario tiene permisos administrativos.
+     */
+    public function esAdministrador(User $usuario): bool
+    {
+        return in_array(
+            strtolower(trim((string) $usuario->rol)),
+            ['admin', 'superadmin'],
+            true
+        );
+    }
+
+    /**
+     * Obtiene IP.
      */
     private function obtenerIp(Request $request): ?string
     {
@@ -191,7 +334,7 @@ class AuditoriaService
     }
 
     /**
-     * Obtener User-Agent.
+     * Obtiene User-Agent.
      */
     private function obtenerUserAgent(Request $request): ?string
     {
@@ -209,7 +352,7 @@ class AuditoriaService
     }
 
     /**
-     * Sanitizar información sensible.
+     * Sanitiza datos sensibles.
      */
     private function sanitizarDatos(?array $datos): ?array
     {
@@ -225,15 +368,36 @@ class AuditoriaService
             'password_nueva',
             'new_password',
             'old_password',
+
             'token',
             'access_token',
             'refresh_token',
             'remember_token',
             'api_token',
+            'auth_token',
+            'authentication_token',
             'authorization',
             'bearer_token',
+
             'secret',
             'client_secret',
+            'client_secret_key',
+            'private_key',
+            'private_key_id',
+
+            'api_key',
+            'apikey',
+            'x_api_key',
+
+            'cookie',
+            'set_cookie',
+            'session',
+            'session_id',
+
+            'credit_card',
+            'card_number',
+            'cvv',
+            'cvc',
         ];
 
         return $this->sanitizarRecursivo(
@@ -254,6 +418,12 @@ class AuditoriaService
         foreach ($datos as $clave => $valor) {
             $claveNormalizada = strtolower(trim((string) $clave));
 
+            $claveNormalizada = str_replace(
+                ['-', ' ', '.'],
+                '_',
+                $claveNormalizada
+            );
+
             if (in_array(
                 $claveNormalizada,
                 $camposSensibles,
@@ -264,11 +434,10 @@ class AuditoriaService
             }
 
             if (is_array($valor)) {
-                $resultado[$clave] =
-                    $this->sanitizarRecursivo(
-                        $valor,
-                        $camposSensibles
-                    );
+                $resultado[$clave] = $this->sanitizarRecursivo(
+                    $valor,
+                    $camposSensibles
+                );
 
                 continue;
             }

@@ -224,36 +224,24 @@ class User extends Authenticatable
     */
 
     /**
-     * Generar número de usuario.
+     * Generar número de usuario a partir del ID REAL.
      *
-     * Ejemplo:
+     * La regla es:
      *
-     * 1000000001
-     * 1000000002
-     * 1000000003
+     * 1000000000 + ID
+     *
+     * Ejemplos:
+     *
+     * ID 1  -> 1000000001
+     * ID 2  -> 1000000002
+     * ID 9  -> 1000000009
+     * ID 10 -> 1000000010
+     * ID 21 -> 1000000021
+     * ID 123 -> 1000000123
      */
-    public static function generarNumeroUsuario(): int
+    public static function generarNumeroUsuario(int $id): int
     {
-        $nextId = self::withTrashed()->max('id') + 1;
-
-        return 1000000000 + $nextId;
-    }
-
-    /**
-     * Boot del modelo.
-     */
-    protected static function boot()
-    {
-        parent::boot();
-
-        static::creating(function ($user) {
-            if (empty($user->numero_usuario)) {
-                $nextId = self::withTrashed()->max('id') + 1;
-
-                $user->numero_usuario =
-                    1000000000 + $nextId;
-            }
-        });
+        return 1000000000 + $id;
     }
 
     /**

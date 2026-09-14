@@ -4,12 +4,14 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Caja;
+use App\Models\Categoria;
 use App\Models\Cliente;
 use App\Models\ConfiguracionTicket;
 use App\Models\DetalleVenta;
 use App\Models\Mesa;
 use App\Models\Pago;
 use App\Models\Producto;
+use App\Models\UnidadMedida;
 use App\Models\Venta;
 use App\Services\AuditoriaService;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -18,20 +20,34 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Throwable;
 
 class VentaController extends Controller
 {
-    private AuditoriaService $auditoria;
+    private const FORMAS_PAGO = [
+        'Efectivo',
+        'Tarjeta Crédito',
+        'Tarjeta Débito',
+        'Transferencia',
+        'Crédito',
+        'Otro',
+    ];
 
-    public function __construct(AuditoriaService $auditoria)
-    {
-        $this->auditoria = $auditoria;
+    private const ESTADOS_VENTA = [
+        'pendiente',
+        'pagado',
+        'cancelado',
+    ];
+
+    public function __construct(
+        private readonly AuditoriaService $auditoria
+    ) {
     }
 
     /**
-     * Registrar una nueva venta.
+     * Crear una venta pagada.
      */
     public function store(Request $request)
     {
@@ -45,100 +61,387 @@ class VentaController extends Controller
         }
 
         $empresaId = (int) $user->empresa_id;
+        $empresa = $user->empresa;
 
-        if ($empresaId <= 0 || ! $user->empresa) {
+        if ($empresaId <= 0 || ! $empresa) {
             return response()->json([
                 'success' => false,
                 'message' => 'El usuario no tiene una empresa válida asociada.',
             ], 403);
         }
 
-        $validated = $request->validate([
-            'cliente_id' => ['nullable', 'integer', 'min:1'],
-            'productos' => ['required', 'array', 'min:1', 'max:500'],
-            'productos.*.producto_id' => ['required', 'integer', 'min:1'],
-            'productos.*.cantidad' => ['required', 'numeric', 'min:0.01'],
-            'productos.*.precio' => ['required', 'numeric', 'min:0'],
-            'productos.*.descuento' => ['nullable', 'numeric', 'min:0'],
-            'pagos' => ['required', 'array', 'min:1', 'max:50'],
+        $validator = Validator::make($request->all(), [
+            'cliente_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'productos' => [
+                'required',
+                'array',
+                'min:1',
+                'max:500',
+            ],
+
+            'productos.*.producto_id' => [
+                'required',
+                'integer',
+                'min:1',
+            ],
+
+            /*
+             * Información opcional para sincronización/offline.
+             *
+             * Si producto_id no existe en servidor, estos datos permiten
+             * crear automáticamente el producto.
+             */
+            'productos.*.producto' => [
+                'nullable',
+                'array',
+            ],
+
+            'productos.*.producto.nombre' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'productos.*.producto.codigo' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            'productos.*.producto.descripcion' => [
+                'nullable',
+                'string',
+                'max:1000',
+            ],
+
+            'productos.*.producto.precio' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.producto.costo' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.producto.impuesto' => [
+                'nullable',
+                'numeric',
+                'min:0',
+                'max:100',
+            ],
+
+            'productos.*.producto.stock' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.producto.stock_minimo' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.producto.is_inventariable' => [
+                'nullable',
+                'boolean',
+            ],
+
+            'productos.*.producto.categoria_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'productos.*.producto.unidad_medida_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            /*
+             * Catálogo de categoría.
+             */
+            'productos.*.producto.categoria' => [
+                'nullable',
+                'array',
+            ],
+
+            'productos.*.producto.categoria.nombre' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'productos.*.producto.categoria.codigo' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            /*
+             * Catálogo de unidad de medida.
+             */
+            'productos.*.producto.unidad_medida' => [
+                'nullable',
+                'array',
+            ],
+
+            'productos.*.producto.unidad_medida.nombre' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'productos.*.producto.unidad_medida.codigo' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            'productos.*.cantidad' => [
+                'required',
+                'numeric',
+                'min:0.01',
+            ],
+
+            'productos.*.precio' => [
+                'required',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.descuento' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'pagos' => [
+                'required',
+                'array',
+                'min:1',
+                'max:50',
+            ],
+
             'pagos.*.forma_pago' => [
                 'required',
                 'string',
-                'in:Efectivo,Tarjeta Crédito,Tarjeta Débito,Transferencia,Crédito,Otro',
+                'in:' . implode(',', self::FORMAS_PAGO),
             ],
-            'pagos.*.monto' => ['required', 'numeric', 'min:0.01'],
-            'pagos.*.referencia' => ['nullable', 'string', 'max:100'],
-            'pagos.*.cambio' => ['nullable', 'numeric', 'min:0'],
-            'descuento_global' => ['nullable', 'numeric', 'min:0'],
-            'impuesto_global' => ['nullable', 'numeric', 'min:0', 'max:100'],
-            'saldo_a_credito' => ['nullable', 'numeric', 'min:0'],
-            'notas' => ['nullable', 'string', 'max:500'],
-            'caja_id' => ['nullable', 'integer', 'min:1'],
-            'dispositivo_id' => ['nullable', 'string', 'max:255'],
+
+            'pagos.*.monto' => [
+                'required',
+                'numeric',
+                'min:0.01',
+            ],
+
+            'pagos.*.referencia' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            'pagos.*.cambio' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'descuento_global' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'impuesto_global' => [
+                'nullable',
+                'numeric',
+                'min:0',
+                'max:100',
+            ],
+
+            'notas' => [
+                'nullable',
+                'string',
+                'max:500',
+            ],
+
+            'caja_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'mesa_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'dispositivo_id' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
         ]);
 
-        if (! empty($validated['cliente_id'])) {
-            $clienteExiste = Cliente::where('id', $validated['cliente_id'])
-                ->where('empresa_id', $empresaId)
-                ->exists();
+        if ($validator->fails()) {
+            $this->registrarAuditoria(
+                $request,
+                'crear_venta_validacion_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'errores' => $this->erroresValidacion($validator),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
-            if (! $clienteExiste) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'El cliente no pertenece a la empresa.',
-                ], 422);
-            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Los datos de la venta no son válidos.',
+                'errors' => $validator->errors(),
+            ], 422);
         }
 
-        foreach ($validated['productos'] as $item) {
-            $productoExiste = Producto::where('id', $item['producto_id'])
-                ->where('empresa_id', $empresaId)
-                ->exists();
-
-            if (! $productoExiste) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Uno de los productos no pertenece a la empresa.',
-                ], 422);
-            }
-        }
-
-        $caja = null;
-
-        if ($user->empresa->usaCajas()) {
-            $caja = Caja::where('empresa_id', $empresaId)
-                ->where('fecha_comercial', today())
-                ->where('estado', 'abierta')
-                ->first();
-
-            if (! $caja) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Debe abrirse la caja de la empresa antes de registrar ventas.',
-                ], 422);
-            }
-        }
+        $validated = $validator->validated();
 
         try {
-            $venta = DB::transaction(function () use ($validated, $user, $empresaId, $caja) {
-                $total = 0.0;
-                $detalles = [];
+            $clienteId = ! empty($validated['cliente_id'])
+                ? (int) $validated['cliente_id']
+                : null;
 
-                foreach ($validated['productos'] as $item) {
-                    $producto = Producto::where('id', $item['producto_id'])
+            if ($clienteId !== null) {
+                $clienteExiste = Cliente::query()
+                    ->where('empresa_id', $empresaId)
+                    ->whereKey($clienteId)
+                    ->exists();
+
+                if (! $clienteExiste) {
+                    throw new \DomainException(
+                        'El cliente indicado no pertenece a la empresa.'
+                    );
+                }
+            }
+
+            /*
+             * Validación inicial de descuentos.
+             *
+             * Los productos se vuelven a bloquear dentro de la transacción.
+             */
+            foreach ($validated['productos'] as $item) {
+                $subtotalBruto = round(
+                    (float) $item['precio'] *
+                    (float) $item['cantidad'],
+                    2
+                );
+
+                $descuento = round(
+                    (float) ($item['descuento'] ?? 0),
+                    2
+                );
+
+                if ($descuento > $subtotalBruto) {
+                    throw new \DomainException(
+                        'El descuento de un producto no puede ser mayor al subtotal.'
+                    );
+                }
+            }
+
+            $caja = $this->resolverCaja(
+                $empresa,
+                $empresaId,
+                $validated['caja_id'] ?? null
+            );
+
+            $mesa = $this->resolverMesa(
+                $empresa,
+                $empresaId,
+                $validated['mesa_id'] ?? null
+            );
+
+            $venta = DB::transaction(function () use (
+                $validated,
+                $user,
+                $empresaId,
+                $caja,
+                $mesa
+            ) {
+                $mesaBloqueada = null;
+
+                if ($mesa) {
+                    $mesaBloqueada = Mesa::query()
                         ->where('empresa_id', $empresaId)
+                        ->whereKey($mesa->id)
+                        ->where('activo', true)
                         ->lockForUpdate()
                         ->first();
 
+                    if (! $mesaBloqueada) {
+                        throw new \DomainException(
+                            'La mesa ya no está disponible.'
+                        );
+                    }
+
+                    $otraVenta = Venta::query()
+                        ->where('empresa_id', $empresaId)
+                        ->where('mesa_id', $mesaBloqueada->id)
+                        ->where('estado', 'pendiente')
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($otraVenta) {
+                        throw new \DomainException(
+                            'La mesa ya tiene una venta pendiente.'
+                        );
+                    }
+                }
+
+                $productosBloqueados = $this->obtenerProductosParaVenta(
+                    $validated['productos'],
+                    $empresaId
+                );
+
+                $total = 0.0;
+
+                foreach ($validated['productos'] as $item) {
+                    $productoId = (int) $item['producto_id'];
+
+                    $producto = $productosBloqueados[$productoId]
+                        ?? null;
+
                     if (! $producto) {
-                        throw new \DomainException('Producto no encontrado.');
+                        /*
+                         * Si viene información suficiente del producto,
+                         * se crea automáticamente.
+                         */
+                        $producto = $this->crearProductoDesdeVentaSiEsNecesario(
+                            $item,
+                            $empresaId
+                        );
+
+                        $productosBloqueados[$producto->id] = $producto;
                     }
 
                     $cantidad = (float) $item['cantidad'];
                     $precio = (float) $item['precio'];
                     $descuento = (float) ($item['descuento'] ?? 0);
 
-                    $subtotalBruto = $precio * $cantidad;
+                    $subtotalBruto = round(
+                        $precio * $cantidad,
+                        2
+                    );
 
                     if ($descuento > $subtotalBruto) {
                         throw new \DomainException(
@@ -146,32 +449,35 @@ class VentaController extends Controller
                         );
                     }
 
-                    if ((float) $producto->stock < $cantidad) {
-                        throw new \DomainException(
-                            "Stock insuficiente para {$producto->nombre}. Disponible: {$producto->stock}"
-                        );
+                    $subtotal = round(
+                        $subtotalBruto - $descuento,
+                        2
+                    );
+
+                    if ((bool) $producto->is_inventariable) {
+                        if (
+                            (float) $producto->stock <
+                            $cantidad
+                        ) {
+                            throw new \DomainException(
+                                "Stock insuficiente para el producto {$producto->nombre}."
+                            );
+                        }
                     }
-
-                    $subtotal = round($subtotalBruto - $descuento, 2);
-
-                    $producto->stock = (float) $producto->stock - $cantidad;
-                    $producto->save();
-
-                    $detalles[] = [
-                        'producto_id' => $producto->id,
-                        'cantidad' => $cantidad,
-                        'precio_unitario' => $precio,
-                        'descuento' => $descuento,
-                        'subtotal' => $subtotal,
-                    ];
 
                     $total += $subtotal;
                 }
 
                 $total = round($total, 2);
 
-                $descuentoGlobal = (float) ($validated['descuento_global'] ?? 0);
-                $impuestoGlobal = (float) ($validated['impuesto_global'] ?? 0);
+                $descuentoGlobal = round(
+                    (float) ($validated['descuento_global'] ?? 0),
+                    2
+                );
+
+                $impuestoGlobal = (float) (
+                    $validated['impuesto_global'] ?? 0
+                );
 
                 if ($descuentoGlobal > $total) {
                     throw new \DomainException(
@@ -179,35 +485,44 @@ class VentaController extends Controller
                     );
                 }
 
-                $totalConDescuento = round($total - $descuentoGlobal, 2);
+                $totalConDescuento = round(
+                    $total - $descuentoGlobal,
+                    2
+                );
+
                 $totalFinal = round(
                     $totalConDescuento +
-                        ($totalConDescuento * ($impuestoGlobal / 100)),
+                    (
+                        $totalConDescuento *
+                        ($impuestoGlobal / 100)
+                    ),
                     2
                 );
 
-                // Validación de pagos estricta (suma = total)
-                $totalPagos = round(
+                $pagado = round(
                     collect($validated['pagos'])
-                        ->sum(fn($pago) => (float) $pago['monto']),
+                        ->sum(
+                            static fn ($pago) =>
+                                (float) $pago['monto']
+                        ),
                     2
                 );
 
-                if (abs($totalPagos - $totalFinal) > 0.009) {
+                if (
+                    abs($pagado - $totalFinal) > 0.009
+                ) {
                     throw new \DomainException(
                         'La suma de los pagos debe coincidir exactamente con el total de la venta.'
                     );
                 }
 
-                // 1. Insertar venta con folio temporal (UUID único)
-                $folioTemporal = 'TEMP-' . (string) Str::uuid();
-
-                $venta = Venta::create([
+                $venta = Venta::query()->create([
                     'uuid' => (string) Str::uuid(),
-                    'folio' => $folioTemporal,
+                    'folio' => 'TEMP-' . Str::uuid(),
                     'empresa_id' => $empresaId,
                     'usuario_id' => $user->id,
                     'caja_id' => $caja?->id,
+                    'mesa_id' => $mesaBloqueada?->id,
                     'cliente_id' => $validated['cliente_id'] ?? null,
                     'fecha' => now(),
                     'subtotal' => $total,
@@ -220,14 +535,60 @@ class VentaController extends Controller
                     'sincronizado' => true,
                 ]);
 
-                // 2. Generar folio definitivo usando el ID de la venta
-                $folioDefinitivo = 'V-' . now()->format('y') . '-' . str_pad((string) $venta->id, 6, '0', STR_PAD_LEFT);
-                $venta->folio = $folioDefinitivo;
+                $venta->folio =
+                    'V-' .
+                    now()->format('y') .
+                    '-' .
+                    str_pad(
+                        (string) $venta->id,
+                        6,
+                        '0',
+                        STR_PAD_LEFT
+                    );
+
                 $venta->save();
 
-                // 3. Crear detalles y pagos
-                foreach ($detalles as $detalle) {
-                    $venta->detalles()->create($detalle);
+                foreach ($validated['productos'] as $item) {
+                    $producto = $productosBloqueados[
+                        (int) $item['producto_id']
+                    ] ?? null;
+
+                    if (! $producto) {
+                        throw new \DomainException(
+                            'Producto no encontrado para registrar el detalle.'
+                        );
+                    }
+
+                    $cantidad = (float) $item['cantidad'];
+                    $precio = (float) $item['precio'];
+                    $descuento = (float) ($item['descuento'] ?? 0);
+
+                    $subtotalBruto = round(
+                        $precio * $cantidad,
+                        2
+                    );
+
+                    $subtotal = round(
+                        $subtotalBruto - $descuento,
+                        2
+                    );
+
+                    $venta->detalles()->create([
+                        'producto_id' => $producto->id,
+                        'cantidad' => $cantidad,
+                        'precio_unitario' => $precio,
+                        'descuento' => $descuento,
+                        'subtotal' => $subtotal,
+                    ]);
+
+                    if ((bool) $producto->is_inventariable) {
+                        $producto->stock = round(
+                            (float) $producto->stock - $cantidad,
+                            3
+                        );
+
+                        $producto->save();
+                    }
                 }
 
                 foreach ($validated['pagos'] as $pago) {
@@ -239,69 +600,107 @@ class VentaController extends Controller
                     ]);
                 }
 
-                // 4. Actualizar cliente si se especificó
-                if (! empty($validated['cliente_id'])) {
-                    $saldoCredito = (float) ($validated['saldo_a_credito'] ?? 0);
-
-                    Cliente::where('id', $validated['cliente_id'])
+                if ($clienteId = $venta->cliente_id) {
+                    Cliente::query()
                         ->where('empresa_id', $empresaId)
+                        ->whereKey($clienteId)
+                        ->lockForUpdate()
                         ->update([
                             'ultima_compra' => now(),
-                            'saldo_pendiente' => DB::raw(
-                                'saldo_pendiente + ' . number_format($saldoCredito, 2, '.', '')
-                            ),
                         ]);
                 }
 
-                return $venta;
+                if ($mesaBloqueada) {
+                    $mesaBloqueada->update([
+                        'estado' => 'libre',
+                    ]);
+                }
+
+                return $venta->fresh([
+                    'cliente',
+                    'usuario',
+                    'detalles.producto',
+                    'pagos',
+                    'mesa',
+                    'caja',
+                ]);
             });
 
             $this->registrarLog(
                 $venta,
                 $user,
-                'crear_venta'
+                'crear_venta',
+                [
+                    'mesa_id' => $venta->mesa_id,
+                    'caja_id' => $venta->caja_id,
+                ]
             );
-
-            $venta->load([
-                'cliente',
-                'usuario',
-                'detalles.producto',
-                'pagos',
-            ]);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Venta registrada exitosamente',
+                'message' => 'Venta creada correctamente.',
                 'data' => $venta,
             ], 201);
         } catch (\DomainException $e) {
-            Log::warning('Error de negocio al registrar venta.', [
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-            ]);
+            Log::warning(
+                'Error de negocio al crear venta.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'crear_venta_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'motivo' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage(),
             ], 422);
         } catch (Throwable $e) {
-            Log::error('Error al registrar venta.', [
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-                'linea' => $e->getLine(),
-            ]);
+            Log::error(
+                'Error al crear venta.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                    'linea' => $e->getLine(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'crear_venta_error',
+                'ventas',
+                null,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
-                'message' => 'No fue posible registrar la venta.',
+                'message' => 'No fue posible crear la venta.',
             ], 500);
         }
     }
 
     /**
-     * Listar ventas con filtros.
+     * Listar ventas.
      */
     public function index(Request $request)
     {
@@ -315,83 +714,237 @@ class VentaController extends Controller
         }
 
         $empresaId = (int) $user->empresa_id;
+        $empresa = $user->empresa;
 
-        if ($empresaId <= 0 || ! $user->empresa) {
+        if ($empresaId <= 0 || ! $empresa) {
             return response()->json([
                 'success' => false,
                 'message' => 'El usuario no tiene una empresa válida asociada.',
             ], 403);
         }
 
-        $validated = $request->validate([
-            'fecha_desde' => ['nullable', 'date'],
-            'fecha_hasta' => ['nullable', 'date'],
-            'cliente_id' => ['nullable', 'integer', 'min:1'],
-            'estado' => ['nullable', 'string', 'max:50'],
-            'folio' => ['nullable', 'string', 'max:100'],
-            'usuario_id' => ['nullable', 'integer', 'min:1'],
-            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+        $validator = Validator::make($request->all(), [
+            'fecha_inicio' => [
+                'nullable',
+                'date',
+            ],
+            'fecha_fin' => [
+                'nullable',
+                'date',
+            ],
+            'cliente_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+            'estado' => [
+                'nullable',
+                'string',
+                'in:' . implode(',', self::ESTADOS_VENTA),
+            ],
+            'folio' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+            'user_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+            'caja_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+            'mesa_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+            'per_page' => [
+                'nullable',
+                'integer',
+                'min:1',
+                'max:100',
+            ],
         ]);
 
-        if (
-            ! empty($validated['fecha_desde']) &&
-            ! empty($validated['fecha_hasta']) &&
-            $validated['fecha_desde'] > $validated['fecha_hasta']
-        ) {
+        if ($validator->fails()) {
+            $this->registrarAuditoria(
+                $request,
+                'consultar_ventas_validacion_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'errores' => $this->erroresValidacion($validator),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
             return response()->json([
                 'success' => false,
-                'message' => 'La fecha inicial no puede ser mayor que la fecha final.',
+                'message' => 'Los filtros no son válidos.',
+                'errors' => $validator->errors(),
             ], 422);
         }
 
-        $query = Venta::where('empresa_id', $empresaId)
-            ->with([
-                'cliente',
-                'usuario',
-                'detalles.producto',
-                'pagos',
-            ]);
+        $validated = $validator->validated();
 
-        if (! empty($validated['fecha_desde'])) {
-            $query->whereDate('fecha', '>=', $validated['fecha_desde']);
-        }
+        try {
+            if (
+                ! empty($validated['fecha_inicio']) &&
+                ! empty($validated['fecha_fin']) &&
+                $validated['fecha_inicio'] > $validated['fecha_fin']
+            ) {
+                throw new \DomainException(
+                    'La fecha inicial no puede ser mayor que la fecha final.'
+                );
+            }
 
-        if (! empty($validated['fecha_hasta'])) {
-            $query->whereDate('fecha', '<=', $validated['fecha_hasta']);
-        }
+            if (! empty($validated['mesa_id']) && ! $empresa->usaMesas()) {
+                throw new \DomainException(
+                    'Las mesas no están activas para esta empresa.'
+                );
+            }
 
-        if (! empty($validated['cliente_id'])) {
-            $query->where('cliente_id', $validated['cliente_id']);
-        }
+            $query = Venta::query()
+                ->where('empresa_id', $empresaId)
+                ->with([
+                    'cliente',
+                    'usuario',
+                    'detalles.producto',
+                    'pagos',
+                    'mesa',
+                    'caja',
+                ])
+                ->orderByDesc('fecha')
+                ->orderByDesc('id');
 
-        if (! empty($validated['estado'])) {
-            $query->where('estado', $validated['estado']);
-        }
-
-        if (! empty($validated['folio'])) {
-            $query->where(
-                'folio',
-                'LIKE',
-                '%' . $validated['folio'] . '%'
+            $this->aplicarRangoFecha(
+                $query,
+                'fecha',
+                $validated['fecha_inicio'] ?? null,
+                $validated['fecha_fin'] ?? null
             );
+
+            if (! empty($validated['cliente_id'])) {
+                $query->where(
+                    'cliente_id',
+                    (int) $validated['cliente_id']
+                );
+            }
+
+            if (! empty($validated['estado'])) {
+                $query->where(
+                    'estado',
+                    $validated['estado']
+                );
+            }
+
+            if (! empty($validated['folio'])) {
+                $query->where(
+                    'folio',
+                    'like',
+                    '%' . $validated['folio'] . '%'
+                );
+            }
+
+            if (! empty($validated['user_id'])) {
+                $query->where(
+                    'usuario_id',
+                    (int) $validated['user_id']
+                );
+            }
+
+            if (! empty($validated['caja_id'])) {
+                $query->where(
+                    'caja_id',
+                    (int) $validated['caja_id']
+                );
+            }
+
+            if (! empty($validated['mesa_id'])) {
+                $query->where(
+                    'mesa_id',
+                    (int) $validated['mesa_id']
+                );
+            }
+
+            $ventas = $query->paginate(
+                (int) ($validated['per_page'] ?? 20)
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'consultar_ventas',
+                'ventas',
+                null,
+                null,
+                [
+                    'filtros' => $this->sanitizarAuditoria($validated),
+                    'total' => $ventas->total(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => $ventas,
+            ]);
+        } catch (\DomainException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'consultar_ventas_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'motivo' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (Throwable $e) {
+            Log::error(
+                'Error listando ventas.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'consultar_ventas_error',
+                'ventas',
+                null,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No fue posible obtener las ventas.',
+            ], 500);
         }
-
-        if (! empty($validated['usuario_id'])) {
-            $query->where('usuario_id', $validated['usuario_id']);
-        }
-
-        $ventas = $query
-            ->orderBy('created_at', 'desc')
-            ->paginate($validated['per_page'] ?? 20);
-
-        return response()->json([
-            'success' => true,
-            'data' => $ventas,
-        ]);
     }
 
     /**
-     * Mostrar una venta específica.
+     * Mostrar una venta.
      */
     public function show($id, Request $request)
     {
@@ -414,29 +967,106 @@ class VentaController extends Controller
         }
 
         if (! is_numeric($id) || (int) $id <= 0) {
+            $this->registrarAuditoria(
+                $request,
+                'consultar_venta_id_invalido',
+                'ventas',
+                null,
+                null,
+                ['id' => $id],
+                $empresaId,
+                (int) $user->id
+            );
+
             return response()->json([
                 'success' => false,
                 'message' => 'Identificador de venta inválido.',
             ], 422);
         }
 
-        $venta = Venta::where('empresa_id', $empresaId)
-            ->with([
-                'cliente',
-                'usuario',
-                'detalles.producto',
-                'pagos',
-            ])
-            ->findOrFail((int) $id);
+        try {
+            $venta = Venta::query()
+                ->where('empresa_id', $empresaId)
+                ->with([
+                    'cliente',
+                    'usuario',
+                    'detalles.producto',
+                    'pagos',
+                    'mesa',
+                    'caja',
+                ])
+                ->find((int) $id);
 
-        return response()->json([
-            'success' => true,
-            'data' => $venta,
-        ]);
+            if (! $venta) {
+                $this->registrarAuditoria(
+                    $request,
+                    'consultar_venta_no_encontrada',
+                    'ventas',
+                    (int) $id,
+                    null,
+                    null,
+                    $empresaId,
+                    (int) $user->id
+                );
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Venta no encontrada.',
+                ], 404);
+            }
+
+            $this->registrarAuditoria(
+                $request,
+                'consultar_venta',
+                'ventas',
+                $venta->id,
+                null,
+                [
+                    'folio' => $venta->folio,
+                    'total' => $venta->total,
+                    'estado' => $venta->estado,
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => $venta,
+            ]);
+        } catch (Throwable $e) {
+            Log::error(
+                'Error obteniendo venta.',
+                [
+                    'venta_id' => $id,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'consultar_venta_error',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No fue posible obtener la venta.',
+            ], 500);
+        }
     }
 
     /**
-     * Anular una venta y restaurar stock.
+     * Anular una venta.
      */
     public function anular($id, Request $request)
     {
@@ -450,8 +1080,9 @@ class VentaController extends Controller
         }
 
         $empresaId = (int) $user->empresa_id;
+        $empresa = $user->empresa;
 
-        if ($empresaId <= 0 || ! $user->empresa) {
+        if ($empresaId <= 0 || ! $empresa) {
             return response()->json([
                 'success' => false,
                 'message' => 'El usuario no tiene una empresa válida asociada.',
@@ -465,159 +1096,215 @@ class VentaController extends Controller
             ], 422);
         }
 
-        $validated = $request->validate([
-            'motivo' => ['nullable', 'string', 'max:500'],
+        $validator = Validator::make($request->all(), [
+            'motivo' => [
+                'nullable',
+                'string',
+                'max:500',
+            ],
         ]);
 
-        $venta = Venta::where('empresa_id', $empresaId)
-            ->withTrashed()
-            ->with([
-                'detalles',
-                'cliente',
-                'usuario',
-                'pagos',
-            ])
-            ->find((int) $id);
+        if ($validator->fails()) {
+            $this->registrarAuditoria(
+                $request,
+                'anular_venta_validacion_rechazada',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'errores' => $this->erroresValidacion($validator),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
-        if (! $venta) {
             return response()->json([
                 'success' => false,
-                'message' => 'Venta no encontrada',
-            ], 404);
-        }
-
-        if ($venta->estado === 'cancelado') {
-            return response()->json([
-                'success' => false,
-                'message' => 'La venta ya está cancelada',
+                'message' => 'Los datos de anulación no son válidos.',
+                'errors' => $validator->errors(),
             ], 422);
         }
 
-        if ($venta->estado !== 'pagado') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Solo se pueden anular ventas pagadas. Estado actual: ' . $venta->estado,
-            ], 422);
-        }
-
-        if ($venta->detalles->count() === 0) {
-            return response()->json([
-                'success' => false,
-                'message' => 'La venta no tiene productos para anular',
-            ], 422);
-        }
+        $validated = $validator->validated();
 
         try {
-            $resultado = DB::transaction(function () use ($venta, $user, $empresaId, $validated) {
-                $ventaBloqueada = Venta::where('id', $venta->id)
+            $venta = DB::transaction(function () use (
+                $id,
+                $empresaId,
+                $empresa,
+                $validated
+            ) {
+                $venta = Venta::query()
+                    ->withTrashed()
                     ->where('empresa_id', $empresaId)
-                    ->with(['detalles'])
+                    ->with([
+                        'detalles',
+                        'cliente',
+                        'usuario',
+                        'pagos',
+                    ])
                     ->lockForUpdate()
-                    ->first();
+                    ->find((int) $id);
 
-                if (! $ventaBloqueada) {
-                    throw new \DomainException('Venta no encontrada.');
+                if (! $venta) {
+                    throw new ModelNotFoundException();
                 }
 
-                if ($ventaBloqueada->estado === 'cancelado') {
-                    throw new \DomainException('La venta ya está cancelada.');
-                }
-
-                if ($ventaBloqueada->estado !== 'pagado') {
+                if ($venta->estado === 'cancelado') {
                     throw new \DomainException(
-                        'Solo se pueden anular ventas pagadas. Estado actual: ' . $ventaBloqueada->estado
+                        'La venta ya está cancelada.'
                     );
                 }
 
-                $productosRestaurados = [];
+                if ($venta->estado !== 'pagado') {
+                    throw new \DomainException(
+                        'Solo se pueden anular ventas pagadas.'
+                    );
+                }
 
-                foreach ($ventaBloqueada->detalles as $detalle) {
-                    $producto = Producto::where('id', $detalle->producto_id)
+                if ($venta->detalles->isEmpty()) {
+                    throw new \DomainException(
+                        'La venta no tiene detalles para devolver al inventario.'
+                    );
+                }
+
+                foreach ($venta->detalles as $detalle) {
+                    $producto = Producto::query()
                         ->where('empresa_id', $empresaId)
+                        ->whereKey($detalle->producto_id)
                         ->lockForUpdate()
                         ->first();
 
                     if (! $producto) {
                         throw new \DomainException(
-                            'No se encontró el producto asociado al detalle de la venta.'
+                            'No fue posible localizar un producto de la venta.'
                         );
                     }
 
-                    $producto->stock = (float) $producto->stock + (float) $detalle->cantidad;
-                    $producto->save();
+                    if ((bool) $producto->is_inventariable) {
+                        $producto->stock = round(
+                            (float) $producto->stock +
+                            (float) $detalle->cantidad,
+                            3
+                        );
 
-                    $productosRestaurados[] = [
-                        'producto' => $producto->nombre,
-                        'cantidad' => $detalle->cantidad,
-                        'nuevo_stock' => $producto->stock,
-                    ];
+                        $producto->save();
+                    }
                 }
 
-                $estadoAnterior = $ventaBloqueada->estado;
-                $totalAnterior = $ventaBloqueada->total;
+                $estadoAnterior = $venta->estado;
 
-                $ventaBloqueada->estado = 'cancelado';
-                $ventaBloqueada->motivo_cancelacion =
-                    $validated['motivo'] ?? 'Anulación manual';
-                $ventaBloqueada->save();
+                $venta->estado = 'cancelado';
+                $venta->motivo_cancelacion =
+                    $validated['motivo'] ?? null;
+
+                $venta->save();
+
+                if ($venta->mesa_id !== null) {
+                    if (! $empresa->usaMesas()) {
+                        throw new \DomainException(
+                            'La venta tiene mesa, pero el módulo de mesas está desactivado.'
+                        );
+                    }
+
+                    $mesa = Mesa::query()
+                        ->where('empresa_id', $empresaId)
+                        ->whereKey($venta->mesa_id)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($mesa) {
+                        $mesa->update([
+                            'estado' => 'libre',
+                        ]);
+                    }
+                }
 
                 return [
-                    'venta' => $ventaBloqueada,
+                    'venta' => $venta->fresh([
+                        'cliente',
+                        'usuario',
+                        'detalles.producto',
+                        'pagos',
+                        'mesa',
+                        'caja',
+                    ]),
                     'estado_anterior' => $estadoAnterior,
-                    'total_anterior' => $totalAnterior,
-                    'productos_restaurados' => $productosRestaurados,
                 ];
             });
 
-            $venta = $resultado['venta'];
-
             $this->registrarLog(
-                $venta,
+                $venta['venta'],
                 $user,
                 'anular_venta',
                 [
-                    'estado_anterior' => $resultado['estado_anterior'],
-                    'total_anterior' => $resultado['total_anterior'],
+                    'estado_anterior' => $venta['estado_anterior'],
                     'motivo' => $validated['motivo'] ?? null,
-                    'productos_restaurados' => $resultado['productos_restaurados'],
                 ]
             );
 
-            $venta->load([
-                'cliente',
-                'usuario',
-                'detalles.producto',
-                'pagos',
-            ]);
-
             return response()->json([
                 'success' => true,
-                'message' => 'Venta anulada exitosamente',
-                'data' => [
-                    'venta' => $venta,
-                    'productos_restaurados' => $resultado['productos_restaurados'],
-                ],
+                'message' => 'Venta anulada correctamente.',
+                'data' => $venta['venta'],
             ]);
+        } catch (ModelNotFoundException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'anular_venta_no_encontrada',
+                'ventas',
+                (int) $id,
+                null,
+                null,
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Venta no encontrada.',
+            ], 404);
         } catch (\DomainException $e) {
-            Log::warning('Error de negocio al anular venta.', [
-                'venta_id' => $id,
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-            ]);
+            $this->registrarAuditoria(
+                $request,
+                'anular_venta_rechazada',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'motivo' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage(),
             ], 422);
         } catch (Throwable $e) {
-            Log::error('Error al anular venta.', [
-                'venta_id' => $id,
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-                'linea' => $e->getLine(),
-            ]);
+            Log::error(
+                'Error anulando venta.',
+                [
+                    'venta_id' => $id,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'anular_venta_error',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
@@ -627,7 +1314,7 @@ class VentaController extends Controller
     }
 
     /**
-     * Devolver una venta parcial o totalmente.
+     * Devolver productos de una venta.
      */
     public function devolver(Request $request, $id)
     {
@@ -641,8 +1328,9 @@ class VentaController extends Controller
         }
 
         $empresaId = (int) $user->empresa_id;
+        $empresa = $user->empresa;
 
-        if ($empresaId <= 0 || ! $user->empresa) {
+        if ($empresaId <= 0 || ! $empresa) {
             return response()->json([
                 'success' => false,
                 'message' => 'El usuario no tiene una empresa válida asociada.',
@@ -656,301 +1344,332 @@ class VentaController extends Controller
             ], 422);
         }
 
-        $validated = $request->validate([
-            'productos' => ['required', 'array', 'min:1', 'max:100'],
-            'productos.*.detalle_id' => ['required', 'integer', 'min:1'],
-            'productos.*.cantidad' => ['required', 'numeric', 'min:0.01'],
-            'motivo' => ['nullable', 'string', 'max:500'],
+        $validator = Validator::make($request->all(), [
+            'productos' => [
+                'required',
+                'array',
+                'min:1',
+                'max:500',
+            ],
+
+            'productos.*.detalle_id' => [
+                'required',
+                'integer',
+                'min:1',
+            ],
+
+            'productos.*.cantidad' => [
+                'required',
+                'numeric',
+                'min:0.01',
+            ],
+
+            'motivo' => [
+                'nullable',
+                'string',
+                'max:500',
+            ],
         ]);
 
-        $detalleIds = array_column($validated['productos'], 'detalle_id');
+        if ($validator->fails()) {
+            $this->registrarAuditoria(
+                $request,
+                'devolver_venta_validacion_rechazada',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'errores' => $this->erroresValidacion($validator),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
-        if (count($detalleIds) !== count(array_unique($detalleIds))) {
             return response()->json([
                 'success' => false,
-                'message' => 'No se puede repetir el mismo detalle de venta en una devolución.',
+                'message' => 'Los datos de devolución no son válidos.',
+                'errors' => $validator->errors(),
             ], 422);
         }
 
-        $venta = Venta::where('empresa_id', $empresaId)
-            ->withTrashed()
-            ->with([
-                'detalles',
-                'cliente',
-                'usuario',
-                'pagos',
-            ])
-            ->find((int) $id);
-
-        if (! $venta) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Venta no encontrada',
-            ], 404);
-        }
-
-        if ($venta->estado === 'cancelado') {
-            return response()->json([
-                'success' => false,
-                'message' => 'No se puede devolver una venta que ya está cancelada',
-            ], 422);
-        }
-
-        if ($venta->estado !== 'pagado') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Solo se pueden devolver ventas pagadas. Estado actual: ' . $venta->estado,
-            ], 422);
-        }
-
-        if ($venta->detalles->count() === 0) {
-            return response()->json([
-                'success' => false,
-                'message' => 'La venta no tiene productos para devolver',
-            ], 422);
-        }
+        $validated = $validator->validated();
 
         try {
             $resultado = DB::transaction(function () use (
-                $validated,
-                $venta,
-                $empresaId
+                $id,
+                $empresaId,
+                $empresa,
+                $validated
             ) {
-                $ventaBloqueada = Venta::where('id', $venta->id)
+                $venta = Venta::query()
+                    ->withTrashed()
                     ->where('empresa_id', $empresaId)
-                    ->with(['detalles'])
+                    ->with([
+                        'detalles',
+                        'cliente',
+                        'usuario',
+                        'pagos',
+                    ])
                     ->lockForUpdate()
-                    ->first();
+                    ->find((int) $id);
 
-                if (! $ventaBloqueada) {
-                    throw new \DomainException('Venta no encontrada.');
+                if (! $venta) {
+                    throw new ModelNotFoundException();
                 }
 
-                if ($ventaBloqueada->estado === 'cancelado') {
+                if ($venta->estado === 'cancelado') {
                     throw new \DomainException(
-                        'No se puede devolver una venta que ya está cancelada.'
+                        'La venta ya está cancelada.'
                     );
                 }
 
-                if ($ventaBloqueada->estado !== 'pagado') {
+                if ($venta->estado !== 'pagado') {
                     throw new \DomainException(
-                        'Solo se pueden devolver ventas pagadas.'
+                        'Solo se pueden devolver productos de ventas pagadas.'
                     );
                 }
 
-                $totalDevolucion = 0.0;
-                $detallesDevueltos = [];
+                if ($venta->detalles->isEmpty()) {
+                    throw new \DomainException(
+                        'La venta no tiene detalles.'
+                    );
+                }
+
+                $detalleIds = collect($validated['productos'])
+                    ->pluck('detalle_id')
+                    ->map(static fn ($id) => (int) $id);
+
+                if ($detalleIds->duplicates()->isNotEmpty()) {
+                    throw new \DomainException(
+                        'No puede repetirse un detalle en la misma devolución.'
+                    );
+                }
+
+                $totalDevuelto = 0.0;
 
                 foreach ($validated['productos'] as $item) {
-                    $detalle = DetalleVenta::where('id', $item['detalle_id'])
-                        ->where('venta_id', $ventaBloqueada->id)
+                    $detalleId = (int) $item['detalle_id'];
+                    $cantidadDevuelta = (float) $item['cantidad'];
+
+                    $detalle = DetalleVenta::query()
+                        ->where('venta_id', $venta->id)
+                        ->whereKey($detalleId)
                         ->lockForUpdate()
                         ->first();
 
                     if (! $detalle) {
                         throw new \DomainException(
-                            'Detalle de venta no encontrado.'
-                        );
-                    }
-
-                    if (method_exists($detalle, 'trashed') && $detalle->trashed()) {
-                        throw new \DomainException(
-                            'Este producto ya fue devuelto anteriormente.'
+                            'Uno de los detalles indicados no pertenece a la venta.'
                         );
                     }
 
                     $cantidadActual = (float) $detalle->cantidad;
-                    $cantidadDevolver = (float) $item['cantidad'];
 
-                    if ($cantidadDevolver > $cantidadActual) {
+                    if ($cantidadDevuelta > $cantidadActual) {
                         throw new \DomainException(
-                            "Cantidad a devolver ({$cantidadDevolver}) excede la cantidad vendida ({$cantidadActual})."
+                            "La cantidad a devolver del detalle {$detalleId} supera la cantidad vendida."
                         );
                     }
 
-                    $producto = Producto::where('id', $detalle->producto_id)
+                    $subtotalActual = (float) $detalle->subtotal;
+
+                    $importeDevuelto = round(
+                        $subtotalActual *
+                        ($cantidadDevuelta / $cantidadActual),
+                        2
+                    );
+
+                    $producto = Producto::query()
                         ->where('empresa_id', $empresaId)
+                        ->whereKey($detalle->producto_id)
                         ->lockForUpdate()
                         ->first();
 
                     if (! $producto) {
                         throw new \DomainException(
-                            'No se encontró el producto asociado al detalle.'
+                            'No fue posible localizar el producto de la devolución.'
                         );
                     }
 
-                    $descuentoTotalAnterior = (float) $detalle->descuento;
+                    if ((bool) $producto->is_inventariable) {
+                        $producto->stock = round(
+                            (float) $producto->stock +
+                            $cantidadDevuelta,
+                            3
+                        );
 
-                    $descuentoPorUnidad = $cantidadActual > 0
-                        ? $descuentoTotalAnterior / $cantidadActual
-                        : 0;
-
-                    $montoDevolucion = round(
-                        (
-                            (float) $detalle->precio_unitario -
-                            $descuentoPorUnidad
-                        ) * $cantidadDevolver,
-                        2
-                    );
-
-                    if ($montoDevolucion < 0) {
-                        $montoDevolucion = 0;
+                        $producto->save();
                     }
 
-                    $producto->stock = (float) $producto->stock + $cantidadDevolver;
-                    $producto->save();
+                    $totalDevuelto += $importeDevuelto;
 
-                    $totalDevolucion += $montoDevolucion;
-
-                    $detallesDevueltos[] = [
-                        'detalle_id' => $detalle->id,
-                        'producto' => $producto->nombre,
-                        'producto_id' => $producto->id,
-                        'cantidad' => $cantidadDevolver,
-                        'monto' => round($montoDevolucion, 2),
-                    ];
-
-                    if (abs($cantidadDevolver - $cantidadActual) < 0.000001) {
+                    if (
+                        abs($cantidadDevuelta - $cantidadActual) <= 0.000001
+                    ) {
                         $detalle->delete();
                     } else {
-                        $cantidadRestante = $cantidadActual - $cantidadDevolver;
+                        $nuevaCantidad = round(
+                            $cantidadActual - $cantidadDevuelta,
+                            3
+                        );
 
-                        $descuentoRestante = round(
-                            $descuentoTotalAnterior -
-                                ($descuentoPorUnidad * $cantidadDevolver),
+                        $nuevoSubtotal = round(
+                            $subtotalActual - $importeDevuelto,
                             2
                         );
 
-                        $subtotalRestante = round(
-                            (
-                                (float) $detalle->precio_unitario *
-                                $cantidadRestante
-                            ) - $descuentoRestante,
-                            2
-                        );
-
-                        $detalle->cantidad = $cantidadRestante;
-                        $detalle->descuento = max(0, $descuentoRestante);
-                        $detalle->subtotal = max(0, $subtotalRestante);
+                        $detalle->cantidad = $nuevaCantidad;
+                        $detalle->subtotal = $nuevoSubtotal;
                         $detalle->save();
                     }
                 }
 
-                $totalDevolucion = round($totalDevolucion, 2);
-
                 $nuevoTotal = round(
-                    max(0, (float) $ventaBloqueada->total - $totalDevolucion),
+                    max(
+                        0,
+                        (float) $venta->total -
+                        $totalDevuelto
+                    ),
                     2
                 );
 
-                $ventaBloqueada->total = $nuevoTotal;
+                $notaAnterior = trim(
+                    (string) ($venta->notas ?? '')
+                );
+
+                $notaDevolucion =
+                    'Devolución: ' .
+                    ($validated['motivo'] ?? 'Sin motivo especificado.');
+
+                $venta->notas = trim(
+                    $notaAnterior !== ''
+                        ? $notaAnterior . "\n" . $notaDevolucion
+                        : $notaDevolucion
+                );
+
+                $venta->total = $nuevoTotal;
 
                 if ($nuevoTotal <= 0.009) {
-                    $ventaBloqueada->estado = 'cancelado';
-                    $ventaBloqueada->motivo_cancelacion = 'Devolución total';
-                    $ventaBloqueada->total = 0;
+                    $venta->estado = 'cancelado';
+
+                    $venta->motivo_cancelacion =
+                        $validated['motivo'] ??
+                        'Venta devuelta completamente.';
+
+                    if ($venta->mesa_id !== null) {
+                        if (! $empresa->usaMesas()) {
+                            throw new \DomainException(
+                                'La venta tiene mesa, pero el módulo de mesas está desactivado.'
+                            );
+                        }
+
+                        $mesa = Mesa::query()
+                            ->where('empresa_id', $empresaId)
+                            ->whereKey($venta->mesa_id)
+                            ->lockForUpdate()
+                            ->first();
+
+                        if ($mesa) {
+                            $mesa->update([
+                                'estado' => 'libre',
+                            ]);
+                        }
+                    }
                 }
 
-                $notaDevolucion = "═ DEVOLUCIÓN ═\n";
-                $notaDevolucion .= 'Fecha: ' . now()->format('d/m/Y H:i:s') . "\n";
-                $notaDevolucion .= 'Motivo: ' . ($validated['motivo'] ?? 'Sin motivo') . "\n";
-                $notaDevolucion .= 'Total devuelto: $' . number_format($totalDevolucion, 2) . "\n";
-                $notaDevolucion .= "Productos devueltos:\n";
+                $venta->save();
 
-                foreach ($detallesDevueltos as $dev) {
-                    $notaDevolucion .= sprintf(
-                        "  • %s: %s ($%s)\n",
-                        $dev['producto'],
-                        $dev['cantidad'],
-                        number_format($dev['monto'], 2)
-                    );
-                }
-
-                $notaDevolucion .= '═ FIN DEVOLUCIÓN ═';
-
-                if ($ventaBloqueada->notas) {
-                    $ventaBloqueada->notas .= "\n\n" . $notaDevolucion;
-                } else {
-                    $ventaBloqueada->notas = $notaDevolucion;
-                }
-
-                $ventaBloqueada->save();
-
-                return [
-                    'venta' => $ventaBloqueada,
-                    'total_devolucion' => $totalDevolucion,
-                    'nuevo_total' => $nuevoTotal,
-                    'productos' => $detallesDevueltos,
-                ];
+                return $venta->fresh([
+                    'cliente',
+                    'usuario',
+                    'detalles.producto',
+                    'pagos',
+                    'mesa',
+                    'caja',
+                ]);
             });
 
-            $venta = $resultado['venta'];
-
             $this->registrarLog(
-                $venta,
+                $resultado,
                 $user,
                 'devolver_venta',
                 [
-                    'total_devolucion' => $resultado['total_devolucion'],
-                    'nuevo_total' => $resultado['nuevo_total'],
-                    'productos' => $resultado['productos'],
                     'motivo' => $validated['motivo'] ?? null,
                 ]
             );
 
-            $venta->load([
-                'cliente',
-                'usuario',
-                'detalles.producto',
-                'pagos',
-            ]);
-
             return response()->json([
                 'success' => true,
-                'message' => 'Devolución realizada exitosamente',
-                'data' => [
-                    'venta' => $venta,
-                    'total_devolucion' => number_format(
-                        $resultado['total_devolucion'],
-                        2
-                    ),
-                    'nuevo_total' => number_format(
-                        $resultado['nuevo_total'],
-                        2
-                    ),
-                    'productos_devueltos' => $resultado['productos'],
-                ],
+                'message' => 'Devolución registrada correctamente.',
+                'data' => $resultado,
             ]);
+        } catch (ModelNotFoundException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'devolver_venta_no_encontrada',
+                'ventas',
+                (int) $id,
+                null,
+                null,
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Venta no encontrada.',
+            ], 404);
         } catch (\DomainException $e) {
-            Log::warning('Error de negocio al devolver venta.', [
-                'venta_id' => $id,
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-            ]);
+            $this->registrarAuditoria(
+                $request,
+                'devolver_venta_rechazada',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'motivo' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage(),
             ], 422);
         } catch (Throwable $e) {
-            Log::error('Error al devolver venta.', [
-                'venta_id' => $id,
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-                'linea' => $e->getLine(),
-            ]);
+            Log::error(
+                'Error devolviendo venta.',
+                [
+                    'venta_id' => $id,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'devolver_venta_error',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
-                'message' => 'No fue posible procesar la devolución.',
+                'message' => 'No fue posible registrar la devolución.',
             ], 500);
         }
     }
 
     /**
-     * Ventas pendientes de sincronización.
+     * Obtener ventas pendientes.
      */
     public function pendientes(Request $request)
     {
@@ -964,56 +1683,138 @@ class VentaController extends Controller
         }
 
         $empresaId = (int) $user->empresa_id;
+        $empresa = $user->empresa;
 
-        if ($empresaId <= 0 || ! $user->empresa) {
+        if ($empresaId <= 0 || ! $empresa) {
             return response()->json([
                 'success' => false,
                 'message' => 'El usuario no tiene una empresa válida asociada.',
             ], 403);
         }
 
-        $validated = $request->validate([
-            'para_cobro' => ['nullable', 'boolean'],
-            'mesa_id' => ['nullable', 'integer', 'min:1'],
+        $validator = Validator::make($request->all(), [
+            'para_cobro' => [
+                'nullable',
+                'boolean',
+            ],
+            'mesa_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
         ]);
 
-        $query = Venta::where('empresa_id', $empresaId);
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Los filtros no son válidos.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
 
-        if ($request->boolean('para_cobro')) {
-            $query->where('estado', 'pendiente');
+        $validated = $validator->validated();
+
+        try {
+            $paraCobro = (bool) (
+                $validated['para_cobro'] ?? false
+            );
+
+            $query = Venta::query()
+                ->where('empresa_id', $empresaId)
+                ->with([
+                    'cliente',
+                    'detalles.producto',
+                    'pagos',
+                    'mesa',
+                    'caja',
+                ])
+                ->orderByDesc('fecha')
+                ->orderByDesc('id');
+
+            if ($paraCobro) {
+                $query->where('estado', 'pendiente');
+            } else {
+                $query->where('sincronizado', false);
+            }
 
             if (! empty($validated['mesa_id'])) {
-                $mesaExiste = Mesa::where('id', $validated['mesa_id'])
+                if (! $empresa->usaMesas()) {
+                    throw new \DomainException(
+                        'Las mesas no están activas para esta empresa.'
+                    );
+                }
+
+                $mesaExiste = Mesa::query()
                     ->where('empresa_id', $empresaId)
+                    ->whereKey((int) $validated['mesa_id'])
                     ->exists();
 
                 if (! $mesaExiste) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'La mesa no pertenece a la empresa.',
-                    ], 422);
+                    throw new \DomainException(
+                        'La mesa no pertenece a la empresa.'
+                    );
                 }
 
-                $query->where('mesa_id', $validated['mesa_id']);
+                $query->where(
+                    'mesa_id',
+                    (int) $validated['mesa_id']
+                );
             }
-        } else {
-            $query->where('sincronizado', false);
+
+            $ventas = $query->get();
+
+            $this->registrarAuditoria(
+                $request,
+                'consultar_ventas_pendientes',
+                'ventas',
+                null,
+                null,
+                [
+                    'para_cobro' => $paraCobro,
+                    'mesa_id' => $validated['mesa_id'] ?? null,
+                    'total' => $ventas->count(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => $ventas,
+            ]);
+        } catch (\DomainException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'consultar_ventas_pendientes_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'motivo' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (Throwable $e) {
+            Log::error(
+                'Error obteniendo ventas pendientes.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No fue posible obtener las ventas pendientes.',
+            ], 500);
         }
-
-        $ventas = $query
-            ->with([
-                'cliente',
-                'detalles.producto',
-                'pagos',
-            ])
-            ->orderBy('created_at', 'asc')
-            ->get();
-
-        return response()->json([
-            'success' => true,
-            'data' => $ventas,
-            'total' => $ventas->count(),
-        ]);
     }
 
     /**
@@ -1039,94 +1840,136 @@ class VentaController extends Controller
             ], 403);
         }
 
-        $validated = $request->validate([
-            'fecha_desde' => ['nullable', 'date'],
-            'fecha_hasta' => ['nullable', 'date'],
+        $validator = Validator::make($request->all(), [
+            'fecha_inicio' => [
+                'nullable',
+                'date',
+            ],
+            'fecha_fin' => [
+                'nullable',
+                'date',
+            ],
         ]);
 
-        if (
-            ! empty($validated['fecha_desde']) &&
-            ! empty($validated['fecha_hasta']) &&
-            $validated['fecha_desde'] > $validated['fecha_hasta']
-        ) {
+        if ($validator->fails()) {
             return response()->json([
                 'success' => false,
-                'message' => 'La fecha inicial no puede ser mayor que la fecha final.',
+                'message' => 'Las fechas no son válidas.',
+                'errors' => $validator->errors(),
             ], 422);
         }
 
+        $validated = $validator->validated();
+
         try {
-            $query = Venta::where('empresa_id', $empresaId)
-                ->with([
-                    'cliente',
-                    'usuario',
-                ]);
-
-            if (! empty($validated['fecha_desde'])) {
-                $query->whereDate(
-                    'fecha',
-                    '>=',
-                    $validated['fecha_desde']
+            if (
+                ! empty($validated['fecha_inicio']) &&
+                ! empty($validated['fecha_fin']) &&
+                $validated['fecha_inicio'] > $validated['fecha_fin']
+            ) {
+                throw new \DomainException(
+                    'La fecha inicial no puede ser mayor que la fecha final.'
                 );
             }
 
-            if (! empty($validated['fecha_hasta'])) {
-                $query->whereDate(
-                    'fecha',
-                    '<=',
-                    $validated['fecha_hasta']
+            $filename =
+                'ventas_' .
+                $empresaId .
+                '_' .
+                now()->format('Ymd_His') .
+                '.csv';
+
+            $relativePath =
+                'exports/' . $filename;
+
+            Storage::disk('public')->makeDirectory('exports');
+
+            $absolutePath =
+                Storage::disk('public')->path(
+                    $relativePath
                 );
-            }
 
-            $ventas = $query
-                ->orderBy('fecha', 'desc')
-                ->get();
+            $handle = fopen($absolutePath, 'wb');
 
-            $filename = 'ventas_' . now()->format('Y-m-d_H-i-s') . '.csv';
-
-            if (! Storage::disk('public')->exists('exports')) {
-                Storage::disk('public')->makeDirectory('exports');
-            }
-
-            $path = Storage::disk('public')->path('exports/' . $filename);
-
-            $file = fopen($path, 'w');
-
-            if ($file === false) {
+            if ($handle === false) {
                 throw new \RuntimeException(
                     'No fue posible crear el archivo de exportación.'
                 );
             }
 
-            fputcsv($file, [
-                'Folio',
-                'Fecha',
-                'Cliente',
-                'Vendedor',
-                'Subtotal',
-                'Descuento',
-                'Impuesto',
-                'Total',
-                'Estado',
-            ]);
+            try {
+                fputcsv(
+                    $handle,
+                    [
+                        'ID',
+                        'Folio',
+                        'Fecha',
+                        'Cliente',
+                        'Usuario',
+                        'Subtotal',
+                        'Descuento',
+                        'Impuesto',
+                        'Total',
+                        'Estado',
+                    ]
+                );
 
-            foreach ($ventas as $venta) {
-                fputcsv($file, [
-                    $venta->folio,
-                    $venta->fecha
-                        ? $venta->fecha->format('Y-m-d H:i:s')
-                        : '',
-                    $venta->cliente?->nombre ?? 'Cliente genérico',
-                    $venta->usuario?->name ?? '',
-                    $venta->subtotal,
-                    $venta->descuento,
-                    $venta->impuesto,
-                    $venta->total,
-                    $venta->estado,
-                ]);
+                $query = Venta::query()
+                    ->where('empresa_id', $empresaId)
+                    ->with([
+                        'cliente:id,nombre',
+                        'usuario:id,nombre',
+                    ])
+                    ->orderBy('id');
+
+                $this->aplicarRangoFecha(
+                    $query,
+                    'fecha',
+                    $validated['fecha_inicio'] ?? null,
+                    $validated['fecha_fin'] ?? null
+                );
+
+                $query->chunkById(
+                    500,
+                    function ($ventas) use ($handle) {
+                        foreach ($ventas as $venta) {
+                            fputcsv(
+                                $handle,
+                                [
+                                    $this->valorCsvSeguro($venta->id),
+                                    $this->valorCsvSeguro($venta->folio),
+                                    $this->valorCsvSeguro($venta->fecha),
+                                    $this->valorCsvSeguro(
+                                        $venta->cliente?->nombre
+                                    ),
+                                    $this->valorCsvSeguro(
+                                        $venta->usuario?->nombre
+                                    ),
+                                    $this->valorCsvSeguro(
+                                        $venta->subtotal
+                                    ),
+                                    $this->valorCsvSeguro(
+                                        $venta->descuento
+                                    ),
+                                    $this->valorCsvSeguro(
+                                        $venta->impuesto
+                                    ),
+                                    $this->valorCsvSeguro(
+                                        $venta->total
+                                    ),
+                                    $this->valorCsvSeguro(
+                                        $venta->estado
+                                    ),
+                                ]
+                            );
+                        }
+                    }
+                );
+            } finally {
+                fclose($handle);
             }
 
-            fclose($file);
+            $url = Storage::url($relativePath);
 
             $this->registrarAuditoria(
                 $request,
@@ -1135,30 +1978,51 @@ class VentaController extends Controller
                 null,
                 null,
                 [
-                    'cantidad_registros' => $ventas->count(),
-                    'fecha_desde' => $validated['fecha_desde'] ?? null,
-                    'fecha_hasta' => $validated['fecha_hasta'] ?? null,
-                    'formato' => 'csv',
+                    'archivo' => $filename,
+                    'fecha_inicio' =>
+                        $validated['fecha_inicio'] ?? null,
+                    'fecha_fin' =>
+                        $validated['fecha_fin'] ?? null,
                 ],
                 $empresaId,
-                $user->id
+                (int) $user->id
             );
 
             return response()->json([
                 'success' => true,
-                'message' => 'Exportación completada',
+                'message' => 'Ventas exportadas correctamente.',
                 'data' => [
-                    'url' => asset('storage/exports/' . $filename),
-                    'filename' => $filename,
+                    'url' => $url,
+                    'archivo' => $filename,
                 ],
             ]);
+        } catch (\DomainException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
         } catch (Throwable $e) {
-            Log::error('Error al exportar ventas.', [
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-                'linea' => $e->getLine(),
-            ]);
+            Log::error(
+                'Error exportando ventas.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'exportar_ventas_error',
+                'ventas',
+                null,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
@@ -1166,196 +2030,341 @@ class VentaController extends Controller
             ], 500);
         }
     }
+/**
+ * Generar ticket de venta en PDF.
+ */
+public function ticket($id, Request $request)
+{
+    $user = $request->user();
 
-    /**
-     * Generar ticket PDF.
-     */
-    public function ticket($id, Request $request)
-    {
-        $user = $request->user();
+    if (! $user) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Usuario no autenticado.',
+        ], 401);
+    }
 
-        if (! $user) {
+    $empresaId = (int) $user->empresa_id;
+    $empresa = $user->empresa;
+
+    if ($empresaId <= 0 || ! $empresa) {
+        return response()->json([
+            'success' => false,
+            'message' => 'El usuario no tiene una empresa válida asociada.',
+        ], 403);
+    }
+
+    if (! is_numeric($id) || (int) $id <= 0) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Identificador de venta inválido.',
+        ], 422);
+    }
+
+    try {
+        $venta = Venta::query()
+            ->where('empresa_id', $empresaId)
+            ->with([
+                'cliente',
+                'usuario',
+                'detalles.producto',
+                'pagos',
+            ])
+            ->find((int) $id);
+
+        if (! $venta) {
             return response()->json([
                 'success' => false,
-                'message' => 'No autenticado',
-            ], 401);
+                'message' => 'Venta no encontrada.',
+            ], 404);
         }
 
-        $empresaId = (int) $user->empresa_id;
+        /*
+         * ------------------------------------------------------------
+         * LOGO
+         * ------------------------------------------------------------
+         */
+        $logoPath = null;
 
-        if ($empresaId <= 0 || ! $user->empresa) {
-            return response()->json([
-                'success' => false,
-                'message' => 'El usuario no tiene una empresa válida asociada.',
-            ], 403);
-        }
-
-        if (! is_numeric($id) || (int) $id <= 0) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Identificador de venta inválido.',
-            ], 422);
-        }
-
-        try {
-            $venta = Venta::where('empresa_id', $empresaId)
-                ->with([
-                    'cliente',
-                    'usuario',
-                    'detalles.producto',
-                    'pagos',
-                ])
-                ->find((int) $id);
-
-            if (! $venta) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Venta no encontrada',
-                ], 404);
-            }
-
-            $empresa = $user->empresa;
-
-            $logoPath = null;
-
-            if ($empresa->logo) {
-                $paths = [
-                    public_path($empresa->logo),
-                    public_path('img/' . basename($empresa->logo)),
-                    storage_path('app/public/' . $empresa->logo),
-                    public_path('storage/' . $empresa->logo),
-                ];
-
-                foreach ($paths as $path) {
-                    if (file_exists($path)) {
-                        $logoPath = $path;
-                        break;
-                    }
-                }
-            }
-
-            $config = ConfiguracionTicket::where('empresa_id', $empresaId)
-                ->where('activo', true)
-                ->first();
-
-            if (! $config) {
-                $config = new ConfiguracionTicket([
-                    'papel' => '58mm',
-                    'fuente' => 'Arial',
-                    'tamano_fuente' => 10,
-                    'alineacion' => 'izquierda',
-                    'mostrar_logo' => true,
-                    'mostrar_qr' => true,
-                    'qr_contenido' => $venta->uuid,
-                    'cabecera' => '¡Gracias por su compra!',
-                    'pie_pagina' => '',
-                    'campos' => [],
-                ]);
-            }
-
-            $papel = $config->papel ?: '58mm';
-
-            $anchoPapel = $papel === '80mm'
-                ? 226.77
-                : 164.41;
-
-            $altoPapel = 1000;
-
-            $campos = $config->campos;
-
-            if (is_string($campos)) {
-                $camposDecodificados = json_decode($campos, true);
-
-                $campos = is_array($camposDecodificados)
-                    ? $camposDecodificados
-                    : [];
-            }
-
-            if (! is_array($campos)) {
-                $campos = [];
-            }
-
-            $camposVisibles = [];
-
-            foreach ($campos as $campo) {
-                if (is_array($campo) && isset($campo['nombre'])) {
-                    $camposVisibles[$campo['nombre']] =
-                        $campo['visible'] ?? true;
-                }
-            }
-
-            $data = [
-                'venta' => $venta,
-                'empresa' => $empresa,
-                'config' => $config,
-                'camposVisibles' => $camposVisibles,
-                'fecha' => now()->format('d/m/Y H:i:s'),
-                'papel' => $papel,
-                'anchoPapel' => $anchoPapel,
-                'logoPath' => $logoPath,
+        if (! empty($empresa->logo)) {
+            $posiblesRutas = [
+                public_path($empresa->logo),
+                public_path('img/' . basename($empresa->logo)),
+                storage_path('app/public/' . $empresa->logo),
+                public_path('storage/' . $empresa->logo),
             ];
 
-            if (! view()->exists('tickets.venta')) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Vista tickets.venta no encontrada',
-                ], 500);
+            foreach ($posiblesRutas as $ruta) {
+                if (is_file($ruta)) {
+                    $logoPath = $ruta;
+                    break;
+                }
             }
+        }
 
-            $pdf = Pdf::loadView(
-                'tickets.venta',
-                $data
-            );
+        /*
+         * ------------------------------------------------------------
+         * CONFIGURACIÓN REAL DEL TICKET
+         * ------------------------------------------------------------
+         *
+         * ConfiguracionTicket es un MODELO Eloquent.
+         * Por lo tanto $config debe permanecer como objeto.
+         *
+         * Campos reales según el modelo:
+         *
+         * papel
+         * fuente
+         * tamano_fuente
+         * alineacion
+         * mostrar_logo
+         * mostrar_qr
+         * qr_contenido
+         * campos
+         * cabecera
+         * pie_pagina
+         * activo
+         */
+        $config = ConfiguracionTicket::query()
+            ->where('empresa_id', $empresaId)
+            ->first();
 
-            $pdf->setPaper(
-                [0, 0, $anchoPapel, $altoPapel],
-                'portrait'
-            );
+        /*
+         * TicketConfigController garantiza que normalmente exista.
+         * Si por alguna razón todavía no existe, creamos el modelo
+         * solamente en memoria. No se guarda en la base de datos.
+         */
+        if (! $config) {
+            $config = new ConfiguracionTicket();
 
-            $pdf->setOptions([
-                'defaultFont' => 'Courier',
-                'isHtml5ParserEnabled' => true,
-                'isRemoteEnabled' => true,
-            ]);
-
-            $filename = 'ticket_' . $venta->folio . '.pdf';
-
-            $this->registrarAuditoria(
-                $request,
-                'generar_ticket',
-                'ventas',
-                $venta->id,
-                null,
+            $config->empresa_id = $empresaId;
+            $config->papel = '58mm';
+            $config->fuente = 'Arial';
+            $config->tamano_fuente = 12;
+            $config->alineacion = 'izquierda';
+            $config->mostrar_logo = true;
+            $config->mostrar_qr = true;
+            $config->qr_contenido = $venta->uuid;
+            $config->campos = [
                 [
-                    'folio' => $venta->folio,
-                    'papel' => $papel,
-                    'formato' => 'pdf',
-                    'descarga' => $request->boolean('download'),
+                    'nombre' => 'nombre_negocio',
+                    'visible' => true,
+                    'orden' => 1,
                 ],
-                $empresaId,
-                $user->id
-            );
+                [
+                    'nombre' => 'direccion',
+                    'visible' => true,
+                    'orden' => 2,
+                ],
+                [
+                    'nombre' => 'telefono',
+                    'visible' => true,
+                    'orden' => 3,
+                ],
+                [
+                    'nombre' => 'fecha',
+                    'visible' => true,
+                    'orden' => 4,
+                ],
+                [
+                    'nombre' => 'productos',
+                    'visible' => true,
+                    'orden' => 5,
+                ],
+                [
+                    'nombre' => 'total',
+                    'visible' => true,
+                    'orden' => 6,
+                ],
+            ];
+            $config->cabecera = '¡Gracias por su compra!';
+            $config->pie_pagina = 'Visítenos en www.miempresa.com';
+            $config->activo = true;
+        }
 
-            if ($request->boolean('download')) {
-                return $pdf->download($filename);
+        /*
+         * Si no tiene contenido QR, usar el UUID de la venta.
+         */
+        if (empty($config->qr_contenido)) {
+            $config->qr_contenido = $venta->uuid;
+        }
+
+        /*
+         * ------------------------------------------------------------
+         * ANCHO DEL PAPEL
+         * ------------------------------------------------------------
+         *
+         * El campo REAL de ConfiguracionTicket es "papel".
+         */
+        $anchoPapel = $config->papel === '80mm'
+            ? 226.77
+            : 164.41;
+
+        /*
+         * ------------------------------------------------------------
+         * CAMPOS VISIBLES
+         * ------------------------------------------------------------
+         *
+         * ConfiguracionTicket tiene cast:
+         *
+         * 'campos' => 'array'
+         *
+         * Por lo tanto aquí recibimos un array.
+         *
+         * El formato que TicketConfigController guarda es:
+         *
+         * [
+         *     [
+         *         'nombre' => 'nombre_negocio',
+         *         'visible' => true,
+         *         'orden' => 1,
+         *     ],
+         *     ...
+         * ]
+         *
+         * La vista, en cambio, consulta:
+         *
+         * $camposVisibles['nombre_negocio']
+         * $camposVisibles['direccion']
+         * etc.
+         *
+         * Por eso hacemos la conversión aquí.
+         */
+        $campos = $config->campos;
+
+        if (! is_array($campos)) {
+            $campos = [];
+        }
+
+        $camposVisibles = [];
+
+        foreach ($campos as $campo) {
+            if (! is_array($campo)) {
+                continue;
             }
 
-            return $pdf->stream($filename);
-        } catch (Throwable $e) {
-            Log::error('Error generando ticket.', [
+            $nombre = $campo['nombre'] ?? null;
+
+            if (
+                $nombre !== null &&
+                ($campo['visible'] ?? true)
+            ) {
+                $camposVisibles[$nombre] = true;
+            }
+        }
+
+        /*
+         * Si la configuración no contiene campos, mantener el
+         * comportamiento que espera la vista.
+         */
+        if (empty($camposVisibles)) {
+            $camposVisibles = [
+                'nombre_negocio' => true,
+                'direccion' => true,
+                'telefono' => true,
+                'fecha' => true,
+                'productos' => true,
+                'total' => true,
+            ];
+        }
+
+        /*
+         * ------------------------------------------------------------
+         * DATOS PARA tickets.venta
+         * ------------------------------------------------------------
+         */
+        $data = [
+            'venta' => $venta,
+            'empresa' => $empresa,
+            'config' => $config,
+            'camposVisibles' => $camposVisibles,
+            'fecha' => optional($venta->fecha)->format('d/m/Y H:i'),
+            'anchoPapel' => $anchoPapel,
+            'logoPath' => $logoPath,
+        ];
+
+        /*
+         * ------------------------------------------------------------
+         * VALIDAR VISTA
+         * ------------------------------------------------------------
+         */
+        if (! view()->exists('tickets.venta')) {
+            throw new \RuntimeException(
+                'La vista tickets.venta no existe.'
+            );
+        }
+
+        /*
+         * ------------------------------------------------------------
+         * GENERAR PDF
+         * ------------------------------------------------------------
+         */
+        $pdf = Pdf::loadView('tickets.venta', $data);
+
+        $pdf->setPaper(
+            [0, 0, $anchoPapel, 1000],
+            'portrait'
+        );
+
+        $pdf->setOptions([
+            'defaultFont' => 'Courier',
+            'isHtml5ParserEnabled' => true,
+            'isRemoteEnabled' => true,
+        ]);
+
+        $filename = 'ticket_' . $venta->folio . '.pdf';
+
+        /*
+         * ------------------------------------------------------------
+         * AUDITORÍA
+         * ------------------------------------------------------------
+         */
+        $this->registrarAuditoria(
+            $request,
+            'generar_ticket',
+            'ventas',
+            $venta->id,
+            null,
+            [
+                'folio' => $venta->folio,
+                'download' => (bool) $request->boolean('download'),
+            ],
+            $empresaId,
+            (int) $user->id
+        );
+
+        /*
+         * ------------------------------------------------------------
+         * RESPUESTA
+         * ------------------------------------------------------------
+         */
+        if ($request->boolean('download')) {
+            return $pdf->download($filename);
+        }
+
+        return $pdf->stream($filename);
+
+    } catch (Throwable $e) {
+        Log::error(
+            'Error generando ticket de venta.',
+            [
                 'venta_id' => $id,
                 'empresa_id' => $empresaId,
                 'usuario_id' => $user->id,
                 'error' => $e->getMessage(),
                 'linea' => $e->getLine(),
-            ]);
+                'archivo' => $e->getFile(),
+            ]
+        );
 
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al generar el ticket.',
-            ], 500);
-        }
+        return response()->json([
+            'success' => false,
+            'message' => 'No fue posible generar el ticket.',
+            'error' => $e->getMessage(),
+            'line' => $e->getLine(),
+            'file' => $e->getFile(),
+        ], 500);
     }
+}
 
     /**
      * Estadísticas del día.
@@ -1380,50 +2389,76 @@ class VentaController extends Controller
             ], 403);
         }
 
-        $hoy = now()->toDateString();
+        try {
+            $inicio = now()->startOfDay();
+            $fin = now()->endOfDay();
 
-        $ventasHoy = Venta::where('empresa_id', $empresaId)
-            ->whereDate('fecha', $hoy)
-            ->where('estado', 'pagado')
-            ->get();
+            /*
+             * No cargamos todas las ventas completas.
+             * Solamente obtenemos los datos necesarios para estadísticas.
+             */
+            $ventasQuery = Venta::query()
+                ->where('empresa_id', $empresaId)
+                ->whereBetween('fecha', [$inicio, $fin])
+                ->where('estado', 'pagado');
 
-        $totalVentas = $ventasHoy->count();
-        $totalMonto = (float) $ventasHoy->sum('total');
+            $totalVentas = (clone $ventasQuery)->count();
 
-        $ventaIds = $ventasHoy->pluck('id');
+            $totalMonto = (float) (
+                (clone $ventasQuery)->sum('total')
+            );
 
-        $productoMasVendido = null;
+            $ventaIdsQuery = (clone $ventasQuery)->select('id');
 
-        if ($ventaIds->isNotEmpty()) {
-            $productoMasVendido = DetalleVenta::whereIn(
-                'venta_id',
-                $ventaIds
-            )
+            $productoMasVendido = DetalleVenta::query()
+                ->whereIn(
+                    'venta_id',
+                    $ventaIdsQuery
+                )
                 ->select(
                     'producto_id',
                     DB::raw('SUM(cantidad) as total')
                 )
                 ->groupBy('producto_id')
                 ->with('producto')
-                ->orderBy('total', 'desc')
+                ->orderByDesc('total')
                 ->first();
-        }
 
-        $ventasPorHora = $ventasHoy
-            ->groupBy(function ($venta) {
-                return $venta->fecha->format('H:00');
-            })
-            ->map(function ($group) {
-                return [
-                    'cantidad' => $group->count(),
-                    'monto' => $group->sum('total'),
-                ];
-            });
+            $ventasPorHora = Venta::query()
+                ->where('empresa_id', $empresaId)
+                ->whereBetween('fecha', [$inicio, $fin])
+                ->where('estado', 'pagado')
+                ->select(
+                    DB::raw("HOUR(fecha) as hora"),
+                    DB::raw('COUNT(*) as cantidad'),
+                    DB::raw('SUM(total) as monto')
+                )
+                ->groupBy(DB::raw('HOUR(fecha)'))
+                ->orderBy('hora')
+                ->get()
+                ->mapWithKeys(
+                    static function ($item) {
+                        $hora = str_pad(
+                            (string) $item->hora,
+                            2,
+                            '0',
+                            STR_PAD_LEFT
+                        );
 
-        $formasPago = collect();
+                        return [
+                            $hora . ':00' => [
+                                'cantidad' => (int) $item->cantidad,
+                                'monto' => (float) $item->monto,
+                            ],
+                        ];
+                    }
+                );
 
-        if ($ventaIds->isNotEmpty()) {
-            $formasPago = Pago::whereIn('venta_id', $ventaIds)
+            $formasPago = Pago::query()
+                ->whereIn(
+                    'venta_id',
+                    $ventaIdsQuery
+                )
                 ->where('activo', true)
                 ->select(
                     'forma_pago',
@@ -1432,31 +2467,81 @@ class VentaController extends Controller
                 )
                 ->groupBy('forma_pago')
                 ->get();
-        }
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'fecha' => $hoy,
-                'total_ventas' => $totalVentas,
-                'total_monto' => number_format($totalMonto, 2),
-                'promedio_ticket' => $totalVentas > 0
-                    ? number_format(
-                        $totalMonto / $totalVentas,
+            $this->registrarAuditoria(
+                $request,
+                'consultar_estadisticas_dia',
+                'ventas',
+                null,
+                null,
+                [
+                    'fecha' => now()->toDateString(),
+                    'total_ventas' => $totalVentas,
+                    'total_monto' => $totalMonto,
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'fecha' => now()->toDateString(),
+                    'total_ventas' => $totalVentas,
+                    'total_monto' => number_format(
+                        $totalMonto,
                         2
-                    )
-                    : 0,
-                'producto_mas_vendido' => $productoMasVendido
-                    ? [
-                        'nombre' => $productoMasVendido->producto?->nombre
-                            ?? 'Producto eliminado',
-                        'cantidad' => $productoMasVendido->total,
-                    ]
-                    : null,
-                'ventas_por_hora' => $ventasPorHora,
-                'formas_pago' => $formasPago,
-            ],
-        ]);
+                    ),
+                    'promedio_ticket' =>
+                        $totalVentas > 0
+                            ? number_format(
+                                $totalMonto / $totalVentas,
+                                2
+                            )
+                            : 0,
+                    'producto_mas_vendido' =>
+                        $productoMasVendido
+                            ? [
+                                'nombre' =>
+                                    $productoMasVendido
+                                        ->producto?->nombre
+                                        ?? 'Producto eliminado',
+                                'cantidad' =>
+                                    $productoMasVendido->total,
+                            ]
+                            : null,
+                    'ventas_por_hora' => $ventasPorHora,
+                    'formas_pago' => $formasPago,
+                ],
+            ]);
+        } catch (Throwable $e) {
+            Log::error(
+                'Error obteniendo estadísticas del día.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'consultar_estadisticas_dia_error',
+                'ventas',
+                null,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No fue posible obtener las estadísticas del día.',
+            ], 500);
+        }
     }
 
     /**
@@ -1482,57 +2567,169 @@ class VentaController extends Controller
             ], 403);
         }
 
-        $validated = $request->validate([
-            'mesa_id' => ['nullable', 'integer', 'min:1'],
+        $validator = Validator::make($request->all(), [
+            'mesa_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
         ]);
 
-        $query = Venta::where('empresa_id', $empresaId)
-            ->where('estado', 'pendiente');
+        if ($validator->fails()) {
+            $this->registrarAuditoria(
+                $request,
+                'consultar_venta_pendiente_actual_validacion_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'errores' => $this->erroresValidacion($validator),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
-        if (! empty($validated['mesa_id'])) {
-            $mesaExiste = Mesa::where('id', $validated['mesa_id'])
-                ->where('empresa_id', $empresaId)
-                ->exists();
-
-            if (! $mesaExiste) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'La mesa no pertenece a la empresa.',
-                ], 422);
-            }
-
-            $query->where('mesa_id', $validated['mesa_id']);
-        } else {
-            $query
-                ->where('usuario_id', $user->id)
-                ->whereNull('mesa_id');
-        }
-
-        $venta = $query
-            ->with([
-                'detalles.producto',
-                'pagos',
-                'cliente',
-                'mesa',
-                'caja',
-            ])
-            ->first();
-
-        if (! $venta) {
             return response()->json([
                 'success' => false,
-                'message' => 'No hay venta pendiente',
-            ], 404);
+                'message' => 'El identificador de mesa no es válido.',
+                'errors' => $validator->errors(),
+            ], 422);
         }
 
-        return response()->json([
-            'success' => true,
-            'data' => $venta,
-        ]);
+        $validated = $validator->validated();
+
+        try {
+            $query = Venta::query()
+                ->where('empresa_id', $empresaId)
+                ->where('estado', 'pendiente');
+
+            if (! empty($validated['mesa_id'])) {
+                if (! $user->empresa->usaMesas()) {
+                    throw new \DomainException(
+                        'Las mesas no están activas para esta empresa.'
+                    );
+                }
+
+                $mesaExiste = Mesa::query()
+                    ->where('empresa_id', $empresaId)
+                    ->whereKey((int) $validated['mesa_id'])
+                    ->exists();
+
+                if (! $mesaExiste) {
+                    throw new \DomainException(
+                        'La mesa no pertenece a la empresa.'
+                    );
+                }
+
+                $query->where(
+                    'mesa_id',
+                    (int) $validated['mesa_id']
+                );
+            } else {
+                $query
+                    ->where('usuario_id', $user->id)
+                    ->whereNull('mesa_id');
+            }
+
+            $venta = $query
+                ->with([
+                    'detalles.producto',
+                    'pagos',
+                    'cliente',
+                    'mesa',
+                    'caja',
+                ])
+                ->first();
+
+            if (! $venta) {
+                $this->registrarAuditoria(
+                    $request,
+                    'consultar_venta_pendiente_actual_no_encontrada',
+                    'ventas',
+                    null,
+                    null,
+                    [
+                        'mesa_id' =>
+                            $validated['mesa_id'] ?? null,
+                    ],
+                    $empresaId,
+                    (int) $user->id
+                );
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No hay venta pendiente.',
+                ], 404);
+            }
+
+            $this->registrarAuditoria(
+                $request,
+                'consultar_venta_pendiente_actual',
+                'ventas',
+                $venta->id,
+                null,
+                [
+                    'folio' => $venta->folio,
+                    'mesa_id' => $venta->mesa_id,
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => $venta,
+            ]);
+        } catch (\DomainException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'consultar_venta_pendiente_actual_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'motivo' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (Throwable $e) {
+            Log::error(
+                'Error obteniendo venta pendiente actual.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'consultar_venta_pendiente_actual_error',
+                'ventas',
+                null,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No fue posible obtener la venta pendiente.',
+            ], 500);
+        }
     }
 
     /**
-     * Cobrar una venta guardada y dejarla como pagada.
+     * Cobrar una venta guardada.
      */
     public function pagar(Request $request, $id)
     {
@@ -1546,8 +2743,9 @@ class VentaController extends Controller
         }
 
         $empresaId = (int) $user->empresa_id;
+        $empresa = $user->empresa;
 
-        if ($empresaId <= 0 || ! $user->empresa) {
+        if ($empresaId <= 0 || ! $empresa) {
             return response()->json([
                 'success' => false,
                 'message' => 'El usuario no tiene una empresa válida asociada.',
@@ -1555,45 +2753,95 @@ class VentaController extends Controller
         }
 
         if (! is_numeric($id) || (int) $id <= 0) {
+            $this->registrarAuditoria(
+                $request,
+                'cobrar_venta_id_invalido',
+                'ventas',
+                null,
+                null,
+                ['id' => $id],
+                $empresaId,
+                (int) $user->id
+            );
+
             return response()->json([
                 'success' => false,
                 'message' => 'Identificador de venta inválido.',
             ], 422);
         }
 
-        $validated = $request->validate([
-            'caja_id' => ['nullable', 'integer', 'min:1'],
-            'pagos' => ['required', 'array', 'min:1', 'max:50'],
+        $validator = Validator::make($request->all(), [
+            'caja_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'pagos' => [
+                'required',
+                'array',
+                'min:1',
+                'max:50',
+            ],
+
             'pagos.*.forma_pago' => [
                 'required',
                 'string',
-                'in:Efectivo,Tarjeta Crédito,Tarjeta Débito,Transferencia,Crédito,Otro',
+                'in:' . implode(',', self::FORMAS_PAGO),
             ],
-            'pagos.*.monto' => ['required', 'numeric', 'min:0.01'],
-            'pagos.*.referencia' => ['nullable', 'string', 'max:100'],
-            'pagos.*.cambio' => ['nullable', 'numeric', 'min:0'],
+
+            'pagos.*.monto' => [
+                'required',
+                'numeric',
+                'min:0.01',
+            ],
+
+            'pagos.*.referencia' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            'pagos.*.cambio' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
         ]);
 
-        $requiereCaja = $user->empresa->usaCajas();
+        if ($validator->fails()) {
+            $this->registrarAuditoria(
+                $request,
+                'cobrar_venta_validacion_rechazada',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'errores' => $this->erroresValidacion($validator),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
-        if ($requiereCaja && empty($validated['caja_id'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Los datos de cobro no son válidos.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $validated = $validator->validated();
+
+        $requiereCaja = $empresa->usaCajas();
+
+        if (
+            $requiereCaja &&
+            empty($validated['caja_id'])
+        ) {
             return response()->json([
                 'success' => false,
                 'message' => 'Debe indicar la caja abierta de la empresa.',
             ], 422);
-        }
-
-        if (! $requiereCaja && ! empty($validated['caja_id'])) {
-            $cajaExiste = Caja::where('id', $validated['caja_id'])
-                ->where('empresa_id', $empresaId)
-                ->exists();
-
-            if (! $cajaExiste) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'La caja indicada no pertenece a la empresa.',
-                ], 422);
-            }
         }
 
         try {
@@ -1602,12 +2850,14 @@ class VentaController extends Controller
                 $id,
                 $user,
                 $empresaId,
-                $requiereCaja
+                $requiereCaja,
+                $empresa
             ) {
                 $caja = null;
 
                 if ($requiereCaja) {
-                    $caja = Caja::where('id', $validated['caja_id'])
+                    $caja = Caja::query()
+                        ->whereKey((int) $validated['caja_id'])
                         ->where('empresa_id', $empresaId)
                         ->where('fecha_comercial', today())
                         ->where('estado', 'abierta')
@@ -1619,9 +2869,14 @@ class VentaController extends Controller
                             'La caja indicada no está abierta o no pertenece a la empresa.'
                         );
                     }
+                } elseif (! empty($validated['caja_id'])) {
+                    throw new \DomainException(
+                        'Las cajas no están activas para esta empresa.'
+                    );
                 }
 
-                $venta = Venta::where('empresa_id', $empresaId)
+                $venta = Venta::query()
+                    ->where('empresa_id', $empresaId)
                     ->where('estado', 'pendiente')
                     ->with([
                         'detalles',
@@ -1634,16 +2889,42 @@ class VentaController extends Controller
                     throw new ModelNotFoundException();
                 }
 
+                $mesa = null;
+
+                if ($venta->mesa_id !== null) {
+                    if (! $empresa->usaMesas()) {
+                        throw new \DomainException(
+                            'La venta tiene una mesa asignada, pero el módulo de mesas está desactivado.'
+                        );
+                    }
+
+                    $mesa = Mesa::query()
+                        ->where('empresa_id', $empresaId)
+                        ->whereKey($venta->mesa_id)
+                        ->where('activo', true)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if (! $mesa) {
+                        throw new \DomainException(
+                            'La mesa asociada a la venta no existe o está inactiva.'
+                        );
+                    }
+                }
+
                 $pagado = round(
                     collect($validated['pagos'])
-                        ->sum(fn($pago) => (float) $pago['monto']),
+                        ->sum(
+                            static fn ($pago) =>
+                                (float) $pago['monto']
+                        ),
                     2
                 );
 
                 if (
                     abs(
                         $pagado -
-                            round((float) $venta->total, 2)
+                        round((float) $venta->total, 2)
                     ) > 0.009
                 ) {
                     throw new \DomainException(
@@ -1651,11 +2932,27 @@ class VentaController extends Controller
                     );
                 }
 
+                /*
+                 * Los productos se bloquean en lote para evitar modificar
+                 * inventario con datos obsoletos.
+                 */
+                $productoIds = $venta->detalles
+                    ->pluck('producto_id')
+                    ->map(static fn ($id) => (int) $id)
+                    ->unique()
+                    ->values();
+
+                $productos = Producto::query()
+                    ->where('empresa_id', $empresaId)
+                    ->whereIn('id', $productoIds)
+                    ->lockForUpdate()
+                    ->get()
+                    ->keyBy('id');
+
                 foreach ($venta->detalles as $detalle) {
-                    $producto = Producto::where('empresa_id', $empresaId)
-                        ->where('id', $detalle->producto_id)
-                        ->lockForUpdate()
-                        ->first();
+                    $producto = $productos->get(
+                        (int) $detalle->producto_id
+                    );
 
                     if (! $producto) {
                         throw new \DomainException(
@@ -1663,18 +2960,24 @@ class VentaController extends Controller
                         );
                     }
 
+                    if (! (bool) $producto->is_inventariable) {
+                        continue;
+                    }
+
                     if (
                         (float) $producto->stock <
                         (float) $detalle->cantidad
                     ) {
                         throw new \DomainException(
-                            'Stock insuficiente para completar el cobro.'
+                            "Stock insuficiente para el producto {$producto->nombre}."
                         );
                     }
 
-                    $producto->stock =
+                    $producto->stock = round(
                         (float) $producto->stock -
-                        (float) $detalle->cantidad;
+                        (float) $detalle->cantidad,
+                        3
+                    );
 
                     $producto->save();
                 }
@@ -1692,12 +2995,14 @@ class VentaController extends Controller
 
                 $venta->update([
                     'estado' => 'pagado',
-                    'caja_id' => $caja?->id,
+                    'caja_id' =>
+                        $caja?->id ??
+                        $venta->caja_id,
                     'fecha' => now(),
                 ]);
 
-                if ($venta->mesa) {
-                    $venta->mesa->update([
+                if ($mesa) {
+                    $mesa->update([
                         'estado' => 'libre',
                     ]);
                 }
@@ -1715,7 +3020,11 @@ class VentaController extends Controller
             $this->registrarLog(
                 $venta,
                 $user,
-                'cobrar_venta_pendiente'
+                'cobrar_venta_pendiente',
+                [
+                    'mesa_id' => $venta->mesa_id,
+                    'caja_id' => $venta->caja_id,
+                ]
             );
 
             return response()->json([
@@ -1724,30 +3033,73 @@ class VentaController extends Controller
                 'data' => $venta,
             ]);
         } catch (ModelNotFoundException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'cobrar_venta_no_encontrada',
+                'ventas',
+                (int) $id,
+                null,
+                null,
+                $empresaId,
+                (int) $user->id
+            );
+
             return response()->json([
                 'success' => false,
                 'message' => 'Venta pendiente no encontrada.',
             ], 404);
         } catch (\DomainException $e) {
-            Log::warning('Error de negocio al cobrar venta pendiente.', [
-                'venta_id' => $id,
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-            ]);
+            Log::warning(
+                'Error de negocio al cobrar venta pendiente.',
+                [
+                    'venta_id' => $id,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'cobrar_venta_rechazada',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'motivo' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage(),
             ], 422);
         } catch (Throwable $e) {
-            Log::error('Error al cobrar venta pendiente.', [
-                'venta_id' => $id,
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-                'linea' => $e->getLine(),
-            ]);
+            Log::error(
+                'Error al cobrar venta pendiente.',
+                [
+                    'venta_id' => $id,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                    'linea' => $e->getLine(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'cobrar_venta_error',
+                'ventas',
+                (int) $id,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
@@ -1780,130 +3132,281 @@ class VentaController extends Controller
             ], 403);
         }
 
-        $validated = $request->validate([
-            'cliente_id' => ['nullable', 'integer', 'min:1'],
-            'productos' => ['required', 'array', 'min:1', 'max:500'],
-            'productos.*.producto_id' => ['required', 'integer', 'min:1'],
-            'productos.*.cantidad' => ['required', 'numeric', 'min:0.01'],
-            'productos.*.precio' => ['required', 'numeric', 'min:0'],
-            'productos.*.descuento' => ['nullable', 'numeric', 'min:0'],
-            'pagos' => ['nullable', 'array', 'max:50'],
+        $validator = Validator::make($request->all(), [
+            'cliente_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'productos' => [
+                'required',
+                'array',
+                'min:1',
+                'max:500',
+            ],
+
+            'productos.*.producto_id' => [
+                'required',
+                'integer',
+                'min:1',
+            ],
+
+            'productos.*.producto' => [
+                'nullable',
+                'array',
+            ],
+
+            'productos.*.producto.nombre' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'productos.*.producto.codigo' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            'productos.*.producto.descripcion' => [
+                'nullable',
+                'string',
+                'max:1000',
+            ],
+
+            'productos.*.producto.precio' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.producto.costo' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.producto.impuesto' => [
+                'nullable',
+                'numeric',
+                'min:0',
+                'max:100',
+            ],
+
+            'productos.*.producto.stock' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.producto.stock_minimo' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.producto.is_inventariable' => [
+                'nullable',
+                'boolean',
+            ],
+
+            'productos.*.producto.categoria_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'productos.*.producto.unidad_medida_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'productos.*.producto.categoria' => [
+                'nullable',
+                'array',
+            ],
+
+            'productos.*.producto.categoria.nombre' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'productos.*.producto.categoria.codigo' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            'productos.*.producto.unidad_medida' => [
+                'nullable',
+                'array',
+            ],
+
+            'productos.*.producto.unidad_medida.nombre' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+
+            'productos.*.producto.unidad_medida.codigo' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            'productos.*.cantidad' => [
+                'required',
+                'numeric',
+                'min:0.01',
+            ],
+
+            'productos.*.precio' => [
+                'required',
+                'numeric',
+                'min:0',
+            ],
+
+            'productos.*.descuento' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'pagos' => [
+                'nullable',
+                'array',
+                'max:50',
+            ],
+
             'pagos.*.forma_pago' => [
                 'required',
                 'string',
-                'in:Efectivo,Tarjeta Crédito,Tarjeta Débito,Transferencia,Crédito,Otro',
+                'in:' . implode(',', self::FORMAS_PAGO),
             ],
-            'pagos.*.monto' => ['required', 'numeric', 'min:0.01'],
-            'pagos.*.referencia' => ['nullable', 'string', 'max:100'],
-            'pagos.*.cambio' => ['nullable', 'numeric', 'min:0'],
-            'descuento_global' => ['nullable', 'numeric', 'min:0'],
-            'impuesto_global' => ['nullable', 'numeric', 'min:0', 'max:100'],
-            'notas' => ['nullable', 'string', 'max:500'],
-            'mesa_id' => ['nullable', 'integer', 'min:1'],
-            'caja_id' => ['nullable', 'integer', 'min:1'],
-            'dispositivo_id' => ['nullable', 'string', 'max:255'],
+
+            'pagos.*.monto' => [
+                'required',
+                'numeric',
+                'min:0.01',
+            ],
+
+            'pagos.*.referencia' => [
+                'nullable',
+                'string',
+                'max:100',
+            ],
+
+            'pagos.*.cambio' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'descuento_global' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'impuesto_global' => [
+                'nullable',
+                'numeric',
+                'min:0',
+                'max:100',
+            ],
+
+            'notas' => [
+                'nullable',
+                'string',
+                'max:500',
+            ],
+
+            'mesa_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'caja_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+            ],
+
+            'dispositivo_id' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
         ]);
 
-        if (! empty($validated['cliente_id'])) {
-            $clienteExiste = Cliente::where('id', $validated['cliente_id'])
-                ->where('empresa_id', $empresaId)
-                ->exists();
+        if ($validator->fails()) {
+            $this->registrarAuditoria(
+                $request,
+                'guardar_venta_pendiente_validacion_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'errores' => $this->erroresValidacion($validator),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
-            if (! $clienteExiste) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'El cliente no pertenece a la empresa.',
-                ], 422);
-            }
-        }
-
-        foreach ($validated['productos'] as $item) {
-            $productoExiste = Producto::where('id', $item['producto_id'])
-                ->where('empresa_id', $empresaId)
-                ->exists();
-
-            if (! $productoExiste) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Uno de los productos no pertenece a la empresa.',
-                ], 422);
-            }
-
-            $subtotalBruto =
-                (float) $item['precio'] *
-                (float) $item['cantidad'];
-
-            $descuento = (float) ($item['descuento'] ?? 0);
-
-            if ($descuento > $subtotalBruto) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'El descuento de un producto no puede ser mayor al subtotal.',
-                ], 422);
-            }
-        }
-
-        $caja = null;
-
-        if ($empresa->usaCajas()) {
-            $caja = Caja::where('empresa_id', $empresaId)
-                ->where('fecha_comercial', today())
-                ->where('estado', 'abierta')
-                ->first();
-
-            if (! $caja) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Debe abrirse la caja de la empresa antes de guardar ventas.',
-                ], 422);
-            }
-        }
-
-        $mesa = null;
-
-        if ($empresa->usaMesas()) {
-            if (empty($validated['mesa_id'])) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Debe indicar una mesa.',
-                ], 422);
-            }
-
-            $mesa = Mesa::where('empresa_id', $empresaId)
-                ->where('activo', true)
-                ->find($validated['mesa_id']);
-
-            if (! $mesa) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Mesa no encontrada o no pertenece a la empresa.',
-                ], 404);
-            }
-        } elseif (! empty($validated['mesa_id'])) {
             return response()->json([
                 'success' => false,
-                'message' => 'Las mesas no están activas para esta empresa.',
+                'message' => 'Los datos de la venta pendiente no son válidos.',
+                'errors' => $validator->errors(),
             ], 422);
         }
 
-        if (! empty($validated['caja_id'])) {
-            $cajaIndicada = Caja::where('id', $validated['caja_id'])
-                ->where('empresa_id', $empresaId)
-                ->where('fecha_comercial', today())
-                ->where('estado', 'abierta')
-                ->first();
-
-            if (! $cajaIndicada) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'La caja indicada no está abierta o no pertenece a la empresa.',
-                ], 422);
-            }
-
-            $caja = $cajaIndicada;
-        }
+        $validated = $validator->validated();
 
         try {
+            if (! empty($validated['cliente_id'])) {
+                $clienteExiste = Cliente::query()
+                    ->where('empresa_id', $empresaId)
+                    ->whereKey((int) $validated['cliente_id'])
+                    ->exists();
+
+                if (! $clienteExiste) {
+                    throw new \DomainException(
+                        'El cliente no pertenece a la empresa.'
+                    );
+                }
+            }
+
+            foreach ($validated['productos'] as $item) {
+                $subtotalBruto =
+                    (float) $item['precio'] *
+                    (float) $item['cantidad'];
+
+                $descuento =
+                    (float) ($item['descuento'] ?? 0);
+
+                if ($descuento > $subtotalBruto) {
+                    throw new \DomainException(
+                        'El descuento de un producto no puede ser mayor al subtotal.'
+                    );
+                }
+            }
+
+            $caja = $this->resolverCaja(
+                $empresa,
+                $empresaId,
+                $validated['caja_id'] ?? null
+            );
+
+            $mesa = $this->resolverMesa(
+                $empresa,
+                $empresaId,
+                $validated['mesa_id'] ?? null
+            );
+
             $venta = DB::transaction(function () use (
                 $validated,
                 $user,
@@ -1914,78 +3417,116 @@ class VentaController extends Controller
                 $mesaBloqueada = null;
 
                 if ($mesa) {
-                    $mesaBloqueada = Mesa::where('id', $mesa->id)
+                    $mesaBloqueada = Mesa::query()
                         ->where('empresa_id', $empresaId)
+                        ->whereKey($mesa->id)
+                        ->where('activo', true)
                         ->lockForUpdate()
                         ->first();
 
                     if (! $mesaBloqueada) {
-                        throw new \DomainException('Mesa no encontrada.');
+                        throw new \DomainException(
+                            'La mesa ya no está disponible.'
+                        );
+                    }
+
+                    $otraVenta = Venta::query()
+                        ->where('empresa_id', $empresaId)
+                        ->where('mesa_id', $mesaBloqueada->id)
+                        ->where('estado', 'pendiente')
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($otraVenta) {
+                        throw new \DomainException(
+                            'La mesa ya tiene una venta pendiente.'
+                        );
                     }
                 }
 
-                $ventaQuery = Venta::where('empresa_id', $empresaId)
+                $ventaQuery = Venta::query()
+                    ->where('empresa_id', $empresaId)
                     ->where('estado', 'pendiente');
 
                 $venta = $mesaBloqueada
                     ? $ventaQuery
-                    ->where('mesa_id', $mesaBloqueada->id)
-                    ->lockForUpdate()
-                    ->first()
+                        ->where('mesa_id', $mesaBloqueada->id)
+                        ->lockForUpdate()
+                        ->first()
                     : $ventaQuery
-                    ->where('usuario_id', $user->id)
-                    ->whereNull('mesa_id')
-                    ->lockForUpdate()
-                    ->first();
+                        ->where('usuario_id', $user->id)
+                        ->whereNull('mesa_id')
+                        ->lockForUpdate()
+                        ->first();
 
                 if (! $venta) {
-                    // 1. Crear venta con folio temporal
-                    $folioTemporal = 'TEMP-' . (string) Str::uuid();
-
-                    $venta = Venta::create([
+                    $venta = Venta::query()->create([
                         'uuid' => (string) Str::uuid(),
-                        'folio' => $folioTemporal,
+                        'folio' => 'TEMP-' . Str::uuid(),
                         'empresa_id' => $empresaId,
                         'usuario_id' => $user->id,
                         'caja_id' => $caja?->id,
                         'mesa_id' => $mesaBloqueada?->id,
-                        'cliente_id' => $validated['cliente_id'] ?? null,
+                        'cliente_id' =>
+                            $validated['cliente_id'] ?? null,
                         'fecha' => now(),
                         'subtotal' => 0,
                         'descuento' => 0,
                         'impuesto' => 0,
                         'total' => 0,
                         'estado' => 'pendiente',
-                        'notas' => $validated['notas'] ?? null,
-                        'dispositivo_id' => $validated['dispositivo_id'] ?? null,
+                        'notas' =>
+                            $validated['notas'] ?? null,
+                        'dispositivo_id' =>
+                            $validated['dispositivo_id'] ?? null,
                         'sincronizado' => true,
                     ]);
 
-                    // 2. Asignar folio definitivo usando ID
-                    $folioDefinitivo = 'V-' . now()->format('y') . '-' . str_pad((string) $venta->id, 6, '0', STR_PAD_LEFT);
-                    $venta->folio = $folioDefinitivo;
+                    $venta->folio =
+                        'V-' .
+                        now()->format('y') .
+                        '-' .
+                        str_pad(
+                            (string) $venta->id,
+                            6,
+                            '0',
+                            STR_PAD_LEFT
+                        );
+
                     $venta->save();
                 }
 
                 $venta->detalles()->delete();
                 $venta->pagos()->delete();
 
+                $productosBloqueados =
+                    $this->obtenerProductosParaVenta(
+                        $validated['productos'],
+                        $empresaId
+                    );
+
                 $total = 0.0;
 
                 foreach ($validated['productos'] as $item) {
-                    $producto = Producto::where('id', $item['producto_id'])
-                        ->where('empresa_id', $empresaId)
-                        ->first();
+                    $producto = $productosBloqueados[
+                        (int) $item['producto_id']
+                    ] ?? null;
 
                     if (! $producto) {
-                        throw new \DomainException(
-                            'Producto no encontrado.'
-                        );
+                        $producto =
+                            $this->crearProductoDesdeVentaSiEsNecesario(
+                                $item,
+                                $empresaId
+                            );
+
+                        $productosBloqueados[$producto->id] =
+                            $producto;
                     }
 
                     $cantidad = (float) $item['cantidad'];
                     $precio = (float) $item['precio'];
-                    $descuento = (float) ($item['descuento'] ?? 0);
+                    $descuento =
+                        (float) ($item['descuento'] ?? 0);
 
                     $subtotalBruto = round(
                         $precio * $cantidad,
@@ -2016,24 +3557,28 @@ class VentaController extends Controller
 
                 $total = round($total, 2);
 
-                if (! empty($validated['pagos'])) {
-                    foreach ($validated['pagos'] as $pago) {
-                        if ((float) $pago['monto'] > 0) {
-                            $venta->pagos()->create([
-                                'forma_pago' => $pago['forma_pago'],
-                                'monto' => $pago['monto'],
-                                'referencia' => $pago['referencia'] ?? null,
-                                'cambio' => $pago['cambio'] ?? 0,
-                            ]);
-                        }
+                foreach ($validated['pagos'] ?? [] as $pago) {
+                    if ((float) $pago['monto'] > 0) {
+                        $venta->pagos()->create([
+                            'forma_pago' => $pago['forma_pago'],
+                            'monto' => $pago['monto'],
+                            'referencia' =>
+                                $pago['referencia'] ?? null,
+                            'cambio' =>
+                                $pago['cambio'] ?? 0,
+                        ]);
                     }
                 }
 
                 $descuentoGlobal =
-                    (float) ($validated['descuento_global'] ?? 0);
+                    (float) (
+                        $validated['descuento_global'] ?? 0
+                    );
 
                 $impuestoGlobal =
-                    (float) ($validated['impuesto_global'] ?? 0);
+                    (float) (
+                        $validated['impuesto_global'] ?? 0
+                    );
 
                 if ($descuentoGlobal > $total) {
                     throw new \DomainException(
@@ -2048,10 +3593,10 @@ class VentaController extends Controller
 
                 $totalFinal = round(
                     $totalConDescuento +
-                        (
-                            $totalConDescuento *
-                            ($impuestoGlobal / 100)
-                        ),
+                    (
+                        $totalConDescuento *
+                        ($impuestoGlobal / 100)
+                    ),
                     2
                 );
 
@@ -2068,7 +3613,12 @@ class VentaController extends Controller
                 $venta->notas =
                     $validated['notas'] ?? null;
 
-                if (array_key_exists('dispositivo_id', $validated)) {
+                if (
+                    array_key_exists(
+                        'dispositivo_id',
+                        $validated
+                    )
+                ) {
                     $venta->dispositivo_id =
                         $validated['dispositivo_id'];
                 }
@@ -2087,7 +3637,11 @@ class VentaController extends Controller
             $this->registrarLog(
                 $venta,
                 $user,
-                'guardar_venta_pendiente'
+                'guardar_venta_pendiente',
+                [
+                    'mesa_id' => $venta->mesa_id,
+                    'caja_id' => $venta->caja_id,
+                ]
             );
 
             $venta->load([
@@ -2104,23 +3658,59 @@ class VentaController extends Controller
                 'data' => $venta,
             ]);
         } catch (\DomainException $e) {
-            Log::warning('Error de negocio al guardar venta pendiente.', [
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-            ]);
+            Log::warning(
+                'Error de negocio al guardar venta pendiente.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'guardar_venta_pendiente_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'motivo' => $e->getMessage(),
+                    'mesa_id' =>
+                        $validated['mesa_id'] ?? null,
+                    'caja_id' =>
+                        $validated['caja_id'] ?? null,
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage(),
             ], 422);
         } catch (Throwable $e) {
-            Log::error('Error al guardar venta pendiente.', [
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-                'linea' => $e->getLine(),
-            ]);
+            Log::error(
+                'Error al guardar venta pendiente.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                    'linea' => $e->getLine(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'guardar_venta_pendiente_error',
+                'ventas',
+                null,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
@@ -2152,49 +3742,111 @@ class VentaController extends Controller
             ], 403);
         }
 
-        $venta = Venta::where('empresa_id', $empresaId)
-            ->where('usuario_id', $user->id)
-            ->where('estado', 'pendiente')
-            ->first();
-
-        if (! $venta) {
-            return response()->json([
-                'success' => false,
-                'message' => 'No hay venta pendiente',
-            ], 404);
-        }
-
         try {
-            $ventaId = $venta->id;
-            $folio = $venta->folio;
+            $resultado = DB::transaction(function () use (
+                $empresaId,
+                $user
+            ) {
+                $venta = Venta::query()
+                    ->where('empresa_id', $empresaId)
+                    ->where('usuario_id', $user->id)
+                    ->where('estado', 'pendiente')
+                    ->lockForUpdate()
+                    ->first();
 
-            $venta->delete();
+                if (! $venta) {
+                    throw new \DomainException(
+                        'No hay venta pendiente.'
+                    );
+                }
+
+                $ventaId = $venta->id;
+                $folio = $venta->folio;
+                $mesaId = $venta->mesa_id;
+
+                $venta->delete();
+
+                if ($mesaId !== null) {
+                    $mesa = Mesa::query()
+                        ->where('empresa_id', $empresaId)
+                        ->whereKey($mesaId)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($mesa) {
+                        $mesa->update([
+                            'estado' => 'libre',
+                        ]);
+                    }
+                }
+
+                return [
+                    'id' => $ventaId,
+                    'folio' => $folio,
+                    'mesa_id' => $mesaId,
+                ];
+            });
 
             $this->registrarAuditoria(
                 $request,
                 'eliminar_venta_pendiente',
                 'ventas',
-                $ventaId,
+                $resultado['id'],
                 [
-                    'folio' => $folio,
+                    'folio' => $resultado['folio'],
                     'estado' => 'pendiente',
+                    'mesa_id' => $resultado['mesa_id'],
                 ],
                 null,
                 $empresaId,
-                $user->id
+                (int) $user->id
             );
 
             return response()->json([
                 'success' => true,
                 'message' => 'Venta pendiente eliminada',
             ]);
+        } catch (\DomainException $e) {
+            $this->registrarAuditoria(
+                $request,
+                'eliminar_venta_pendiente_rechazada',
+                'ventas',
+                null,
+                null,
+                [
+                    'motivo' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 404);
         } catch (Throwable $e) {
-            Log::error('Error al eliminar venta pendiente.', [
-                'venta_id' => $venta->id,
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-            ]);
+            Log::error(
+                'Error al eliminar venta pendiente.',
+                [
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                    'linea' => $e->getLine(),
+                ]
+            );
+
+            $this->registrarAuditoria(
+                $request,
+                'eliminar_venta_pendiente_error',
+                'ventas',
+                null,
+                null,
+                [
+                    'error' => $e->getMessage(),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
             return response()->json([
                 'success' => false,
@@ -2204,7 +3856,494 @@ class VentaController extends Controller
     }
 
     /**
+     * Resolver caja de la empresa.
+     */
+    private function resolverCaja(
+        $empresa,
+        int $empresaId,
+        ?int $cajaId
+    ): ?Caja {
+        if ($cajaId !== null) {
+            if (! $empresa->usaCajas()) {
+                throw new \DomainException(
+                    'Las cajas no están activas para esta empresa.'
+                );
+            }
+
+            $caja = Caja::query()
+                ->whereKey($cajaId)
+                ->where('empresa_id', $empresaId)
+                ->where('fecha_comercial', today())
+                ->where('estado', 'abierta')
+                ->first();
+
+            if (! $caja) {
+                throw new \DomainException(
+                    'La caja indicada no está abierta o no pertenece a la empresa.'
+                );
+            }
+
+            return $caja;
+        }
+
+        if (! $empresa->usaCajas()) {
+            return null;
+        }
+
+        $caja = Caja::query()
+            ->where('empresa_id', $empresaId)
+            ->where('fecha_comercial', today())
+            ->where('estado', 'abierta')
+            ->first();
+
+        if (! $caja) {
+            throw new \DomainException(
+                'Debe abrirse la caja de la empresa antes de registrar ventas.'
+            );
+        }
+
+        return $caja;
+    }
+
+    /**
+     * Resolver mesa.
+     */
+    private function resolverMesa(
+        $empresa,
+        int $empresaId,
+        ?int $mesaId
+    ): ?Mesa {
+        if ($mesaId === null) {
+            return null;
+        }
+
+        if (! $empresa->usaMesas()) {
+            throw new \DomainException(
+                'Las mesas no están activas para esta empresa.'
+            );
+        }
+
+        $mesa = Mesa::query()
+            ->where('empresa_id', $empresaId)
+            ->whereKey($mesaId)
+            ->where('activo', true)
+            ->first();
+
+        if (! $mesa) {
+            throw new \DomainException(
+                'La mesa indicada no existe, está inactiva o no pertenece a la empresa.'
+            );
+        }
+
+        return $mesa;
+    }
+
+    /**
+     * Obtener productos existentes bloqueados.
+     *
+     * Se hace una sola consulta en lugar de consultar producto por producto.
+     */
+    private function obtenerProductosParaVenta(
+        array $items,
+        int $empresaId
+    ): array {
+        $ids = collect($items)
+            ->pluck('producto_id')
+            ->map(static fn ($id) => (int) $id)
+            ->filter(static fn ($id) => $id > 0)
+            ->unique()
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return [];
+        }
+
+        return Producto::query()
+            ->where('empresa_id', $empresaId)
+            ->whereIn('id', $ids)
+            ->lockForUpdate()
+            ->get()
+            ->keyBy('id')
+            ->all();
+    }
+
+    /**
+     * Crear producto faltante cuando la venta trae el catálogo necesario.
+     *
+     * Nunca crea un producto únicamente con un ID inexistente.
+     */
+    private function crearProductoDesdeVentaSiEsNecesario(
+        array $item,
+        int $empresaId
+    ): Producto {
+        $productoData = $item['producto'] ?? null;
+
+        if (! is_array($productoData)) {
+            throw new \DomainException(
+                'El producto indicado no existe en la empresa y la venta no contiene información suficiente para crearlo.'
+            );
+        }
+
+        $nombre = trim(
+            (string) ($productoData['nombre'] ?? '')
+        );
+
+        if ($nombre === '') {
+            throw new \DomainException(
+                'El producto nuevo debe tener nombre.'
+            );
+        }
+
+        /*
+         * Primero intentamos resolver por código para evitar duplicados
+         * cuando dos sincronizaciones traen el mismo catálogo.
+         */
+        $codigo = isset($productoData['codigo'])
+            ? trim((string) $productoData['codigo'])
+            : null;
+
+        if ($codigo !== null && $codigo !== '') {
+            $existente = Producto::query()
+                ->where('empresa_id', $empresaId)
+                ->where('codigo', $codigo)
+                ->lockForUpdate()
+                ->first();
+
+            if ($existente) {
+                return $existente;
+            }
+        }
+
+        /*
+         * Categoría.
+         */
+        $categoriaId = $this->resolverOCrearCategoria(
+            $productoData,
+            $empresaId
+        );
+
+        /*
+         * Unidad de medida.
+         */
+        $unidadMedidaId = $this->resolverOCrearUnidadMedida(
+            $productoData,
+            $empresaId
+        );
+
+        /*
+         * Segunda comprobación por código dentro de la misma transacción.
+         */
+        if ($codigo !== null && $codigo !== '') {
+            $existente = Producto::query()
+                ->where('empresa_id', $empresaId)
+                ->where('codigo', $codigo)
+                ->lockForUpdate()
+                ->first();
+
+            if ($existente) {
+                return $existente;
+            }
+        }
+
+        $producto = new Producto();
+
+        $producto->empresa_id = $empresaId;
+        $producto->codigo = $codigo !== ''
+            ? $codigo
+            : $this->generarCodigoProducto(
+                $empresaId
+            );
+        $producto->nombre = $nombre;
+        $producto->descripcion =
+            $productoData['descripcion'] ?? null;
+        $producto->precio =
+            (float) ($productoData['precio'] ?? $item['precio'] ?? 0);
+        $producto->costo =
+            (float) ($productoData['costo'] ?? 0);
+        $producto->impuesto =
+            (float) ($productoData['impuesto'] ?? 0);
+        $producto->stock =
+            (float) ($productoData['stock'] ?? 0);
+        $producto->stock_minimo =
+            (float) ($productoData['stock_minimo'] ?? 0);
+        $producto->categoria_id =
+            $categoriaId;
+        $producto->unidad_medida_id =
+            $unidadMedidaId;
+        $producto->activo = true;
+        $producto->is_inventariable =
+            array_key_exists(
+                'is_inventariable',
+                $productoData
+            )
+                ? (bool) $productoData['is_inventariable']
+                : true;
+
+        $producto->save();
+
+        return $producto;
+    }
+
+    /**
+     * Resolver o crear categoría perteneciente a la empresa.
+     */
+    private function resolverOCrearCategoria(
+        array $productoData,
+        int $empresaId
+    ): ?int {
+        $categoriaId = ! empty($productoData['categoria_id'])
+            ? (int) $productoData['categoria_id']
+            : null;
+
+        if ($categoriaId !== null) {
+            $categoria = Categoria::query()
+                ->where('empresa_id', $empresaId)
+                ->whereKey($categoriaId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($categoria) {
+                return $categoria->id;
+            }
+
+            /*
+             * Si llegó un ID pero además llegó la información del catálogo,
+             * buscamos por los datos del catálogo antes de crear.
+             */
+        }
+
+        $data = $productoData['categoria'] ?? null;
+
+        if (! is_array($data)) {
+            return null;
+        }
+
+        $nombre = trim(
+            (string) ($data['nombre'] ?? '')
+        );
+
+        $codigo = isset($data['codigo'])
+            ? trim((string) $data['codigo'])
+            : null;
+
+        if ($nombre === '' && ($codigo === null || $codigo === '')) {
+            return null;
+        }
+
+        $query = Categoria::query()
+            ->where('empresa_id', $empresaId);
+
+        if ($codigo !== null && $codigo !== '') {
+            $query->where('codigo', $codigo);
+        } else {
+            $query->where('nombre', $nombre);
+        }
+
+        $categoria = $query
+            ->lockForUpdate()
+            ->first();
+
+        if ($categoria) {
+            return $categoria->id;
+        }
+
+        $categoria = new Categoria();
+        $categoria->empresa_id = $empresaId;
+        $categoria->nombre = $nombre !== ''
+            ? $nombre
+            : 'General';
+        $categoria->codigo = $codigo !== ''
+            ? $codigo
+            : $this->generarCodigoCategoria($empresaId);
+
+        $categoria->activo = true;
+
+        $categoria->save();
+
+        return $categoria->id;
+    }
+
+    /**
+     * Resolver o crear unidad de medida perteneciente a la empresa.
+     */
+    private function resolverOCrearUnidadMedida(
+        array $productoData,
+        int $empresaId
+    ): ?int {
+        $unidadId = ! empty($productoData['unidad_medida_id'])
+            ? (int) $productoData['unidad_medida_id']
+            : null;
+
+        if ($unidadId !== null) {
+            $unidad = UnidadMedida::query()
+                ->where('empresa_id', $empresaId)
+                ->whereKey($unidadId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($unidad) {
+                return $unidad->id;
+            }
+        }
+
+        $data = $productoData['unidad_medida'] ?? null;
+
+        if (! is_array($data)) {
+            return null;
+        }
+
+        $nombre = trim(
+            (string) ($data['nombre'] ?? '')
+        );
+
+        $codigo = isset($data['codigo'])
+            ? trim((string) $data['codigo'])
+            : null;
+
+        if ($nombre === '' && ($codigo === null || $codigo === '')) {
+            return null;
+        }
+
+        $query = UnidadMedida::query()
+            ->where('empresa_id', $empresaId);
+
+        if ($codigo !== null && $codigo !== '') {
+            $query->where('codigo', $codigo);
+        } else {
+            $query->where('nombre', $nombre);
+        }
+
+        $unidad = $query
+            ->lockForUpdate()
+            ->first();
+
+        if ($unidad) {
+            return $unidad->id;
+        }
+
+        $unidad = new UnidadMedida();
+        $unidad->empresa_id = $empresaId;
+        $unidad->nombre = $nombre !== ''
+            ? $nombre
+            : 'Unidad';
+        $unidad->codigo = $codigo !== ''
+            ? $codigo
+            : $this->generarCodigoUnidad($empresaId);
+        $unidad->activo = true;
+
+        $unidad->save();
+
+        return $unidad->id;
+    }
+
+    /**
+     * Generar código de producto sin confiar en datos del cliente.
+     */
+    private function generarCodigoProducto(
+        int $empresaId
+    ): string {
+        do {
+            $codigo =
+                'P-' .
+                str_pad(
+                    (string) random_int(1, 999999),
+                    6,
+                    '0',
+                    STR_PAD_LEFT
+                );
+
+            $existe = Producto::query()
+                ->where('empresa_id', $empresaId)
+                ->where('codigo', $codigo)
+                ->exists();
+        } while ($existe);
+
+        return $codigo;
+    }
+
+    /**
+     * Generar código de categoría.
+     */
+    private function generarCodigoCategoria(
+        int $empresaId
+    ): string {
+        do {
+            $codigo =
+                'CAT-' .
+                str_pad(
+                    (string) random_int(1, 999999),
+                    6,
+                    '0',
+                    STR_PAD_LEFT
+                );
+
+            $existe = Categoria::query()
+                ->where('empresa_id', $empresaId)
+                ->where('codigo', $codigo)
+                ->exists();
+        } while ($existe);
+
+        return $codigo;
+    }
+
+    /**
+     * Generar código de unidad de medida.
+     */
+    private function generarCodigoUnidad(
+        int $empresaId
+    ): string {
+        do {
+            $codigo =
+                'UM-' .
+                str_pad(
+                    (string) random_int(1, 999999),
+                    6,
+                    '0',
+                    STR_PAD_LEFT
+                );
+
+            $existe = UnidadMedida::query()
+                ->where('empresa_id', $empresaId)
+                ->where('codigo', $codigo)
+                ->exists();
+        } while ($existe);
+
+        return $codigo;
+    }
+
+    /**
+     * Aplicar filtros de fecha sin whereDate para favorecer índices.
+     */
+    private function aplicarRangoFecha(
+        $query,
+        string $campo,
+        ?string $fechaInicio,
+        ?string $fechaFin
+    ): void {
+        if ($fechaInicio !== null) {
+            $query->where(
+                $campo,
+                '>=',
+                $fechaInicio . ' 00:00:00'
+            );
+        }
+
+        if ($fechaFin !== null) {
+            $query->where(
+                $campo,
+                '<=',
+                $fechaFin . ' 23:59:59'
+            );
+        }
+    }
+
+    /**
      * Registrar auditoría de una venta.
+     *
+     * IMPORTANTE:
+     * No se excluye al superadmin.
+     *
+     * El actor es siempre el usuario autenticado.
      */
     private function registrarLog(
         Venta $venta,
@@ -2216,14 +4355,12 @@ class VentaController extends Controller
             return;
         }
 
-        if (($user->rol ?? null) === 'superadmin') {
-            return;
-        }
-
         $datosDespues = array_merge([
             'folio' => $venta->folio,
             'total' => $venta->total,
             'estado' => $venta->estado,
+            'caja_id' => $venta->caja_id,
+            'mesa_id' => $venta->mesa_id,
         ], $datosExtra);
 
         try {
@@ -2233,23 +4370,28 @@ class VentaController extends Controller
                 'ventas',
                 $venta->id,
                 null,
-                $datosDespues,
+                $this->sanitizarAuditoria($datosDespues),
                 (int) $venta->empresa_id,
                 (int) $user->id
             );
         } catch (Throwable $e) {
-            Log::warning('No fue posible registrar auditoría de venta.', [
-                'accion' => $accion,
-                'venta_id' => $venta->id,
-                'empresa_id' => $venta->empresa_id,
-                'usuario_id' => $user->id,
-                'error' => $e->getMessage(),
-            ]);
+            Log::warning(
+                'No fue posible registrar auditoría de venta.',
+                [
+                    'accion' => $accion,
+                    'venta_id' => $venta->id,
+                    'empresa_id' => $venta->empresa_id,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]
+            );
         }
     }
 
     /**
      * Registrar auditoría genérica.
+     *
+     * Nunca se excluye al superadmin.
      */
     private function registrarAuditoria(
         Request $request,
@@ -2261,9 +4403,16 @@ class VentaController extends Controller
         ?int $empresaId,
         ?int $usuarioId
     ): void {
-        if ($request->user()?->rol === 'superadmin') {
+        $user = $request->user();
+
+        if (! $user) {
             return;
         }
+
+        /*
+         * El actor real siempre es el usuario autenticado.
+         */
+        $actorId = (int) $user->id;
 
         try {
             $this->auditoria->registrar(
@@ -2271,20 +4420,117 @@ class VentaController extends Controller
                 $accion,
                 $tabla,
                 $registroId,
-                $datosAntes,
-                $datosDespues,
+                $this->sanitizarAuditoria($datosAntes),
+                $this->sanitizarAuditoria($datosDespues),
                 $empresaId,
-                $usuarioId
+                $actorId
             );
         } catch (Throwable $e) {
-            Log::warning('No fue posible registrar auditoría.', [
-                'accion' => $accion,
-                'tabla' => $tabla,
-                'registro_id' => $registroId,
-                'empresa_id' => $empresaId,
-                'usuario_id' => $usuarioId,
-                'error' => $e->getMessage(),
-            ]);
+            Log::warning(
+                'No fue posible registrar auditoría.',
+                [
+                    'accion' => $accion,
+                    'tabla' => $tabla,
+                    'registro_id' => $registroId,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $actorId,
+                    'actor_rol' => $user->rol ?? null,
+                    'error' => $e->getMessage(),
+                ]
+            );
         }
+    }
+
+    /**
+     * Errores de validación seguros para auditoría.
+     */
+    private function erroresValidacion($validator): array
+    {
+        $errores = $validator
+            ->errors()
+            ->toArray();
+
+        $camposSensibles = [
+            'password',
+            'password_confirmation',
+            'token',
+            'access_token',
+            'refresh_token',
+            'secret',
+            'api_key',
+            'authorization',
+            'cookie',
+            'cvv',
+        ];
+
+        foreach ($camposSensibles as $campo) {
+            if (array_key_exists($campo, $errores)) {
+                $errores[$campo] = [
+                    'Valor sensible omitido.',
+                ];
+            }
+        }
+
+        return $errores;
+    }
+
+    /**
+     * Sanitizar datos antes de enviarlos a auditoría.
+     */
+    private function sanitizarAuditoria(
+        ?array $datos
+    ): ?array {
+        if ($datos === null) {
+            return null;
+        }
+
+        $camposSensibles = [
+            'password',
+            'password_confirmation',
+            'token',
+            'access_token',
+            'refresh_token',
+            'secret',
+            'api_key',
+            'authorization',
+            'cookie',
+            'cvv',
+        ];
+
+        $sanitizados = $datos;
+
+        foreach ($camposSensibles as $campo) {
+            if (array_key_exists($campo, $sanitizados)) {
+                $sanitizados[$campo] =
+                    '[VALOR SENSIBLE OMITIDO]';
+            }
+        }
+
+        return $sanitizados;
+    }
+
+    /**
+     * Protección contra inyección de fórmulas en CSV.
+     */
+    private function valorCsvSeguro($valor): string
+    {
+        if ($valor === null) {
+            return '';
+        }
+
+        $valor = (string) $valor;
+
+        if (
+            $valor !== '' &&
+            in_array(
+                $valor[0],
+                ['=', '+', '-', '@'],
+                true
+            )
+        ) {
+            return "'" . $valor;
+        }
+
+        return $valor;
     }
 }

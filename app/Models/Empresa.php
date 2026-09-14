@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Storage;
 
 class Empresa extends Model
 {
@@ -143,27 +144,32 @@ class Empresa extends Model
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Obtener URL del logo.
+     *
+     * COMPATIBILIDAD:
+     * - Mantiene el atributo logo_url.
+     * - Mantiene el valor de logo almacenado en BD.
+     * - Mantiene soporte para URLs absolutas existentes.
+     * - Utiliza el disk "public" configurado por Laravel.
+     */
     public function getLogoUrlAttribute(): ?string
     {
         if (!$this->logo) {
             return null;
         }
 
-        if (
-            filter_var(
-                $this->logo,
-                FILTER_VALIDATE_URL
-            )
-        ) {
+        /*
+         * Compatibilidad con registros antiguos que pudieran
+         * contener una URL absoluta.
+         */
+        if (filter_var($this->logo, FILTER_VALIDATE_URL)) {
             return $this->logo;
         }
 
-        return asset(
-            'storage/' . ltrim(
-                $this->logo,
-                '/'
-            )
-        );
+        $path = ltrim($this->logo, '/');
+
+        return Storage::disk('public')->url($path);
     }
 
     /*

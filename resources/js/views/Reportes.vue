@@ -14,6 +14,7 @@
                         class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                 </div>
+
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Fecha Hasta</label>
                     <input 
@@ -22,6 +23,7 @@
                         class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                 </div>
+
                 <div class="flex items-end">
                     <button 
                         @click="cargarReportes"
@@ -31,6 +33,7 @@
                         <span v-if="cargando" class="inline-block animate-spin mr-2">⟳</span>
                         {{ cargando ? 'Cargando...' : 'Buscar' }}
                     </button>
+
                     <button 
                         @click="exportarReportes"
                         class="ml-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
@@ -61,19 +64,107 @@
             <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
                 <div class="bg-white p-6 rounded-lg shadow">
                     <p class="text-sm text-gray-500">Total Ventas</p>
-                    <h3 class="text-2xl font-bold">${{ formatearNumero(resumen.total_ventas || 0) }}</h3>
+                    <h3 class="text-2xl font-bold">
+                        ${{ formatearNumero(resumen.total_ventas || 0) }}
+                    </h3>
                 </div>
+
                 <div class="bg-white p-6 rounded-lg shadow">
                     <p class="text-sm text-gray-500">Número de Tickets</p>
-                    <h3 class="text-2xl font-bold">{{ resumen.numero_tickets || 0 }}</h3>
+                    <h3 class="text-2xl font-bold">
+                        {{ resumen.numero_tickets || 0 }}
+                    </h3>
                 </div>
+
                 <div class="bg-white p-6 rounded-lg shadow">
                     <p class="text-sm text-gray-500">Ticket Promedio</p>
-                    <h3 class="text-2xl font-bold">${{ formatearNumero(resumen.ticket_promedio || 0) }}</h3>
+                    <h3 class="text-2xl font-bold">
+                        ${{ formatearNumero(resumen.ticket_promedio || 0) }}
+                    </h3>
                 </div>
+
                 <div class="bg-white p-6 rounded-lg shadow">
                     <p class="text-sm text-gray-500">Total Productos</p>
-                    <h3 class="text-2xl font-bold">{{ resumen.total_productos || 0 }}</h3>
+                    <h3 class="text-2xl font-bold">
+                        {{ resumen.total_productos || 0 }}
+                    </h3>
+                </div>
+            </div>
+
+            <!-- Productos más vendidos -->
+            <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
+                <div class="px-6 py-4 border-b border-gray-200">
+                    <h2 class="text-lg font-semibold text-gray-800">
+                        Productos más vendidos
+                    </h2>
+                    <p class="text-sm text-gray-500 mt-1">
+                        Productos con mayor cantidad vendida en el período seleccionado
+                    </p>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                    #
+                                </th>
+
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                    Código
+                                </th>
+
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                    Producto
+                                </th>
+
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                                    Cantidad Vendida
+                                </th>
+
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                                    Total Vendido
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr v-if="productosMasVendidos.length === 0">
+                                <td 
+                                    colspan="5" 
+                                    class="px-6 py-8 text-center text-sm text-gray-500"
+                                >
+                                    No hay productos vendidos para mostrar
+                                </td>
+                            </tr>
+
+                            <tr
+                                v-for="(producto, index) in productosMasVendidos"
+                                :key="producto.producto_id || index"
+                                class="hover:bg-gray-50 transition-colors"
+                            >
+                                <td class="px-6 py-4 text-sm font-medium text-gray-700">
+                                    {{ index + 1 }}
+                                </td>
+
+                                <td class="px-6 py-4 text-sm text-gray-600">
+                                    {{ producto.codigo || '-' }}
+                                </td>
+
+                                <td class="px-6 py-4 text-sm font-medium text-gray-800">
+                                    {{ producto.nombre || 'Producto eliminado' }}
+                                </td>
+
+                                <td class="px-6 py-4 text-sm text-right font-semibold">
+                                    {{ formatearCantidad(producto.cantidad_vendida) }}
+                                </td>
+
+                                <td class="px-6 py-4 text-sm text-right font-semibold">
+                                    ${{ formatearNumero(producto.total_vendido) }}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
@@ -83,31 +174,73 @@
                     <table class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                             <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Folio</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Fecha</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cliente</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Vendedor</th>
-                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
-                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Estado</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                    Folio
+                                </th>
+
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                    Fecha
+                                </th>
+
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                    Cliente
+                                </th>
+
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                    Vendedor
+                                </th>
+
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                                    Total
+                                </th>
+
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                                    Estado
+                                </th>
                             </tr>
                         </thead>
+
                         <tbody class="bg-white divide-y divide-gray-200">
                             <tr v-if="reportes.length === 0">
                                 <td colspan="6" class="px-6 py-8 text-center text-sm text-gray-500">
                                     No hay reportes para mostrar
                                 </td>
                             </tr>
-                            <tr v-for="venta in reportes" :key="venta.id" class="hover:bg-gray-50 transition-colors">
-                                <td class="px-6 py-4 text-sm font-medium">{{ venta.folio }}</td>
-                                <td class="px-6 py-4 text-sm">{{ formatearFecha(venta.fecha) }}</td>
-                                <td class="px-6 py-4 text-sm">{{ venta.cliente?.nombre || 'Cliente genérico' }}</td>
-                                <td class="px-6 py-4 text-sm">{{ venta.usuario?.name || '-' }}</td>
+
+                            <tr 
+                                v-for="venta in reportes" 
+                                :key="venta.id" 
+                                class="hover:bg-gray-50 transition-colors"
+                            >
+                                <td class="px-6 py-4 text-sm font-medium">
+                                    {{ venta.folio }}
+                                </td>
+
+                                <td class="px-6 py-4 text-sm">
+                                    {{ formatearFecha(venta.fecha) }}
+                                </td>
+
+                                <td class="px-6 py-4 text-sm">
+                                    {{ venta.cliente?.nombre || 'Cliente genérico' }}
+                                </td>
+
+                                <td class="px-6 py-4 text-sm">
+                                    {{ venta.usuario?.name || '-' }}
+                                </td>
+
                                 <td class="px-6 py-4 text-sm text-right font-semibold">
                                     ${{ formatearNumero(venta.total) }}
                                 </td>
+
                                 <td class="px-6 py-4 text-sm text-center">
-                                    <span class="px-2 py-1 text-xs rounded-full" 
-                                          :class="venta.estado === 'pagado' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'">
+                                    <span 
+                                        class="px-2 py-1 text-xs rounded-full" 
+                                        :class="
+                                            venta.estado === 'pagado'
+                                                ? 'bg-green-100 text-green-800'
+                                                : 'bg-red-100 text-red-800'
+                                        "
+                                    >
                                         {{ venta.estado }}
                                     </span>
                                 </td>
@@ -118,10 +251,14 @@
             </div>
 
             <!-- Paginación -->
-            <div v-if="paginacion && paginacion.last_page > 1" class="flex justify-between items-center mt-4">
+            <div 
+                v-if="paginacion && paginacion.last_page > 1" 
+                class="flex justify-between items-center mt-4"
+            >
                 <span class="text-sm text-gray-600">
                     Mostrando {{ reportes.length }} de {{ paginacion.total || reportes.length }}
                 </span>
+
                 <div class="flex space-x-2">
                     <button 
                         v-if="paginacion.current_page > 1"
@@ -130,9 +267,11 @@
                     >
                         Anterior
                     </button>
+
                     <span class="px-3 py-1 bg-blue-600 text-white rounded text-sm">
                         {{ paginacion.current_page || 1 }}
                     </span>
+
                     <button 
                         v-if="paginacion.current_page < paginacion.last_page"
                         @click="cargarPagina(paginacion.current_page + 1)"
@@ -152,46 +291,87 @@ import Swal from 'sweetalert2';
 
 export default {
     name: 'Reportes',
+
     data() {
         return {
             reportes: [],
+
+            productosMasVendidos: [],
+
             resumen: {
                 total_ventas: 0,
                 numero_tickets: 0,
                 ticket_promedio: 0,
                 total_productos: 0
             },
+
             paginacion: null,
             cargando: false,
             error: null,
+
             filtros: {
                 fecha_desde: '',
                 fecha_hasta: ''
             }
         };
     },
+
     mounted() {
         // Establecer fechas por defecto (últimos 30 días)
         const hoy = new Date();
         const hace30Dias = new Date();
+
         hace30Dias.setDate(hoy.getDate() - 30);
-        
+
         this.filtros.fecha_hasta = hoy.toISOString().split('T')[0];
         this.filtros.fecha_desde = hace30Dias.toISOString().split('T')[0];
-        
+
         this.cargarReportes();
     },
+
     methods: {
         formatearNumero(valor) {
-            if (valor === undefined || valor === null) return '0.00';
-            const num = typeof valor === 'string' ? parseFloat(valor) : valor;
-            if (isNaN(num)) return '0.00';
+            if (valor === undefined || valor === null) {
+                return '0.00';
+            }
+
+            const num = typeof valor === 'string'
+                ? parseFloat(valor)
+                : valor;
+
+            if (isNaN(num)) {
+                return '0.00';
+            }
+
             return num.toFixed(2);
         },
+
+        formatearCantidad(valor) {
+            if (valor === undefined || valor === null) {
+                return '0';
+            }
+
+            const num = typeof valor === 'string'
+                ? parseFloat(valor)
+                : valor;
+
+            if (isNaN(num)) {
+                return '0';
+            }
+
+            return Number.isInteger(num)
+                ? String(num)
+                : num.toFixed(2);
+        },
+
         formatearFecha(fecha) {
-            if (!fecha) return '-';
+            if (!fecha) {
+                return '-';
+            }
+
             try {
                 const d = new Date(fecha);
+
                 return d.toLocaleDateString('es-MX', {
                     day: '2-digit',
                     month: '2-digit',
@@ -203,50 +383,80 @@ export default {
                 return fecha;
             }
         },
+
         async cargarReportes() {
             this.cargando = true;
             this.error = null;
 
             try {
                 const params = {};
+
                 if (this.filtros.fecha_desde) {
                     params.fecha_desde = this.filtros.fecha_desde;
                 }
+
                 if (this.filtros.fecha_hasta) {
                     params.fecha_hasta = this.filtros.fecha_hasta;
                 }
 
                 const response = await api.get('/admin/reportes', { params });
-                
+
                 // Manejar respuesta con paginación
                 if (response.data.data) {
                     this.reportes = response.data.data || [];
+
                     this.paginacion = {
                         current_page: response.data.current_page || 1,
                         last_page: response.data.last_page || 1,
                         total: response.data.total || 0
                     };
+
                     this.resumen = {
                         total_ventas: response.data.total_ventas || 0,
                         numero_tickets: response.data.numero_tickets || 0,
                         ticket_promedio: response.data.ticket_promedio || 0,
-                        total_productos: this.reportes.reduce((sum, v) => sum + (v.detalles?.length || 0), 0)
+                        total_productos: response.data.total_productos || 0
                     };
+
+                    this.productosMasVendidos =
+                        response.data.productos_mas_vendidos || [];
                 } else {
                     // Si la respuesta es directa
-                    this.reportes = Array.isArray(response.data) ? response.data : [];
+                    this.reportes = Array.isArray(response.data)
+                        ? response.data
+                        : [];
+
                     this.paginacion = null;
+
                     this.resumen = {
-                        total_ventas: this.reportes.length,
+                        total_ventas: this.reportes.reduce(
+                            (sum, v) => sum + (parseFloat(v.total) || 0),
+                            0
+                        ),
+
                         numero_tickets: this.reportes.length,
-                        ticket_promedio: this.reportes.reduce((sum, v) => sum + (parseFloat(v.total) || 0), 0) / (this.reportes.length || 1),
-                        total_productos: this.reportes.reduce((sum, v) => sum + (v.detalles?.length || 0), 0)
+
+                        ticket_promedio:
+                            this.reportes.reduce(
+                                (sum, v) => sum + (parseFloat(v.total) || 0),
+                                0
+                            ) / (this.reportes.length || 1),
+
+                        total_productos: this.reportes.reduce(
+                            (sum, v) => sum + (v.detalles?.length || 0),
+                            0
+                        )
                     };
+
+                    this.productosMasVendidos = [];
                 }
             } catch (error) {
                 console.error('Error cargando reportes:', error);
-                this.error = error.response?.data?.message || 'Error al cargar los reportes';
-                
+
+                this.error =
+                    error.response?.data?.message ||
+                    'Error al cargar los reportes';
+
                 await Swal.fire({
                     icon: 'error',
                     title: 'Error',
@@ -256,19 +466,40 @@ export default {
                 this.cargando = false;
             }
         },
+
         async cargarPagina(page) {
             this.cargando = true;
+
             try {
-                const params = { page, ...this.filtros };
+                const params = {
+                    page,
+                    ...this.filtros
+                };
+
                 const response = await api.get('/admin/reportes', { params });
+
                 this.reportes = response.data.data || [];
+
                 this.paginacion = {
                     current_page: response.data.current_page || 1,
                     last_page: response.data.last_page || 1,
                     total: response.data.total || 0
                 };
+
+                // Mantener actualizado el resumen
+                this.resumen = {
+                    total_ventas: response.data.total_ventas || 0,
+                    numero_tickets: response.data.numero_tickets || 0,
+                    ticket_promedio: response.data.ticket_promedio || 0,
+                    total_productos: response.data.total_productos || 0
+                };
+
+                // Mantener actualizados los productos más vendidos
+                this.productosMasVendidos =
+                    response.data.productos_mas_vendidos || [];
             } catch (error) {
                 console.error('Error cargando página:', error);
+
                 await Swal.fire({
                     icon: 'error',
                     title: 'Error',
@@ -278,26 +509,38 @@ export default {
                 this.cargando = false;
             }
         },
+
         async exportarReportes() {
             try {
                 const params = {};
+
                 if (this.filtros.fecha_desde) {
                     params.fecha_desde = this.filtros.fecha_desde;
                 }
+
                 if (this.filtros.fecha_hasta) {
                     params.fecha_hasta = this.filtros.fecha_hasta;
                 }
-                
-                const response = await api.get('/admin/reportes/exportar', { 
+
+                const response = await api.get('/admin/reportes/exportar', {
                     params,
                     responseType: 'blob'
                 });
-                
+
                 // Descargar archivo
-                const url = window.URL.createObjectURL(new Blob([response.data]));
+                const url = window.URL.createObjectURL(
+                    new Blob([response.data])
+                );
+
                 const link = document.createElement('a');
+
                 link.href = url;
-                link.setAttribute('download', `reportes_${new Date().toISOString().split('T')[0]}.xlsx`);
+
+                link.setAttribute(
+                    'download',
+                    `reportes_${new Date().toISOString().split('T')[0]}.xlsx`
+                );
+
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
@@ -311,10 +554,13 @@ export default {
                 });
             } catch (error) {
                 console.error('Error exportando:', error);
+
                 await Swal.fire({
                     icon: 'error',
                     title: 'Error',
-                    text: error.response?.data?.message || 'Error al exportar reportes'
+                    text:
+                        error.response?.data?.message ||
+                        'Error al exportar reportes'
                 });
             }
         }
@@ -328,7 +574,12 @@ export default {
 }
 
 @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
 }
 </style>
