@@ -14,6 +14,8 @@ import Auditoria from "./views/Auditoria.vue";
 import Promociones from "./views/Promociones.vue";
 import Cupones from "./views/Cupones.vue";
 import Empresas from "./views/Empresas.vue";
+import Cajas from "./views/CajasView.vue";
+import Mesas from "./views/Mesas.vue";
 
 // ✅ USAR export default CORRECTAMENTE
 const routes = [
@@ -65,6 +67,17 @@ const routes = [
     {
         path: "/ventas",
         component: HistorialVentas,
+        meta: { requiresAuth: true },
+    },
+    {
+        path: "/cajas",
+        component: Cajas,
+        meta: { requiresAuth: true },
+    },
+
+    {
+        path: "/mesas",
+        component: Mesas,
         meta: { requiresAuth: true },
     },
     {

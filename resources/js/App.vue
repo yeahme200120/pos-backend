@@ -122,7 +122,25 @@
                             Historial Ventas
                         </span>
                     </router-link>
+                    <!-- ================================================= -->
+                    <!-- CAJA Y MESAS -->
+                    <!-- ================================================= -->
 
+                    <router-link to="/cajas"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">
+                            Cajas
+                        </span>
+                    </router-link>
+
+                    <router-link to="/mesas"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">
+                            Mesas
+                        </span>
+                    </router-link>
                     <!-- ================================================= -->
                     <!-- PROMOCIONES -->
                     <!-- ================================================= -->
@@ -352,7 +370,7 @@ export default {
                 usuarioActual.value = {
                     ...usuario
                 };
-                
+
 
             } catch (error) {
 

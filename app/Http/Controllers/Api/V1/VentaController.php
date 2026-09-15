@@ -9,6 +9,7 @@ use App\Models\Cliente;
 use App\Models\ConfiguracionTicket;
 use App\Models\DetalleVenta;
 use App\Models\Mesa;
+use App\Models\MovimientoCaja;
 use App\Models\Pago;
 use App\Models\Producto;
 use App\Models\UnidadMedida;
@@ -90,12 +91,6 @@ class VentaController extends Controller
                 'min:1',
             ],
 
-            /*
-             * Información opcional para sincronización/offline.
-             *
-             * Si producto_id no existe en servidor, estos datos permiten
-             * crear automáticamente el producto.
-             */
             'productos.*.producto' => [
                 'nullable',
                 'array',
@@ -167,9 +162,6 @@ class VentaController extends Controller
                 'min:1',
             ],
 
-            /*
-             * Catálogo de categoría.
-             */
             'productos.*.producto.categoria' => [
                 'nullable',
                 'array',
@@ -187,9 +179,6 @@ class VentaController extends Controller
                 'max:100',
             ],
 
-            /*
-             * Catálogo de unidad de medida.
-             */
             'productos.*.producto.unidad_medida' => [
                 'nullable',
                 'array',
@@ -335,11 +324,6 @@ class VentaController extends Controller
                 }
             }
 
-            /*
-             * Validación inicial de descuentos.
-             *
-             * Los productos se vuelven a bloquear dentro de la transacción.
-             */
             foreach ($validated['productos'] as $item) {
                 $subtotalBruto = round(
                     (float) $item['precio'] *
@@ -422,10 +406,6 @@ class VentaController extends Controller
                         ?? null;
 
                     if (! $producto) {
-                        /*
-                         * Si viene información suficiente del producto,
-                         * se crea automáticamente.
-                         */
                         $producto = $this->crearProductoDesdeVentaSiEsNecesario(
                             $item,
                             $empresaId
@@ -614,6 +594,21 @@ class VentaController extends Controller
                     $mesaBloqueada->update([
                         'estado' => 'libre',
                     ]);
+                }
+
+                /*
+                 * Registrar movimiento de caja si la empresa
+                 * tiene cajas activas y la venta quedó asociada.
+                 */
+                if ($caja) {
+                    $this->registrarMovimientoCaja(
+                        $caja,
+                        $user,
+                        $venta,
+                        'ingreso',
+                        (float) $venta->total,
+                        'Venta ' . $venta->folio
+                    );
                 }
 
                 return $venta->fresh([
@@ -1132,7 +1127,8 @@ class VentaController extends Controller
                 $id,
                 $empresaId,
                 $empresa,
-                $validated
+                $validated,
+                $user
             ) {
                 $venta = Venta::query()
                     ->withTrashed()
@@ -1193,12 +1189,44 @@ class VentaController extends Controller
                 }
 
                 $estadoAnterior = $venta->estado;
+                $totalAnulado = (float) $venta->total;
 
                 $venta->estado = 'cancelado';
                 $venta->motivo_cancelacion =
                     $validated['motivo'] ?? null;
 
                 $venta->save();
+
+                /*
+                 * Reverso en caja: si la venta había generado un ingreso,
+                 * registramos el egreso por el total anulado.
+                 */
+                if ($venta->caja_id !== null && $totalAnulado > 0) {
+                    $cajaOriginal = Caja::query()
+                        ->where('empresa_id', $empresaId)
+                        ->whereKey($venta->caja_id)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($cajaOriginal) {
+                        $this->registrarMovimientoCaja(
+                            $cajaOriginal,
+                            $user,
+                            $venta,
+                            'egreso',
+                            $totalAnulado,
+                            'Anulación venta ' . $venta->folio
+                        );
+                    } else {
+                        Log::warning(
+                            'Venta anulada sin caja original disponible para reverso.',
+                            [
+                                'venta_id' => $venta->id,
+                                'caja_id'  => $venta->caja_id,
+                            ]
+                        );
+                    }
+                }
 
                 if ($venta->mesa_id !== null) {
                     if (! $empresa->usaMesas()) {
@@ -1399,7 +1427,8 @@ class VentaController extends Controller
                 $id,
                 $empresaId,
                 $empresa,
-                $validated
+                $validated,
+                $user
             ) {
                 $venta = Venta::query()
                     ->withTrashed()
@@ -1578,6 +1607,37 @@ class VentaController extends Controller
                 }
 
                 $venta->save();
+
+                /*
+                 * Reverso en caja por el importe devuelto.
+                 */
+                if ($venta->caja_id !== null && $totalDevuelto > 0) {
+                    $cajaOriginal = Caja::query()
+                        ->where('empresa_id', $empresaId)
+                        ->whereKey($venta->caja_id)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($cajaOriginal) {
+                        $this->registrarMovimientoCaja(
+                            $cajaOriginal,
+                            $user,
+                            $venta,
+                            'egreso',
+                            $totalDevuelto,
+                            'Devolución venta ' . $venta->folio
+                        );
+                    } else {
+                        Log::warning(
+                            'Devolución sin caja original disponible para reverso.',
+                            [
+                                'venta_id' => $venta->id,
+                                'caja_id'  => $venta->caja_id,
+                                'monto'    => $totalDevuelto,
+                            ]
+                        );
+                    }
+                }
 
                 return $venta->fresh([
                     'cliente',
@@ -2030,341 +2090,240 @@ class VentaController extends Controller
             ], 500);
         }
     }
-/**
- * Generar ticket de venta en PDF.
- */
-public function ticket($id, Request $request)
-{
-    $user = $request->user();
 
-    if (! $user) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Usuario no autenticado.',
-        ], 401);
-    }
+    /**
+     * Generar ticket de venta en PDF.
+     */
+    public function ticket($id, Request $request)
+    {
+        $user = $request->user();
 
-    $empresaId = (int) $user->empresa_id;
-    $empresa = $user->empresa;
-
-    if ($empresaId <= 0 || ! $empresa) {
-        return response()->json([
-            'success' => false,
-            'message' => 'El usuario no tiene una empresa válida asociada.',
-        ], 403);
-    }
-
-    if (! is_numeric($id) || (int) $id <= 0) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Identificador de venta inválido.',
-        ], 422);
-    }
-
-    try {
-        $venta = Venta::query()
-            ->where('empresa_id', $empresaId)
-            ->with([
-                'cliente',
-                'usuario',
-                'detalles.producto',
-                'pagos',
-            ])
-            ->find((int) $id);
-
-        if (! $venta) {
+        if (! $user) {
             return response()->json([
                 'success' => false,
-                'message' => 'Venta no encontrada.',
-            ], 404);
+                'message' => 'Usuario no autenticado.',
+            ], 401);
         }
 
-        /*
-         * ------------------------------------------------------------
-         * LOGO
-         * ------------------------------------------------------------
-         */
-        $logoPath = null;
+        $empresaId = (int) $user->empresa_id;
+        $empresa = $user->empresa;
 
-        if (! empty($empresa->logo)) {
-            $posiblesRutas = [
-                public_path($empresa->logo),
-                public_path('img/' . basename($empresa->logo)),
-                storage_path('app/public/' . $empresa->logo),
-                public_path('storage/' . $empresa->logo),
-            ];
+        if ($empresaId <= 0 || ! $empresa) {
+            return response()->json([
+                'success' => false,
+                'message' => 'El usuario no tiene una empresa válida asociada.',
+            ], 403);
+        }
 
-            foreach ($posiblesRutas as $ruta) {
-                if (is_file($ruta)) {
-                    $logoPath = $ruta;
-                    break;
+        if (! is_numeric($id) || (int) $id <= 0) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Identificador de venta inválido.',
+            ], 422);
+        }
+
+        try {
+            $venta = Venta::query()
+                ->where('empresa_id', $empresaId)
+                ->with([
+                    'cliente',
+                    'usuario',
+                    'detalles.producto',
+                    'pagos',
+                ])
+                ->find((int) $id);
+
+            if (! $venta) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Venta no encontrada.',
+                ], 404);
+            }
+
+            $logoPath = null;
+
+            if (! empty($empresa->logo)) {
+                $posiblesRutas = [
+                    public_path($empresa->logo),
+                    public_path('img/' . basename($empresa->logo)),
+                    storage_path('app/public/' . $empresa->logo),
+                    public_path('storage/' . $empresa->logo),
+                ];
+
+                foreach ($posiblesRutas as $ruta) {
+                    if (is_file($ruta)) {
+                        $logoPath = $ruta;
+                        break;
+                    }
                 }
             }
-        }
 
-        /*
-         * ------------------------------------------------------------
-         * CONFIGURACIÓN REAL DEL TICKET
-         * ------------------------------------------------------------
-         *
-         * ConfiguracionTicket es un MODELO Eloquent.
-         * Por lo tanto $config debe permanecer como objeto.
-         *
-         * Campos reales según el modelo:
-         *
-         * papel
-         * fuente
-         * tamano_fuente
-         * alineacion
-         * mostrar_logo
-         * mostrar_qr
-         * qr_contenido
-         * campos
-         * cabecera
-         * pie_pagina
-         * activo
-         */
-        $config = ConfiguracionTicket::query()
-            ->where('empresa_id', $empresaId)
-            ->first();
+            $config = ConfiguracionTicket::query()
+                ->where('empresa_id', $empresaId)
+                ->first();
 
-        /*
-         * TicketConfigController garantiza que normalmente exista.
-         * Si por alguna razón todavía no existe, creamos el modelo
-         * solamente en memoria. No se guarda en la base de datos.
-         */
-        if (! $config) {
-            $config = new ConfiguracionTicket();
+            if (! $config) {
+                $config = new ConfiguracionTicket();
 
-            $config->empresa_id = $empresaId;
-            $config->papel = '58mm';
-            $config->fuente = 'Arial';
-            $config->tamano_fuente = 12;
-            $config->alineacion = 'izquierda';
-            $config->mostrar_logo = true;
-            $config->mostrar_qr = true;
-            $config->qr_contenido = $venta->uuid;
-            $config->campos = [
-                [
-                    'nombre' => 'nombre_negocio',
-                    'visible' => true,
-                    'orden' => 1,
-                ],
-                [
-                    'nombre' => 'direccion',
-                    'visible' => true,
-                    'orden' => 2,
-                ],
-                [
-                    'nombre' => 'telefono',
-                    'visible' => true,
-                    'orden' => 3,
-                ],
-                [
-                    'nombre' => 'fecha',
-                    'visible' => true,
-                    'orden' => 4,
-                ],
-                [
-                    'nombre' => 'productos',
-                    'visible' => true,
-                    'orden' => 5,
-                ],
-                [
-                    'nombre' => 'total',
-                    'visible' => true,
-                    'orden' => 6,
-                ],
-            ];
-            $config->cabecera = '¡Gracias por su compra!';
-            $config->pie_pagina = 'Visítenos en www.miempresa.com';
-            $config->activo = true;
-        }
-
-        /*
-         * Si no tiene contenido QR, usar el UUID de la venta.
-         */
-        if (empty($config->qr_contenido)) {
-            $config->qr_contenido = $venta->uuid;
-        }
-
-        /*
-         * ------------------------------------------------------------
-         * ANCHO DEL PAPEL
-         * ------------------------------------------------------------
-         *
-         * El campo REAL de ConfiguracionTicket es "papel".
-         */
-        $anchoPapel = $config->papel === '80mm'
-            ? 226.77
-            : 164.41;
-
-        /*
-         * ------------------------------------------------------------
-         * CAMPOS VISIBLES
-         * ------------------------------------------------------------
-         *
-         * ConfiguracionTicket tiene cast:
-         *
-         * 'campos' => 'array'
-         *
-         * Por lo tanto aquí recibimos un array.
-         *
-         * El formato que TicketConfigController guarda es:
-         *
-         * [
-         *     [
-         *         'nombre' => 'nombre_negocio',
-         *         'visible' => true,
-         *         'orden' => 1,
-         *     ],
-         *     ...
-         * ]
-         *
-         * La vista, en cambio, consulta:
-         *
-         * $camposVisibles['nombre_negocio']
-         * $camposVisibles['direccion']
-         * etc.
-         *
-         * Por eso hacemos la conversión aquí.
-         */
-        $campos = $config->campos;
-
-        if (! is_array($campos)) {
-            $campos = [];
-        }
-
-        $camposVisibles = [];
-
-        foreach ($campos as $campo) {
-            if (! is_array($campo)) {
-                continue;
+                $config->empresa_id = $empresaId;
+                $config->papel = '58mm';
+                $config->fuente = 'Arial';
+                $config->tamano_fuente = 12;
+                $config->alineacion = 'izquierda';
+                $config->mostrar_logo = true;
+                $config->mostrar_qr = true;
+                $config->qr_contenido = $venta->uuid;
+                $config->campos = [
+                    [
+                        'nombre' => 'nombre_negocio',
+                        'visible' => true,
+                        'orden' => 1,
+                    ],
+                    [
+                        'nombre' => 'direccion',
+                        'visible' => true,
+                        'orden' => 2,
+                    ],
+                    [
+                        'nombre' => 'telefono',
+                        'visible' => true,
+                        'orden' => 3,
+                    ],
+                    [
+                        'nombre' => 'fecha',
+                        'visible' => true,
+                        'orden' => 4,
+                    ],
+                    [
+                        'nombre' => 'productos',
+                        'visible' => true,
+                        'orden' => 5,
+                    ],
+                    [
+                        'nombre' => 'total',
+                        'visible' => true,
+                        'orden' => 6,
+                    ],
+                ];
+                $config->cabecera = '¡Gracias por su compra!';
+                $config->pie_pagina = 'Visítenos en www.miempresa.com';
+                $config->activo = true;
             }
 
-            $nombre = $campo['nombre'] ?? null;
-
-            if (
-                $nombre !== null &&
-                ($campo['visible'] ?? true)
-            ) {
-                $camposVisibles[$nombre] = true;
+            if (empty($config->qr_contenido)) {
+                $config->qr_contenido = $venta->uuid;
             }
-        }
 
-        /*
-         * Si la configuración no contiene campos, mantener el
-         * comportamiento que espera la vista.
-         */
-        if (empty($camposVisibles)) {
-            $camposVisibles = [
-                'nombre_negocio' => true,
-                'direccion' => true,
-                'telefono' => true,
-                'fecha' => true,
-                'productos' => true,
-                'total' => true,
+            $anchoPapel = $config->papel === '80mm'
+                ? 226.77
+                : 164.41;
+
+            $campos = $config->campos;
+
+            if (! is_array($campos)) {
+                $campos = [];
+            }
+
+            $camposVisibles = [];
+
+            foreach ($campos as $campo) {
+                if (! is_array($campo)) {
+                    continue;
+                }
+
+                $nombre = $campo['nombre'] ?? null;
+
+                if (
+                    $nombre !== null &&
+                    ($campo['visible'] ?? true)
+                ) {
+                    $camposVisibles[$nombre] = true;
+                }
+            }
+
+            if (empty($camposVisibles)) {
+                $camposVisibles = [
+                    'nombre_negocio' => true,
+                    'direccion' => true,
+                    'telefono' => true,
+                    'fecha' => true,
+                    'productos' => true,
+                    'total' => true,
+                ];
+            }
+
+            $data = [
+                'venta' => $venta,
+                'empresa' => $empresa,
+                'config' => $config,
+                'camposVisibles' => $camposVisibles,
+                'fecha' => optional($venta->fecha)->format('d/m/Y H:i'),
+                'anchoPapel' => $anchoPapel,
+                'logoPath' => $logoPath,
             ];
-        }
 
-        /*
-         * ------------------------------------------------------------
-         * DATOS PARA tickets.venta
-         * ------------------------------------------------------------
-         */
-        $data = [
-            'venta' => $venta,
-            'empresa' => $empresa,
-            'config' => $config,
-            'camposVisibles' => $camposVisibles,
-            'fecha' => optional($venta->fecha)->format('d/m/Y H:i'),
-            'anchoPapel' => $anchoPapel,
-            'logoPath' => $logoPath,
-        ];
+            if (! view()->exists('tickets.venta')) {
+                throw new \RuntimeException(
+                    'La vista tickets.venta no existe.'
+                );
+            }
 
-        /*
-         * ------------------------------------------------------------
-         * VALIDAR VISTA
-         * ------------------------------------------------------------
-         */
-        if (! view()->exists('tickets.venta')) {
-            throw new \RuntimeException(
-                'La vista tickets.venta no existe.'
+            $pdf = Pdf::loadView('tickets.venta', $data);
+
+            $pdf->setPaper(
+                [0, 0, $anchoPapel, 1000],
+                'portrait'
             );
-        }
 
-        /*
-         * ------------------------------------------------------------
-         * GENERAR PDF
-         * ------------------------------------------------------------
-         */
-        $pdf = Pdf::loadView('tickets.venta', $data);
+            $pdf->setOptions([
+                'defaultFont' => 'Courier',
+                'isHtml5ParserEnabled' => true,
+                'isRemoteEnabled' => true,
+            ]);
 
-        $pdf->setPaper(
-            [0, 0, $anchoPapel, 1000],
-            'portrait'
-        );
+            $filename = 'ticket_' . $venta->folio . '.pdf';
 
-        $pdf->setOptions([
-            'defaultFont' => 'Courier',
-            'isHtml5ParserEnabled' => true,
-            'isRemoteEnabled' => true,
-        ]);
+            $this->registrarAuditoria(
+                $request,
+                'generar_ticket',
+                'ventas',
+                $venta->id,
+                null,
+                [
+                    'folio' => $venta->folio,
+                    'download' => (bool) $request->boolean('download'),
+                ],
+                $empresaId,
+                (int) $user->id
+            );
 
-        $filename = 'ticket_' . $venta->folio . '.pdf';
+            if ($request->boolean('download')) {
+                return $pdf->download($filename);
+            }
 
-        /*
-         * ------------------------------------------------------------
-         * AUDITORÍA
-         * ------------------------------------------------------------
-         */
-        $this->registrarAuditoria(
-            $request,
-            'generar_ticket',
-            'ventas',
-            $venta->id,
-            null,
-            [
-                'folio' => $venta->folio,
-                'download' => (bool) $request->boolean('download'),
-            ],
-            $empresaId,
-            (int) $user->id
-        );
+            return $pdf->stream($filename);
+        } catch (Throwable $e) {
+            Log::error(
+                'Error generando ticket de venta.',
+                [
+                    'venta_id' => $id,
+                    'empresa_id' => $empresaId,
+                    'usuario_id' => $user->id,
+                    'error' => $e->getMessage(),
+                    'linea' => $e->getLine(),
+                    'archivo' => $e->getFile(),
+                ]
+            );
 
-        /*
-         * ------------------------------------------------------------
-         * RESPUESTA
-         * ------------------------------------------------------------
-         */
-        if ($request->boolean('download')) {
-            return $pdf->download($filename);
-        }
-
-        return $pdf->stream($filename);
-
-    } catch (Throwable $e) {
-        Log::error(
-            'Error generando ticket de venta.',
-            [
-                'venta_id' => $id,
-                'empresa_id' => $empresaId,
-                'usuario_id' => $user->id,
+            return response()->json([
+                'success' => false,
+                'message' => 'No fue posible generar el ticket.',
                 'error' => $e->getMessage(),
-                'linea' => $e->getLine(),
-                'archivo' => $e->getFile(),
-            ]
-        );
-
-        return response()->json([
-            'success' => false,
-            'message' => 'No fue posible generar el ticket.',
-            'error' => $e->getMessage(),
-            'line' => $e->getLine(),
-            'file' => $e->getFile(),
-        ], 500);
+                'line' => $e->getLine(),
+                'file' => $e->getFile(),
+            ], 500);
+        }
     }
-}
 
     /**
      * Estadísticas del día.
@@ -2393,10 +2352,6 @@ public function ticket($id, Request $request)
             $inicio = now()->startOfDay();
             $fin = now()->endOfDay();
 
-            /*
-             * No cargamos todas las ventas completas.
-             * Solamente obtenemos los datos necesarios para estadísticas.
-             */
             $ventasQuery = Venta::query()
                 ->where('empresa_id', $empresaId)
                 ->whereBetween('fecha', [$inicio, $fin])
@@ -2932,10 +2887,6 @@ public function ticket($id, Request $request)
                     );
                 }
 
-                /*
-                 * Los productos se bloquean en lote para evitar modificar
-                 * inventario con datos obsoletos.
-                 */
                 $productoIds = $venta->detalles
                     ->pluck('producto_id')
                     ->map(static fn ($id) => (int) $id)
@@ -3000,6 +2951,20 @@ public function ticket($id, Request $request)
                         $venta->caja_id,
                     'fecha' => now(),
                 ]);
+
+                /*
+                 * Registrar movimiento de caja si aplica.
+                 */
+                if ($caja) {
+                    $this->registrarMovimientoCaja(
+                        $caja,
+                        $user,
+                        $venta,
+                        'ingreso',
+                        (float) $venta->total,
+                        'Cobro pendiente ' . $venta->folio
+                    );
+                }
 
                 if ($mesa) {
                     $mesa->update([
@@ -3939,9 +3904,46 @@ public function ticket($id, Request $request)
     }
 
     /**
-     * Obtener productos existentes bloqueados.
+     * Registrar un movimiento de caja asociado a una venta.
      *
-     * Se hace una sola consulta en lugar de consultar producto por producto.
+     * No hace nada si no hay caja (empresa sin cajas).
+     * No hace nada si el monto es <= 0.
+     *
+     * @param string $tipo 'ingreso' | 'egreso'
+     */
+    private function registrarMovimientoCaja(
+        ?Caja $caja,
+        $user,
+        Venta $venta,
+        string $tipo,
+        float $monto,
+        string $concepto
+    ): void {
+        if (! $caja) {
+            return;
+        }
+
+        $monto = round($monto, 2);
+
+        if ($monto <= 0) {
+            return;
+        }
+
+        MovimientoCaja::query()->create([
+            'empresa_id'       => (int) $caja->empresa_id,
+            'caja_id'          => (int) $caja->id,
+            'usuario_id'       => (int) $user->id,
+            'tipo'             => $tipo,
+            'concepto'         => $concepto,
+            'monto'            => $monto,
+            'referencia'       => $venta->folio,
+            'notas'            => null,
+            'fecha_movimiento' => now(),
+        ]);
+    }
+
+    /**
+     * Obtener productos existentes bloqueados.
      */
     private function obtenerProductosParaVenta(
         array $items,
@@ -3969,8 +3971,6 @@ public function ticket($id, Request $request)
 
     /**
      * Crear producto faltante cuando la venta trae el catálogo necesario.
-     *
-     * Nunca crea un producto únicamente con un ID inexistente.
      */
     private function crearProductoDesdeVentaSiEsNecesario(
         array $item,
@@ -3994,10 +3994,6 @@ public function ticket($id, Request $request)
             );
         }
 
-        /*
-         * Primero intentamos resolver por código para evitar duplicados
-         * cuando dos sincronizaciones traen el mismo catálogo.
-         */
         $codigo = isset($productoData['codigo'])
             ? trim((string) $productoData['codigo'])
             : null;
@@ -4014,25 +4010,16 @@ public function ticket($id, Request $request)
             }
         }
 
-        /*
-         * Categoría.
-         */
         $categoriaId = $this->resolverOCrearCategoria(
             $productoData,
             $empresaId
         );
 
-        /*
-         * Unidad de medida.
-         */
         $unidadMedidaId = $this->resolverOCrearUnidadMedida(
             $productoData,
             $empresaId
         );
 
-        /*
-         * Segunda comprobación por código dentro de la misma transacción.
-         */
         if ($codigo !== null && $codigo !== '') {
             $existente = Producto::query()
                 ->where('empresa_id', $empresaId)
@@ -4105,11 +4092,6 @@ public function ticket($id, Request $request)
             if ($categoria) {
                 return $categoria->id;
             }
-
-            /*
-             * Si llegó un ID pero además llegó la información del catálogo,
-             * buscamos por los datos del catálogo antes de crear.
-             */
         }
 
         $data = $productoData['categoria'] ?? null;
@@ -4339,11 +4321,6 @@ public function ticket($id, Request $request)
 
     /**
      * Registrar auditoría de una venta.
-     *
-     * IMPORTANTE:
-     * No se excluye al superadmin.
-     *
-     * El actor es siempre el usuario autenticado.
      */
     private function registrarLog(
         Venta $venta,
@@ -4390,8 +4367,6 @@ public function ticket($id, Request $request)
 
     /**
      * Registrar auditoría genérica.
-     *
-     * Nunca se excluye al superadmin.
      */
     private function registrarAuditoria(
         Request $request,
@@ -4409,9 +4384,6 @@ public function ticket($id, Request $request)
             return;
         }
 
-        /*
-         * El actor real siempre es el usuario autenticado.
-         */
         $actorId = (int) $user->id;
 
         try {
