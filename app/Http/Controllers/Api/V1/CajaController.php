@@ -307,7 +307,7 @@ class CajaController extends Controller
                         null,
                         [
                             'motivo' =>
-                                'caja_no_existe_o_no_pertenece_empresa',
+                            'caja_no_existe_o_no_pertenece_empresa',
                         ],
                         $user->empresa_id
                     );
@@ -315,7 +315,7 @@ class CajaController extends Controller
                     return response()->json([
                         'success' => false,
                         'message' =>
-                            'La caja no existe o no pertenece a tu empresa.',
+                        'La caja no existe o no pertenece a tu empresa.',
                     ], 404);
                 }
             } else {
@@ -346,7 +346,7 @@ class CajaController extends Controller
                         'operaciones' => [],
                         'caja' => null,
                         'message' =>
-                            'No hay una caja abierta actualmente.',
+                        'No hay una caja abierta actualmente.',
                     ]);
                 }
             }
@@ -425,7 +425,7 @@ class CajaController extends Controller
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'Error al consultar los movimientos de caja.',
+                'Error al consultar los movimientos de caja.',
             ], 500);
         }
     }
@@ -488,23 +488,23 @@ class CajaController extends Controller
                 ],
                 [
                     'tipo.required' =>
-                        'El tipo de movimiento es obligatorio.',
+                    'El tipo de movimiento es obligatorio.',
                     'tipo.in' =>
-                        'El tipo de movimiento no es válido.',
+                    'El tipo de movimiento no es válido.',
                     'concepto.required' =>
-                        'El concepto del movimiento es obligatorio.',
+                    'El concepto del movimiento es obligatorio.',
                     'concepto.max' =>
-                        'El concepto no puede superar 255 caracteres.',
+                    'El concepto no puede superar 255 caracteres.',
                     'monto.required' =>
-                        'El monto del movimiento es obligatorio.',
+                    'El monto del movimiento es obligatorio.',
                     'monto.numeric' =>
-                        'El monto del movimiento debe ser numérico.',
+                    'El monto del movimiento debe ser numérico.',
                     'monto.min' =>
-                        'El monto del movimiento debe ser mayor que cero.',
+                    'El monto del movimiento debe ser mayor que cero.',
                     'referencia.max' =>
-                        'La referencia no puede superar 150 caracteres.',
+                    'La referencia no puede superar 150 caracteres.',
                     'notas.max' =>
-                        'Las notas no pueden superar 2000 caracteres.',
+                    'Las notas no pueden superar 2000 caracteres.',
                 ]
             );
         } catch (ValidationException $e) {
@@ -550,7 +550,7 @@ class CajaController extends Controller
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'Las cajas no están activas para esta empresa.',
+                'Las cajas no están activas para esta empresa.',
             ], 422);
         }
 
@@ -570,7 +570,7 @@ class CajaController extends Controller
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'Solo un cajero autorizado puede registrar movimientos.',
+                'Solo un cajero autorizado puede registrar movimientos.',
             ], 403);
         }
 
@@ -661,7 +661,7 @@ class CajaController extends Controller
             return response()->json([
                 'success' => true,
                 'message' =>
-                    'Movimiento registrado correctamente.',
+                'Movimiento registrado correctamente.',
                 'data' => $datosDespues,
                 'movimiento' => $datosDespues,
                 'caja' => $caja,
@@ -709,14 +709,11 @@ class CajaController extends Controller
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'Error al registrar el movimiento de caja.',
+                'Error al registrar el movimiento de caja.',
             ], 500);
         }
     }
 
-    /**
-     * Abrir caja.
-     */
     public function abrir(Request $request)
     {
         $user = $request->user();
@@ -742,16 +739,20 @@ class CajaController extends Controller
                         'string',
                         'max:500',
                     ],
+                    'forzar_reapertura' => [
+                        'nullable',
+                        'boolean',
+                    ],
                 ],
                 [
                     'monto_apertura.required' =>
-                        'El monto de apertura es obligatorio.',
+                    'El monto de apertura es obligatorio.',
                     'monto_apertura.numeric' =>
-                        'El monto de apertura debe ser numérico.',
+                    'El monto de apertura debe ser numérico.',
                     'monto_apertura.min' =>
-                        'El monto de apertura no puede ser negativo.',
+                    'El monto de apertura no puede ser negativo.',
                     'notas.max' =>
-                        'Las notas no pueden superar 500 caracteres.',
+                    'Las notas no pueden superar 500 caracteres.',
                 ]
             );
         } catch (ValidationException $e) {
@@ -769,9 +770,7 @@ class CajaController extends Controller
                 'cajas',
                 null,
                 null,
-                [
-                    'motivo' => 'usuario_sin_empresa',
-                ],
+                ['motivo' => 'usuario_sin_empresa'],
                 null
             );
 
@@ -788,16 +787,13 @@ class CajaController extends Controller
                 'cajas',
                 null,
                 null,
-                [
-                    'motivo' => 'cajas_no_activas',
-                ],
+                ['motivo' => 'cajas_no_activas'],
                 $user->empresa_id
             );
 
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Las cajas no están activas para esta empresa.',
+                'message' => 'Las cajas no están activas para esta empresa.',
             ], 422);
         }
 
@@ -808,69 +804,147 @@ class CajaController extends Controller
                 'cajas',
                 null,
                 null,
-                [
-                    'motivo' => 'usuario_no_autorizado',
-                ],
+                ['motivo' => 'usuario_no_autorizado'],
                 $user->empresa_id
             );
 
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Solo un cajero autorizado puede abrir caja.',
+                'message' => 'Solo un cajero autorizado puede abrir caja.',
             ], 403);
         }
 
         try {
-            $caja = DB::transaction(
-                function () use (
-                    $request,
-                    $user
-                ) {
-                    $actual = Caja::query()
-                        ->where('empresa_id', $user->empresa_id)
-                        ->whereDate('fecha_comercial', today())
-                        ->where('estado', 'abierta')
-                        ->lockForUpdate()
-                        ->first();
+            $resultado = DB::transaction(function () use ($request, $user) {
+                $hoy = today();
 
-                    if ($actual) {
-                        throw new \DomainException(
-                            'Ya existe una caja abierta para el día comercial.'
-                        );
-                    }
+                // Bloquea cualquier caja de hoy (abierta o cerrada)
+                $cajaHoy = Caja::query()
+                    ->where('empresa_id', $user->empresa_id)
+                    ->whereDate('fecha_comercial', $hoy)
+                    ->lockForUpdate()
+                    ->first();
 
-                    return Caja::create([
+                // ------------------------------------------------------
+                // CASO 1: NO EXISTE CAJA HOY → crear nueva
+                // ------------------------------------------------------
+                if (!$cajaHoy) {
+                    $caja = Caja::create([
                         'empresa_id' => $user->empresa_id,
                         'usuario_id' => $user->id,
-                        'fecha_comercial' => today(),
+                        'fecha_comercial' => $hoy,
                         'monto_apertura' => round(
                             (float) $request->input('monto_apertura'),
                             2
                         ),
-                        'notas_apertura' =>
-                            $request->input('notas'),
+                        'notas_apertura' => $request->input('notas'),
                         'estado' => 'abierta',
                         'abierta_en' => now(),
                     ]);
+
+                    return [
+                        'accion' => 'abierta',
+                        'caja' => $caja,
+                        'reapertura' => false,
+                    ];
                 }
-            );
+
+                // ------------------------------------------------------
+                // CASO 2: YA EXISTE CAJA ABIERTA HOY → error claro
+                // ------------------------------------------------------
+                if ($cajaHoy->estado === 'abierta') {
+                    throw new \DomainException(
+                        'Ya existe una caja abierta para hoy '
+                            . '(abierta el '
+                            . optional($cajaHoy->abierta_en)->format('d/m/Y H:i')
+                            . '). Debes cerrarla antes de abrir otra.'
+                    );
+                }
+
+                // ------------------------------------------------------
+                // CASO 3: YA EXISTE CAJA CERRADA HOY → reabrir
+                // ------------------------------------------------------
+                $reapertura = true;
+
+                $cierrePrevio = $cajaHoy->cerrada_en
+                    ? $cajaHoy->cerrada_en->format('d/m/Y H:i')
+                    : 'sin fecha registrada';
+
+                $notaReapertura = sprintf(
+                    "[REAPERTURA %s] Caja reabierta por %s. " .
+                        "Cierre previo: %s. " .
+                        "Monto declarado anterior: \$%s. " .
+                        "Diferencia anterior: \$%s.",
+                    now()->format('d/m/Y H:i'),
+                    $user->name ?? 'usuario',
+                    $cierrePrevio,
+                    number_format((float) $cajaHoy->monto_cierre_declarado, 2),
+                    number_format((float) $cajaHoy->diferencia, 2)
+                );
+
+                $notasPrevias = trim((string) $cajaHoy->notas_apertura);
+
+                $notasFinales = $notasPrevias === ''
+                    ? $notaReapertura
+                    : $notasPrevias . "\n\n" . $notaReapertura;
+
+                if ($request->filled('notas')) {
+                    $notasFinales .= "\n\n[NOTAS REAPERTURA] "
+                        . trim((string) $request->input('notas'));
+                }
+
+                $cajaHoy->update([
+                    'usuario_id' => $user->id,
+                    'monto_apertura' => round(
+                        (float) $request->input('monto_apertura'),
+                        2
+                    ),
+                    'notas_apertura' => $notasFinales,
+                    'estado' => 'abierta',
+                    'abierta_en' => now(),
+                    // Se conservan los datos del cierre anterior para
+                    // que quede el histórico completo.
+                    'monto_cierre_declarado' => null,
+                    'monto_esperado' => null,
+                    'diferencia' => null,
+                    'notas_cierre' => null,
+                    'cerrada_en' => null,
+                ]);
+
+                $cajaHoy->refresh();
+
+                return [
+                    'accion' => 'reapertura',
+                    'caja' => $cajaHoy,
+                    'reapertura' => true,
+                    'cierre_previo' => $cierrePrevio,
+                ];
+            });
+
+            $caja = $resultado['caja'];
+            $reapertura = (bool) $resultado['reapertura'];
 
             $this->registrarAuditoria(
                 $request,
-                'caja.abierta',
+                $reapertura ? 'caja.reabierta' : 'caja.abierta',
                 'cajas',
                 $caja->id,
                 null,
-                $caja->toArray(),
+                array_merge($caja->toArray(), [
+                    'reapertura' => $reapertura,
+                ]),
                 $user->empresa_id
             );
 
             return response()->json([
                 'success' => true,
-                'message' => 'Caja abierta correctamente.',
+                'message' => $reapertura
+                    ? 'Caja reabierta correctamente. '
+                    . 'Ten en cuenta que esta caja ya había sido cerrada hoy.'
+                    : 'Caja abierta correctamente.',
+                'reapertura' => $reapertura,
                 'data' => $caja,
-            ], 201);
+            ], $reapertura ? 200 : 201);
         } catch (\DomainException $exception) {
             $this->registrarAuditoria(
                 $request,
@@ -878,9 +952,7 @@ class CajaController extends Controller
                 'cajas',
                 null,
                 null,
-                [
-                    'motivo' => $exception->getMessage(),
-                ],
+                ['motivo' => $exception->getMessage()],
                 $user->empresa_id
             );
 
@@ -889,14 +961,11 @@ class CajaController extends Controller
                 'message' => $exception->getMessage(),
             ], 422);
         } catch (Throwable $e) {
-            Log::error(
-                'Error al abrir caja.',
-                [
-                    'usuario_id' => $user->id,
-                    'empresa_id' => $user->empresa_id,
-                    'error' => $e->getMessage(),
-                ]
-            );
+            Log::error('Error al abrir caja.', [
+                'usuario_id' => $user->id,
+                'empresa_id' => $user->empresa_id,
+                'error' => $e->getMessage(),
+            ]);
 
             $this->registrarAuditoria(
                 $request,
@@ -904,9 +973,7 @@ class CajaController extends Controller
                 'cajas',
                 null,
                 null,
-                [
-                    'error' => $e->getMessage(),
-                ],
+                ['error' => $e->getMessage()],
                 $user->empresa_id
             );
 
@@ -950,13 +1017,13 @@ class CajaController extends Controller
                 ],
                 [
                     'monto_cierre_declarado.required' =>
-                        'El monto declarado de cierre es obligatorio.',
+                    'El monto declarado de cierre es obligatorio.',
                     'monto_cierre_declarado.numeric' =>
-                        'El monto declarado de cierre debe ser numérico.',
+                    'El monto declarado de cierre debe ser numérico.',
                     'monto_cierre_declarado.min' =>
-                        'El monto declarado de cierre no puede ser negativo.',
+                    'El monto declarado de cierre no puede ser negativo.',
                     'notas.max' =>
-                        'Las notas no pueden superar 500 caracteres.',
+                    'Las notas no pueden superar 500 caracteres.',
                 ]
             );
         } catch (ValidationException $e) {
@@ -1015,7 +1082,7 @@ class CajaController extends Controller
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'Las cajas no están activas para esta empresa.',
+                'Las cajas no están activas para esta empresa.',
             ], 422);
         }
 
@@ -1035,7 +1102,7 @@ class CajaController extends Controller
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'Solo un cajero autorizado puede cerrar caja.',
+                'Solo un cajero autorizado puede cerrar caja.',
             ], 403);
         }
 
@@ -1148,10 +1215,10 @@ class CajaController extends Controller
 
                     $esperado = round(
                         (float) $caja->monto_apertura +
-                        (float) $efectivo +
-                        (float) $ingresos +
-                        (float) $ajustes -
-                        (float) $egresos,
+                            (float) $efectivo +
+                            (float) $ingresos +
+                            (float) $ajustes -
+                            (float) $egresos,
                         2
                     );
 
@@ -1173,7 +1240,7 @@ class CajaController extends Controller
                         'monto_cierre_declarado' => $declarado,
                         'diferencia' => $diferencia,
                         'notas_cierre' =>
-                            $request->input('notas'),
+                        $request->input('notas'),
                         'cerrada_en' => now(),
                     ]);
 
@@ -1217,7 +1284,7 @@ class CajaController extends Controller
                     $caja->toArray(),
                     [
                         'resumen_movimientos' =>
-                            $resultado['resumen_movimientos'],
+                        $resultado['resumen_movimientos'],
                     ]
                 ),
                 $user->empresa_id
@@ -1228,7 +1295,7 @@ class CajaController extends Controller
                 'message' => 'Caja cerrada correctamente.',
                 'data' => $caja,
                 'resumen_movimientos' =>
-                    $resultado['resumen_movimientos'],
+                $resultado['resumen_movimientos'],
             ]);
         } catch (ModelNotFoundException $exception) {
             $this->registrarAuditoria(
@@ -1239,7 +1306,7 @@ class CajaController extends Controller
                 null,
                 [
                     'motivo' =>
-                        'caja_no_existe_o_no_pertenece_empresa',
+                    'caja_no_existe_o_no_pertenece_empresa',
                 ],
                 $user->empresa_id
             );
@@ -1247,7 +1314,7 @@ class CajaController extends Controller
             return response()->json([
                 'success' => false,
                 'message' =>
-                    'La caja no existe o no pertenece a tu empresa.',
+                'La caja no existe o no pertenece a tu empresa.',
             ], 404);
         } catch (\DomainException $exception) {
             $this->registrarAuditoria(
