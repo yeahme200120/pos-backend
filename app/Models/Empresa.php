@@ -122,20 +122,20 @@ class Empresa extends Model
 
     public function usaMesas(): bool
     {
-        return (bool) data_get(
-            $this->configuracion,
-            'usa_mesas',
-            false
-        );
+        // CORREGIDO: compatibilidad con ambas claves.
+        //   - 'mesas_activas' (registro desde app)
+        //   - 'usa_mesas'     (panel admin / registros antiguos)
+        return (bool) data_get($this->configuracion, 'mesas_activas')
+            || (bool) data_get($this->configuracion, 'usa_mesas');
     }
 
     public function usaCajas(): bool
     {
-        return (bool) data_get(
-            $this->configuracion,
-            'usa_cajas',
-            false
-        );
+        // CORREGIDO: compatibilidad con ambas claves.
+        //   - 'cajas_activas' (registro desde app)
+        //   - 'usa_cajas'     (panel admin / registros antiguos)
+        return (bool) data_get($this->configuracion, 'cajas_activas')
+            || (bool) data_get($this->configuracion, 'usa_cajas');
     }
 
     /*

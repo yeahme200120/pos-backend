@@ -20,11 +20,39 @@ class RegisterController extends Controller
 {
     private const DIAS_PRUEBA = 7;
 
-    private const PASSWORD_GENERICA = 'pos2026';
-
     public function __construct(
         private readonly AuditoriaService $auditoriaService
     ) {}
+
+    /**
+     * Genera una contraseña aleatoria legible:
+     *   - 12 caracteres
+     *   - Al menos 1 mayúscula, 1 minúscula, 1 número
+     *   - Sin símbolos (fácil de copiar a mano)
+     *   - Sin caracteres ambiguos (O/0, I/l/1)
+     */
+    private function generarPasswordAleatoria(): string
+    {
+        $mayusculas = 'ABCDEFGHJKLMNPQRSTUVWXYZ';   // sin I, O
+        $minusculas = 'abcdefghijkmnopqrstuvwxyz';  // sin l
+        $numeros    = '23456789';                    // sin 0, 1
+
+        $password = [
+            $mayusculas[random_int(0, strlen($mayusculas) - 1)],
+            $minusculas[random_int(0, strlen($minusculas) - 1)],
+            $numeros[random_int(0, strlen($numeros) - 1)],
+        ];
+
+        $todos = $mayusculas . $minusculas . $numeros;
+
+        while (count($password) < 12) {
+            $password[] = $todos[random_int(0, strlen($todos) - 1)];
+        }
+
+        shuffle($password);
+
+        return implode('', $password);
+    }
 
     /**
      * Registrar una nueva empresa con licencia de prueba.
@@ -57,9 +85,13 @@ class RegisterController extends Controller
             'nombre' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255'],
             'telefono' => ['nullable', 'string', 'max:20'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
             'mac_address' => ['required', 'string', 'max:45'],
             'rfc' => ['nullable', 'string', 'max:20'],
+            // 🆕 UBICACIÓN (opcional, validada si viene)
+            'latitud' => ['nullable', 'numeric', 'between:-90,90'],
+            'longitud' => ['nullable', 'numeric', 'between:-180,180'],
+            'precision_metros' => ['nullable', 'numeric', 'min:0', 'max:10000'],
+            'ubicacion_provider' => ['nullable', 'string', 'max:30'],
         ]);
 
         $email = strtolower(trim($data['email']));
@@ -206,6 +238,14 @@ class RegisterController extends Controller
         }
 
         // ----------------------------------------------------------
+        // CONTRASEÑA ALEATORIA
+        // ----------------------------------------------------------
+        // La contraseña se genera aquí y se guarda hasheada en el
+        // usuario. Se devuelve en texto plano SOLO en esta respuesta
+        // para que el usuario pueda guardarla.
+        $passwordPlano = $this->generarPasswordAleatoria();
+
+        // ----------------------------------------------------------
         // CREAR TODO EN UNA TRANSACCIÓN
         // ----------------------------------------------------------
         try {
@@ -214,7 +254,8 @@ class RegisterController extends Controller
                 $email,
                 $mac,
                 $empresaNombre,
-                $ip
+                $ip,
+                $passwordPlano
             ) {
                 // ----------------------------------------------
                 // EMPRESA
@@ -226,7 +267,7 @@ class RegisterController extends Controller
                     'telefono' => $data['telefono'] ?? null,
                     'configuracion' => [
                         'cajas_activas' => true,
-                        'mesas_activas' => false,
+                        'mesas_activas' => true,
                     ],
                     'colores' => [
                         'primary' => '#1E293B',
@@ -256,7 +297,7 @@ class RegisterController extends Controller
                 $user = User::create([
                     'name' => trim($data['nombre']),
                     'email' => $email,
-                    'password' => Hash::make(self::PASSWORD_GENERICA),
+                    'password' => Hash::make($passwordPlano),
                     'telefono' => $data['telefono'] ?? null,
                     'numero_usuario' => $numeroUsuario,
                     'empresa_id' => $empresa->id,
@@ -370,9 +411,10 @@ class RegisterController extends Controller
                 'fecha_comercial' => now()->toDateString(),
                 'credenciales_iniciales' => [
                     'numero_usuario' => $numeroUsuario,
-                    'password_generica' => self::PASSWORD_GENERICA,
-                    'mensaje' => 'Guarda estas credenciales. '
-                        . 'Cambia la contraseña en Configuración → Usuario.',
+                    'password_generica' => $passwordPlano,
+                    'mensaje' => 'Esta es tu contraseña temporal. '
+                        . 'Cópiala en un lugar seguro. '
+                        . 'Debes cambiarla desde Configuración → Usuario.',
                 ],
             ], 201);
         } catch (Throwable $e) {

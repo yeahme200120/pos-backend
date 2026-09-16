@@ -218,27 +218,27 @@ class AuditoriaController extends Controller
                 null,
                 [
                     'empresa_id_filtro' =>
-                        $request->input('empresa_id'),
+                    $request->input('empresa_id'),
 
                     'usuario_id' =>
-                        $request->input('usuario_id'),
+                    $request->input('usuario_id'),
 
                     'accion' =>
-                        $request->input('accion'),
+                    $request->input('accion'),
 
                     'tabla' =>
-                        $request->input('tabla'),
+                    $request->input('tabla'),
 
                     'fecha_desde' =>
-                        $request->input('fecha_desde'),
+                    $request->input('fecha_desde'),
 
                     'fecha_hasta' =>
-                        $request->input('fecha_hasta'),
+                    $request->input('fecha_hasta'),
 
                     'per_page' => $perPage,
 
                     'consulta_global' =>
-                        $esSuperAdmin &&
+                    $esSuperAdmin &&
                         !$request->filled('empresa_id'),
                 ],
                 $request->filled('empresa_id')
@@ -306,7 +306,7 @@ class AuditoriaController extends Controller
                 if ($empresaId <= 0) {
                     return response()->json([
                         'message' =>
-                            'El usuario no tiene una empresa válida.',
+                        'El usuario no tiene una empresa válida.',
                     ], 403);
                 }
 
@@ -329,16 +329,16 @@ class AuditoriaController extends Controller
                 null,
                 [
                     'registro_consultado' =>
-                        (int) $log->id,
+                    (int) $log->id,
 
                     'accion_original' =>
-                        $log->accion,
+                    $log->accion,
 
                     'tabla_original' =>
-                        $log->tabla,
+                    $log->tabla,
 
                     'registro_id_original' =>
-                        $log->registro_id,
+                    $log->registro_id,
                 ],
                 $log->empresa_id !== null
                     ? (int) $log->empresa_id
@@ -360,7 +360,7 @@ class AuditoriaController extends Controller
 
             return response()->json([
                 'message' =>
-                    'Error al consultar el registro de auditoría.',
+                'Error al consultar el registro de auditoría.',
             ], 500);
         }
     }
@@ -417,7 +417,7 @@ class AuditoriaController extends Controller
                 if ($empresaFiltro <= 0) {
                     return response()->json([
                         'message' =>
-                            'El usuario no tiene una empresa válida.',
+                        'El usuario no tiene una empresa válida.',
                     ], 403);
                 }
             }
@@ -498,6 +498,14 @@ class AuditoriaController extends Controller
                 'Datos Antes',
                 'Datos Después',
                 'IP',
+
+                // 🆕 UBICACIÓN
+                'Latitud',
+                'Longitud',
+                'Precisión (m)',
+                'Proveedor ubicación',
+                'Ubicación capturada',
+
                 'Fecha',
             ]);
 
@@ -562,12 +570,38 @@ class AuditoriaController extends Controller
                                     $log->ip ?? ''
                                 ),
 
+                                // 🆕 UBICACIÓN
                                 $this->valorCsv(
-                                    $log->created_at
-                                        ? $log->created_at
+                                    $log->latitud
+                                ),
+
+                                $this->valorCsv(
+                                    $log->longitud
+                                ),
+
+                                $this->valorCsv(
+                                    $log->precision_metros
+                                ),
+
+                                $this->valorCsv(
+                                    $log->ubicacion_provider ?? ''
+                                ),
+
+                                $this->valorCsv(
+                                    $log->ubicacion_at
+                                        ? $log->ubicacion_at
                                             ->format(
                                                 'd/m/Y H:i:s'
                                             )
+                                        : ''
+                                ),
+
+                                $this->valorCsv(
+                                    $log->created_at
+                                        ? $log->created_at
+                                        ->format(
+                                            'd/m/Y H:i:s'
+                                        )
                                         : ''
                                 ),
                             ]);
@@ -588,22 +622,22 @@ class AuditoriaController extends Controller
                 null,
                 [
                     'empresa_id_filtro' =>
-                        $empresaFiltro,
+                    $empresaFiltro,
 
                     'fecha_desde' =>
-                        $request->input('fecha_desde'),
+                    $request->input('fecha_desde'),
 
                     'fecha_hasta' =>
-                        $request->input('fecha_hasta'),
+                    $request->input('fecha_hasta'),
 
                     'registros_exportados' =>
-                        $registrosExportados,
+                    $registrosExportados,
 
                     'archivo' =>
-                        $filename,
+                    $filename,
 
                     'consulta_global' =>
-                        $esSuperAdmin &&
+                    $esSuperAdmin &&
                         $empresaFiltro === null,
                 ],
                 $empresaFiltro,
@@ -612,18 +646,18 @@ class AuditoriaController extends Controller
 
             return response()->json([
                 'message' =>
-                    'Exportación completada.',
+                'Exportación completada.',
 
                 'url' =>
-                    asset(
-                        'storage/exports/' . $filename
-                    ),
+                asset(
+                    'storage/exports/' . $filename
+                ),
 
                 'filename' =>
-                    $filename,
+                $filename,
 
                 'registros_exportados' =>
-                    $registrosExportados,
+                $registrosExportados,
             ]);
         } catch (Throwable $e) {
             if (is_resource($file)) {
@@ -642,7 +676,7 @@ class AuditoriaController extends Controller
 
             return response()->json([
                 'message' =>
-                    'Error al exportar auditoría.',
+                'Error al exportar auditoría.',
             ], 500);
         }
     }
@@ -664,7 +698,7 @@ class AuditoriaController extends Controller
             $json = json_encode(
                 $value,
                 JSON_UNESCAPED_UNICODE |
-                JSON_UNESCAPED_SLASHES
+                    JSON_UNESCAPED_SLASHES
             );
 
             return $json !== false

@@ -41,6 +41,11 @@ class AuthController extends Controller
                 'string',
                 'max:45',
             ],
+            // 🆕 UBICACIÓN (opcional, validada si viene)
+            'latitud' => ['nullable', 'numeric', 'between:-90,90'],
+            'longitud' => ['nullable', 'numeric', 'between:-180,180'],
+            'precision_metros' => ['nullable', 'numeric', 'min:0', 'max:10000'],
+            'ubicacion_provider' => ['nullable', 'string', 'max:30'],
         ]);
 
         $identificador = trim(

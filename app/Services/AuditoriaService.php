@@ -100,6 +100,9 @@ class AuditoriaService
             $datosAntes = $this->sanitizarDatos($datosAntes);
             $datosDespues = $this->sanitizarDatos($datosDespues);
 
+            // 🆕 UBICACIÓN
+            $ubicacion = $this->extractUbicacion($request);
+
             return LogAuditoria::create([
                 'empresa_id' => $empresaId,
                 'usuario_id' => $usuarioId,
@@ -110,6 +113,13 @@ class AuditoriaService
                 'datos_despues' => $datosDespues,
                 'ip' => $this->obtenerIp($request),
                 'user_agent' => $this->obtenerUserAgent($request),
+
+                // 🆕 UBICACIÓN
+                'latitud' => $ubicacion['latitud'],
+                'longitud' => $ubicacion['longitud'],
+                'precision_metros' => $ubicacion['precision_metros'],
+                'ubicacion_provider' => $ubicacion['ubicacion_provider'],
+                'ubicacion_at' => $ubicacion['ubicacion_at'],
             ]);
         } catch (Throwable $e) {
             Log::error('Error al registrar auditoría.', [
@@ -176,6 +186,11 @@ class AuditoriaService
                 }
             }
 
+            // 🆕 UBICACIÓN
+            $ubicacion = $request
+                ? $this->extractUbicacion($request)
+                : $this->extractUbicacionVacia();
+
             return LogAuditoria::create([
                 'empresa_id' => $empresaId,
                 'usuario_id' => $usuario?->id,
@@ -190,6 +205,13 @@ class AuditoriaService
                 'user_agent' => $request
                     ? $this->obtenerUserAgent($request)
                     : null,
+
+                // 🆕 UBICACIÓN
+                'latitud' => $ubicacion['latitud'],
+                'longitud' => $ubicacion['longitud'],
+                'precision_metros' => $ubicacion['precision_metros'],
+                'ubicacion_provider' => $ubicacion['ubicacion_provider'],
+                'ubicacion_at' => $ubicacion['ubicacion_at'],
             ]);
         } catch (Throwable $e) {
             Log::error('Error al registrar auditoría por usuario.', [
@@ -271,6 +293,11 @@ class AuditoriaService
                 }
             }
 
+            // 🆕 UBICACIÓN
+            $ubicacion = $request
+                ? $this->extractUbicacion($request)
+                : $this->extractUbicacionVacia();
+
             return LogAuditoria::create([
                 'empresa_id' => $empresaId,
                 'usuario_id' => $usuarioId,
@@ -285,6 +312,13 @@ class AuditoriaService
                 'user_agent' => $request
                     ? $this->obtenerUserAgent($request)
                     : null,
+
+                // 🆕 UBICACIÓN
+                'latitud' => $ubicacion['latitud'],
+                'longitud' => $ubicacion['longitud'],
+                'precision_metros' => $ubicacion['precision_metros'],
+                'ubicacion_provider' => $ubicacion['ubicacion_provider'],
+                'ubicacion_at' => $ubicacion['ubicacion_at'],
             ]);
         } catch (Throwable $e) {
             Log::error('Error al registrar auditoría del sistema.', [
@@ -319,6 +353,94 @@ class AuditoriaService
             ['admin', 'superadmin'],
             true
         );
+    }
+
+    /**
+     * 🆕 Extrae la ubicación del request.
+     *
+     * Acepta los campos:
+     *   - latitud (nullable, numeric, -90..90)
+     *   - longitud (nullable, numeric, -180..180)
+     *   - precision_metros (nullable, numeric, 0..10000)
+     *   - ubicacion_provider (nullable, string, max 30)
+     *
+     * Si no vienen o son inválidos, devuelve null en cada campo.
+     */
+    private function extractUbicacion(Request $request): array
+    {
+        try {
+            $latitud = $request->input('latitud');
+            $longitud = $request->input('longitud');
+            $precision = $request->input('precision_metros');
+            $provider = $request->input('ubicacion_provider');
+
+            $latitud = is_numeric($latitud) ? (float) $latitud : null;
+            $longitud = is_numeric($longitud) ? (float) $longitud : null;
+            $precision = is_numeric($precision) ? (float) $precision : null;
+            $provider = is_string($provider) ? trim($provider) : null;
+
+            // Validar rangos geográficos.
+            if (
+                $latitud !== null &&
+                ($latitud < -90 || $latitud > 90)
+            ) {
+                $latitud = null;
+            }
+
+            if (
+                $longitud !== null &&
+                ($longitud < -180 || $longitud > 180)
+            ) {
+                $longitud = null;
+            }
+
+            if (
+                $precision !== null &&
+                ($precision < 0 || $precision > 10000)
+            ) {
+                $precision = null;
+            }
+
+            // Si el provider es demasiado largo, lo truncamos.
+            if ($provider !== null) {
+                $provider = mb_substr($provider, 0, 30);
+
+                if ($provider === '') {
+                    $provider = null;
+                }
+            }
+
+            $tieneUbicacion =
+                $latitud !== null && $longitud !== null;
+
+            return [
+                'latitud' => $latitud,
+                'longitud' => $longitud,
+                'precision_metros' => $tieneUbicacion ? $precision : null,
+                'ubicacion_provider' => $tieneUbicacion ? $provider : null,
+                'ubicacion_at' => $tieneUbicacion ? now() : null,
+            ];
+        } catch (Throwable $e) {
+            Log::warning('Error al extraer ubicación del request.', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return $this->extractUbicacionVacia();
+        }
+    }
+
+    /**
+     * 🆕 Devuelve una ubicación vacía (todos los campos en null).
+     */
+    private function extractUbicacionVacia(): array
+    {
+        return [
+            'latitud' => null,
+            'longitud' => null,
+            'precision_metros' => null,
+            'ubicacion_provider' => null,
+            'ubicacion_at' => null,
+        ];
     }
 
     /**
