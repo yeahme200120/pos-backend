@@ -9,6 +9,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class AuthController extends Controller
 {
@@ -33,6 +35,11 @@ class AuthController extends Controller
                 'required',
                 'string',
                 'max:255',
+            ],
+            'mac_address' => [
+                'nullable',
+                'string',
+                'max:45',
             ],
         ]);
 
@@ -270,7 +277,48 @@ class AuthController extends Controller
                 ],
             ]);
         }
+        // ----------------------------------------------------------
+        // VERIFICAR MAC DEL DISPOSITIVO
+        // ----------------------------------------------------------
+        $mac = $request->input('mac_address');
 
+        if ($user->esCreadoDesdeApp() && $user->mac_vinculada) {
+            $macNormalizada = strtoupper(trim((string) $mac));
+
+            if ($macNormalizada === '') {
+                return response()->json([
+                    'success' => false,
+                    'error' => 'MAC_REQUIRED',
+                    'message' => 'Este usuario requiere vincularse al dispositivo. '
+                        . 'Reinstala la app o contacta al administrador.',
+                ], 403);
+            }
+
+            if (!$user->macCoincide($macNormalizada)) {
+                app(AuditoriaService::class)->registrarSistema(
+                    'login.fallido',
+                    'users',
+                    $user->id,
+                    null,
+                    [
+                        'motivo' => 'mac_no_coincide',
+                        'mac_solicitada' => $macNormalizada,
+                        'mac_registrada' => $user->mac_address,
+                        'ip' => $request->ip(),
+                    ],
+                    $user->empresa_id,
+                    $user->id,
+                    $request
+                );
+
+                return response()->json([
+                    'success' => false,
+                    'error' => 'MAC_MISMATCH',
+                    'message' => 'Esta cuenta está vinculada a otro dispositivo. '
+                        . 'Contacta al administrador del sistema.',
+                ], 403);
+            }
+        }
         /*
          * ==========================================================
          * LICENCIA DE EMPRESA
@@ -377,8 +425,16 @@ class AuthController extends Controller
             'token_type' =>
             'Bearer',
 
-            'user' =>
-            $userData,
+            // CORREGIDO: la spec espera requiere_cambio_password
+            // DENTRO de "user". Se anida y se conserva también en
+            // la raíz por compatibilidad con clientes existentes.
+            'user' => array_merge($userData, [
+                'requiere_cambio_password' =>
+                (bool) $user->requiere_cambio_password,
+            ]),
+
+            'requiere_cambio_password' =>
+            (bool) $user->requiere_cambio_password,
 
             'empresa' =>
             $empresaData,
@@ -673,6 +729,9 @@ class AuthController extends Controller
                 $data['password_nueva']
             ),
         ])->save();
+        $user->forceFill([
+            'requiere_cambio_password' => false,
+        ])->save();
 
         $user->tokens()->delete();
 
@@ -700,46 +759,73 @@ class AuthController extends Controller
     /**
      * Solicitar recuperación de contraseña.
      */
-    public function forgotPassword(
-        Request $request
-    ) {
+    public function forgotPassword(Request $request)
+    {
         $request->validate([
-            'email' => [
-                'required',
-                'email',
-                'max:255',
-            ],
+            'email' => ['required', 'email', 'max:255'],
         ]);
 
-        $email = strtolower(
-            trim(
-                (string) $request->input('email')
-            )
-        );
+        $email = strtolower(trim((string) $request->input('email')));
 
-        Password::sendResetLink([
-            'email' => $email,
-        ]);
+        // ----------------------------------------------------------
+        // VERIFICAR QUE EL EMAIL EXISTA
+        // ----------------------------------------------------------
+        $existe = User::withTrashed()
+            ->whereRaw('LOWER(email) = ?', [$email])
+            ->exists();
 
-        app(AuditoriaService::class)
-            ->registrarSistema(
-                'password.recuperacion.solicitada',
+        if (!$existe) {
+            app(AuditoriaService::class)->registrarSistema(
+                'password.recuperacion.email_no_existe',
                 'users',
                 null,
                 null,
-                [
-                    'email' => $email,
-                ],
+                ['email' => $email],
                 null,
                 null,
                 $request
             );
 
-        return response()->json([
-            'success' => true,
-            'message' =>
-            'Si el correo existe, se enviaron instrucciones de recuperación.',
-        ], 200);
+            return response()->json([
+                'success' => false,
+                'error' => 'EMAIL_NOT_FOUND',
+                'message' => 'Este correo no está registrado en el sistema.',
+            ], 404);
+        }
+
+        // ----------------------------------------------------------
+        // ENVIAR LINK DE RESTABLECIMIENTO
+        // ----------------------------------------------------------
+        try {
+            Password::sendResetLink(['email' => $email]);
+
+            app(AuditoriaService::class)->registrarSistema(
+                'password.recuperacion.solicitada',
+                'users',
+                null,
+                null,
+                ['email' => $email],
+                null,
+                null,
+                $request
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Se enviaron las instrucciones a tu correo.',
+            ], 200);
+        } catch (Throwable $e) {
+            Log::error('Error enviando link de recuperación.', [
+                'email' => $email,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => 'MAIL_ERROR',
+                'message' => 'No fue posible enviar el correo. Intenta más tarde.',
+            ], 500);
+        }
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Notifications\ResetPasswordNotification;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -26,6 +27,10 @@ class User extends Authenticatable
         'empresa_id',
         'rol',
         'activo',
+        'mac_address',
+        'mac_vinculada',
+        'origen_registro',
+        'requiere_cambio_password',
     ];
 
     /**
@@ -49,6 +54,8 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'activo' => 'boolean',
+            'mac_vinculada' => 'boolean',
+            'requiere_cambio_password' => 'boolean',
         ];
     }
 
@@ -255,5 +262,35 @@ class User extends Authenticatable
             '0',
             STR_PAD_LEFT
         );
+    }
+    /**
+     * ¿El usuario fue creado desde la app?
+     */
+    public function esCreadoDesdeApp(): bool
+    {
+        return $this->origen_registro === 'app';
+    }
+
+    /**
+     * ¿La MAC proporcionada coincide con la registrada?
+     *
+     * Para usuarios no creados desde la app, siempre devuelve true
+     * (no se les exige vinculación).
+     */
+    public function macCoincide(?string $mac): bool
+    {
+        if (!$this->esCreadoDesdeApp()) {
+            return true;
+        }
+
+        if (!$this->mac_vinculada) {
+            return true;
+        }
+
+        return strtolower((string) $this->mac_address) === strtolower((string) $mac);
+    }
+    public function sendPasswordResetNotification($token)
+    {
+        $this->notify(new ResetPasswordNotification($token));
     }
 }

@@ -24,6 +24,13 @@ use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function () {
 
+    // ============================================================
+    // REGISTRO (público)
+    // ============================================================
+    Route::post('/register', [\App\Http\Controllers\Api\V1\RegisterController::class, 'register']);
+    Route::post('/register/check-email', [\App\Http\Controllers\Api\V1\RegisterController::class, 'checkEmail']);
+    Route::post('/register/check-empresa', [\App\Http\Controllers\Api\V1\RegisterController::class, 'checkEmpresa']);
+
     /*
     |--------------------------------------------------------------------------
     | Rutas públicas
@@ -62,7 +69,6 @@ Route::prefix('v1')->group(function () {
             LicenseController::class,
             'status',
         ]);
-
     });
 
 
@@ -177,7 +183,6 @@ Route::prefix('v1')->group(function () {
                 AdminController::class,
                 'actualizarConfiguracion',
             ]);
-
         });
 
 
@@ -218,7 +223,6 @@ Route::prefix('v1')->group(function () {
                 EmpresaController::class,
                 'deleteLogo',
             ]);
-
         });
 
 
@@ -796,7 +800,5 @@ Route::prefix('v1')->group(function () {
             ClienteController::class,
             'destroy',
         ]);
-
     });
-
 });

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Auth\ResetPasswordWebController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -11,6 +12,31 @@ use Illuminate\Support\Facades\Route;
 | Sanctum en routes/api.php.
 |--------------------------------------------------------------------------
 */
+
+// ============================================
+// RESET DE CONTRASEÑA (web, no API)
+// ============================================
+//
+// IMPORTANTE:
+// Estas rutas DEBEN ir ANTES del catch-all /{any},
+// de lo contrario el SPA de Vue las capturaría.
+//
+// El link que Laravel envía por correo apunta aquí.
+// ============================================
+
+Route::get('/reset-password/{token}', [
+    ResetPasswordWebController::class,
+    'showResetForm',
+])->name('password.reset');
+
+Route::post('/reset-password', [
+    ResetPasswordWebController::class,
+    'reset',
+])->name('password.update');
+
+Route::get('/reset-password-success', function () {
+    return view('auth.reset-success');
+})->name('password.reset.success');
 
 // ============================================
 // LOGIN / APLICACIÓN SPA
@@ -47,5 +73,5 @@ Route::get('/{any}', function () {
     return view('admin.app');
 })->where(
     'any',
-    '^(?!api(?:/|$)|storage(?:/|$)|css(?:/|$)|js(?:/|$)|fonts(?:/|$)|images(?:/|$)|_debugbar(?:/|$)|telescope(?:/|$)|horizon(?:/|$)|vendor(?:/|$)).*'
+    '^(?!api(?:/|$)|storage(?:/|$)|css(?:/|$)|js(?:/|$)|fonts(?:/|$)|images(?:/|$)|_debugbar(?:/|$)|telescope(?:/|$)|horizon(?:/|$)|vendor(?:/|$)|reset-password(?:/|$)).*'
 );

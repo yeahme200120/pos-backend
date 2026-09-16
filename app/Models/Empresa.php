@@ -277,14 +277,6 @@ class Empresa extends Model
     }
 
     /**
-     * Compatibilidad.
-     */
-    public function tieneLicenciaActiva(): bool
-    {
-        return $this->canOperateWithLicense();
-    }
-
-    /**
      * Determinar si es permanente.
      */
     public function isLicensePermanent(): bool
@@ -394,20 +386,20 @@ class Empresa extends Model
                 );
             } else {
                 $diasVencidos = (int)
-                    $this->licencia_fecha_fin
-                        ->copy()
-                        ->startOfDay()
-                        ->diffInDays(
-                            $now
-                                ->copy()
-                                ->startOfDay()
-                        );
+                $this->licencia_fecha_fin
+                    ->copy()
+                    ->startOfDay()
+                    ->diffInDays(
+                        $now
+                            ->copy()
+                            ->startOfDay()
+                    );
             }
         }
 
         return [
             'empresa_id' =>
-                $this->id,
+            $this->id,
 
             /*
              * "activa" representa si puede operar.
@@ -415,40 +407,132 @@ class Empresa extends Model
              * con Flutter.
              */
             'activa' =>
-                $vigente || $gracia,
+            $vigente || $gracia,
 
             'vigente' =>
-                $vigente,
+            $vigente,
 
             'en_gracia' =>
-                $gracia,
+            $gracia,
 
             'permanente' =>
-                $permanente,
+            $permanente,
 
             'puede_operar' =>
-                $vigente || $gracia,
+            $vigente || $gracia,
 
             'tipo' =>
-                $this->licencia_tipo,
+            $this->licencia_tipo,
 
             'fecha_inicio' =>
-                $this->licencia_fecha_inicio?->toISOString(),
+            $this->licencia_fecha_inicio?->toISOString(),
 
             'fecha_fin' =>
-                $this->licencia_fecha_fin?->toISOString(),
+            $this->licencia_fecha_fin?->toISOString(),
 
             'dias_restantes' =>
-                $diasRestantes,
+            $diasRestantes,
 
             'dias_vencidos' =>
-                $diasVencidos,
+            $diasVencidos,
 
             'licencia_activa' =>
-                (bool) $this->licencia_activa,
+            (bool) $this->licencia_activa,
 
             'ultima_validacion' =>
-                $this->licencia_ultima_validacion?->toISOString(),
+            $this->licencia_ultima_validacion?->toISOString(),
         ];
     }
+    /**
+     * ¿La licencia está vigente ahora mismo?
+     */
+    public function tieneLicenciaActiva(): bool
+    {
+        if (!$this->licencia_activa) {
+            return false;
+        }
+
+        // Licencia permanente: siempre vigente mientras activa.
+        if ($this->licencia_tipo === 'permanente') {
+            return true;
+        }
+
+        if (empty($this->licencia_fecha_inicio)) {
+            return false;
+        }
+
+        $inicio = \Carbon\Carbon::parse($this->licencia_fecha_inicio);
+        $fin = $this->licencia_fecha_fin
+            ? \Carbon\Carbon::parse($this->licencia_fecha_fin)->endOfDay()
+            : null;
+
+        $hoy = \Carbon\Carbon::now();
+
+        if ($hoy->lt($inicio)) {
+            return false;
+        }
+
+        if ($fin !== null && $hoy->gt($fin)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * ¿La licencia está vencida?
+     */
+    public function licenciaVencida(): bool
+    {
+        if ($this->licencia_tipo === 'permanente') {
+            return false;
+        }
+
+        if (empty($this->licencia_fecha_fin)) {
+            return false;
+        }
+
+        $fin = \Carbon\Carbon::parse($this->licencia_fecha_fin)->endOfDay();
+
+        return \Carbon\Carbon::now()->gt($fin);
+    }
+
+    /**
+     * ¿La licencia aún no ha comenzado?
+     */
+    public function licenciaPendiente(): bool
+    {
+        if (empty($this->licencia_fecha_inicio)) {
+            return false;
+        }
+
+        $inicio = \Carbon\Carbon::parse($this->licencia_fecha_inicio);
+
+        return \Carbon\Carbon::now()->lt($inicio);
+    }
+
+    /**
+     * Días restantes de la licencia.
+     * Null si es permanente o si no hay fecha fin.
+     */
+    public function diasLicenciaRestantes(): ?int
+    {
+        if ($this->licencia_tipo === 'permanente') {
+            return null;
+        }
+
+        if (empty($this->licencia_fecha_fin)) {
+            return null;
+        }
+
+        $fin = \Carbon\Carbon::parse($this->licencia_fecha_fin)->startOfDay();
+        $hoy = \Carbon\Carbon::now()->startOfDay();
+
+        if ($hoy->gt($fin)) {
+            return 0;
+        }
+
+        return $hoy->diffInDays($fin);
+    }
+
 }
