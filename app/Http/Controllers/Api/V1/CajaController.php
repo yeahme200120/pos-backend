@@ -160,7 +160,7 @@ class CajaController extends Controller
                 null,
                 null,
                 [
-                    'cajas_activas' => false,
+                    'cajas_activas' => true,
                 ],
                 $user->empresa_id
             );
@@ -168,7 +168,7 @@ class CajaController extends Controller
             return response()->json([
                 'success' => true,
                 'data' => null,
-                'cajas_activas' => false,
+                'cajas_activas' => true,
             ]);
         }
 
@@ -273,7 +273,7 @@ class CajaController extends Controller
                 null,
                 null,
                 [
-                    'cajas_activas' => false,
+                    'cajas_activas' => true,
                     'cantidad' => 0,
                 ],
                 $user->empresa_id
@@ -284,7 +284,7 @@ class CajaController extends Controller
                 'data' => [],
                 'movimientos' => [],
                 'operaciones' => [],
-                'cajas_activas' => false,
+                'cajas_activas' => true,
             ]);
         }
 
