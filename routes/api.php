@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\V1\AuditoriaController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\CajaController;
 use App\Http\Controllers\Api\V1\CatalogController;
+use App\Http\Controllers\Api\V1\CatalogoImportController;
 use App\Http\Controllers\Api\V1\CategoriaController;
 use App\Http\Controllers\Api\V1\ClienteController;
 use App\Http\Controllers\Api\V1\CuponController;
@@ -15,6 +16,8 @@ use App\Http\Controllers\Api\V1\MesaController;
 use App\Http\Controllers\Api\V1\OperacionController;
 use App\Http\Controllers\Api\V1\ProductoController;
 use App\Http\Controllers\Api\V1\PromocionController;
+use App\Http\Controllers\Api\V1\RegisterController;
+use App\Http\Controllers\Api\V1\RegistroPruebaController;
 use App\Http\Controllers\Api\V1\ReportShareController;
 use App\Http\Controllers\Api\V1\SyncController;
 use App\Http\Controllers\Api\V1\TicketConfigController;
@@ -27,9 +30,9 @@ Route::prefix('v1')->group(function () {
     // ============================================================
     // REGISTRO (público)
     // ============================================================
-    Route::post('/register', [\App\Http\Controllers\Api\V1\RegisterController::class, 'register']);
-    Route::post('/register/check-email', [\App\Http\Controllers\Api\V1\RegisterController::class, 'checkEmail']);
-    Route::post('/register/check-empresa', [\App\Http\Controllers\Api\V1\RegisterController::class, 'checkEmpresa']);
+    Route::post('/register', [RegisterController::class, 'register']);
+    Route::post('/register/check-email', [RegisterController::class, 'checkEmail']);
+    Route::post('/register/check-empresa', [RegisterController::class, 'checkEmpresa']);
 
     /*
     |--------------------------------------------------------------------------
@@ -52,7 +55,6 @@ Route::prefix('v1')->group(function () {
         'resetPassword',
     ])->middleware('throttle:5,1');
 
-
     /*
     |--------------------------------------------------------------------------
     | Estado de licencia
@@ -70,7 +72,6 @@ Route::prefix('v1')->group(function () {
             'status',
         ]);
     });
-
 
     /*
     |--------------------------------------------------------------------------
@@ -114,7 +115,6 @@ Route::prefix('v1')->group(function () {
                 'eliminarUsuario',
             ]);
 
-
             /*
             |--------------------------------------------------------------------------
             | Empresas del panel administrativo
@@ -128,7 +128,6 @@ Route::prefix('v1')->group(function () {
                 AdminController::class,
                 'empresas',
             ]);
-
 
             /*
             |--------------------------------------------------------------------------
@@ -150,7 +149,6 @@ Route::prefix('v1')->group(function () {
                 'update',
             ]);
 
-
             /*
             |--------------------------------------------------------------------------
             | Reportes administrativos
@@ -167,7 +165,6 @@ Route::prefix('v1')->group(function () {
                 'exportarReportes',
             ]);
 
-
             /*
             |--------------------------------------------------------------------------
             | Configuración de empresa
@@ -183,8 +180,38 @@ Route::prefix('v1')->group(function () {
                 AdminController::class,
                 'actualizarConfiguracion',
             ]);
-        });
+            /*
+            |--------------------------------------------------------------------------
+            | Registros de prueba (superadmin)
+            |--------------------------------------------------------------------------
+            */
 
+            Route::get('/registros-prueba', [
+                RegistroPruebaController::class,
+                'index',
+            ]);
+
+            Route::post('/registros-prueba/{id}/convertir-real', [
+                RegistroPruebaController::class,
+                'convertirReal',
+            ]);
+
+            Route::post('/registros-prueba/convertir-real-lote', [
+                RegistroPruebaController::class,
+                'convertirRealLote',
+            ]);
+
+            /*
+                |--------------------------------------------------------------------------
+                | Importación de catálogos por Excel (superadmin)
+                |--------------------------------------------------------------------------
+                */
+
+            Route::post('/catalogos/importar-excel', [
+                CatalogoImportController::class,
+                'importarExcel',
+            ]);
+        });
 
     /*
     |--------------------------------------------------------------------------
@@ -225,7 +252,6 @@ Route::prefix('v1')->group(function () {
             ]);
         });
 
-
         /*
         |--------------------------------------------------------------------------
         | Usuario autenticado
@@ -257,7 +283,6 @@ Route::prefix('v1')->group(function () {
             'permissions',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Operación
@@ -268,7 +293,6 @@ Route::prefix('v1')->group(function () {
             OperacionController::class,
             'estado',
         ]);
-
 
         /*
         |--------------------------------------------------------------------------
@@ -285,7 +309,6 @@ Route::prefix('v1')->group(function () {
             CatalogController::class,
             'productos',
         ]);
-
 
         /*
         |--------------------------------------------------------------------------
@@ -313,7 +336,6 @@ Route::prefix('v1')->group(function () {
             'destroy',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Unidades
@@ -339,7 +361,6 @@ Route::prefix('v1')->group(function () {
             UnidadMedidaController::class,
             'destroy',
         ]);
-
 
         /*
         |--------------------------------------------------------------------------
@@ -372,7 +393,6 @@ Route::prefix('v1')->group(function () {
             'aplicar',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Cupones
@@ -403,7 +423,6 @@ Route::prefix('v1')->group(function () {
             CuponController::class,
             'validar',
         ]);
-
 
         /*
         |--------------------------------------------------------------------------
@@ -436,7 +455,6 @@ Route::prefix('v1')->group(function () {
             'archive',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Reportes diarios
@@ -447,7 +465,6 @@ Route::prefix('v1')->group(function () {
             ReportShareController::class,
             'dailyShare',
         ])->middleware('throttle:10,1');
-
 
         /*
         |--------------------------------------------------------------------------
@@ -469,7 +486,6 @@ Route::prefix('v1')->group(function () {
             AuditoriaController::class,
             'index',
         ]);
-
 
         /*
         |--------------------------------------------------------------------------
@@ -540,7 +556,6 @@ Route::prefix('v1')->group(function () {
             'index',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Cajas
@@ -590,7 +605,6 @@ Route::prefix('v1')->group(function () {
             'cerrar',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Mesas
@@ -611,7 +625,6 @@ Route::prefix('v1')->group(function () {
             MesaController::class,
             'update',
         ]);
-
 
         /*
         |--------------------------------------------------------------------------
@@ -649,7 +662,6 @@ Route::prefix('v1')->group(function () {
             'dashboard',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Configuración del ticket
@@ -665,7 +677,6 @@ Route::prefix('v1')->group(function () {
             TicketConfigController::class,
             'update',
         ]);
-
 
         /*
         |--------------------------------------------------------------------------
@@ -700,7 +711,6 @@ Route::prefix('v1')->group(function () {
             EmpresaController::class,
             'destroy',
         ]);
-
 
         /*
         |--------------------------------------------------------------------------
@@ -756,7 +766,6 @@ Route::prefix('v1')->group(function () {
             'show',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | Clientes
@@ -800,5 +809,6 @@ Route::prefix('v1')->group(function () {
             ClienteController::class,
             'destroy',
         ]);
+
     });
 });

@@ -46,11 +46,24 @@
                 <i class="fas fa-chair w-5"></i>
                 <span class="ml-2">Mesas</span>
             </router-link>
-            
+
             <router-link to="/usuarios" class="flex items-center px-4 py-2 hover:bg-gray-700 transition"
                 active-class="bg-gray-700">
                 <i class="fas fa-user-cog w-5"></i>
                 <span class="ml-2">Usuarios</span>
+            </router-link>
+            <div class="px-4 py-2 text-xs text-gray-400 uppercase mt-4">Administración</div>
+
+            <router-link to="/pruebas" class="flex items-center px-4 py-2 hover:bg-gray-700 transition"
+                active-class="bg-gray-700">
+                <i class="fas fa-flask w-5"></i>
+                <span class="ml-2">Registros de Prueba</span>
+            </router-link>
+
+            <router-link to="/importar-catalogo" class="flex items-center px-4 py-2 hover:bg-gray-700 transition"
+                active-class="bg-gray-700">
+                <i class="fas fa-file-import w-5"></i>
+                <span class="ml-2">Importar Catálogo</span>
             </router-link>
 
             <div class="px-4 py-2 text-xs text-gray-400 uppercase mt-4">Reportes</div>

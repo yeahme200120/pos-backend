@@ -232,7 +232,25 @@
                             Licencias
                         </span>
                     </router-link>
+                    <!-- REGISTROS DE PRUEBA -->
 
+                    <router-link v-if="esSuperAdmin" to="/pruebas"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">
+                            Registros Prueba
+                        </span>
+                    </router-link>
+
+                    <!-- IMPORTAR CATÁLOGO -->
+
+                    <router-link v-if="esSuperAdmin" to="/importar-catalogo"
+                        class="flex items-center px-4 py-2 hover:bg-opacity-20 transition rounded-lg"
+                        active-class="bg-opacity-30" :style="{ color: colorTexto }">
+                        <span class="ml-2">
+                            Importar Catálogo
+                        </span>
+                    </router-link>
                     <div class="h-4"></div>
 
                 </nav>

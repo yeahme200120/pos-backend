@@ -160,6 +160,17 @@
                         </div>
                     </div>
 
+                    <!-- Advertencia de excedente sin efectivo (no bloqueante en vivo) -->
+                    <div v-if="excedenteSinDevolver > 0" class="mt-2 p-2 bg-orange-100 rounded-lg border border-orange-300">
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm font-semibold text-orange-800">⚠️ Excedente no devuelto:</span>
+                            <span class="text-lg font-bold text-orange-700">${{ formatearNumero(excedenteSinDevolver) }}</span>
+                        </div>
+                        <div class="text-xs text-orange-700 mt-1">
+                            * No hay pago en efectivo, el excedente no se devolverá.
+                        </div>
+                    </div>
+
                     <!-- Pagos (todos editables) -->
                     <div class="mt-3 space-y-2">
                         <div v-for="(pago, index) in (venta.pagos || [])" :key="index" class="flex gap-2 items-center">
@@ -173,10 +184,16 @@
                             <input type="number" v-model="pago.monto"
                                 class="w-20 sm:w-24 px-2 py-1 border rounded text-sm" placeholder="Monto" min="0"
                                 step="0.01" @input="validarPagos" />
-                            <button v-if="(venta.pagos || []).length > 1" @click="eliminarPago(index)"
+                            <button v-if="(venta.pagos || []).length > 1 && pago.forma_pago !== 'Efectivo'"
+                                @click="eliminarPago(index)"
                                 class="text-red-500 hover:text-red-700 text-sm px-2">
                                 ✕
                             </button>
+                            <span v-else-if="(venta.pagos || []).length > 1 && pago.forma_pago === 'Efectivo'"
+                                class="text-gray-400 text-sm px-2"
+                                title="El pago en efectivo no se puede eliminar">
+                                🔒
+                            </span>
                         </div>
                         <button @click="agregarPago" class="text-blue-600 hover:text-blue-800 text-sm">
                             + Agregar pago
@@ -186,6 +203,36 @@
                     <!-- Mensaje de error de pagos -->
                     <div v-if="errorPago" class="mt-2 p-2 bg-red-100 text-red-700 rounded text-sm">
                         {{ errorPago }}
+                    </div>
+
+                    <!-- ============================================================ -->
+                    <!-- DESGLOSE DE PAGOS                                            -->
+                    <!-- ============================================================ -->
+                    <div v-if="carrito && carrito.length > 0 && Object.keys(desglosePagos).length > 0"
+                        class="mt-3 p-2 bg-white rounded-lg border border-gray-200">
+                        <p class="text-xs font-bold text-gray-700 mb-2 uppercase">Desglose de pago</p>
+
+                        <div v-for="(monto, tipo) in desglosePagos" :key="tipo"
+                            class="flex justify-between text-sm py-0.5">
+                            <span class="text-gray-600">{{ tipo }}:</span>
+                            <span class="font-mono">${{ formatearNumero(monto) }}</span>
+                        </div>
+
+                        <div class="border-t border-gray-300 mt-2 pt-2 flex justify-between text-sm font-semibold">
+                            <span>Suma:</span>
+                            <span class="font-mono">${{ formatearNumero(totalPagado) }}</span>
+                        </div>
+
+                        <div v-if="cambio > 0" class="flex justify-between text-sm font-bold text-green-700 mt-1">
+                            <span>Cambio a devolver:</span>
+                            <span class="font-mono">${{ formatearNumero(cambio) }}</span>
+                        </div>
+
+                        <div v-if="excedenteSinDevolver > 0"
+                            class="flex justify-between text-sm font-bold text-orange-700 mt-1">
+                            <span>Excedente no devuelto:</span>
+                            <span class="font-mono">${{ formatearNumero(excedenteSinDevolver) }}</span>
+                        </div>
                     </div>
 
                     <!-- Botones de acción -->
@@ -270,30 +317,61 @@ export default {
         total() {
             return this.subtotal - this.descuento + this.impuestoCalculado;
         },
+        // Suma de montos con monto > 0 (todos los tipos)
         totalPagado() {
             if (!this.venta || !this.venta.pagos) return 0;
-            return this.venta.pagos.reduce((sum, p) => sum + (parseFloat(p.monto) || 0), 0);
+            return this.venta.pagos
+                .filter(p => parseFloat(p.monto) > 0)
+                .reduce((sum, p) => sum + (parseFloat(p.monto) || 0), 0);
         },
-        // Indica si existe al menos un pago en efectivo con monto > 0
+        // Suma solo del efectivo
+        totalEfectivo() {
+            if (!this.venta || !this.venta.pagos) return 0;
+            return this.venta.pagos
+                .filter(p => p.forma_pago === 'Efectivo' && parseFloat(p.monto) > 0)
+                .reduce((sum, p) => sum + (parseFloat(p.monto) || 0), 0);
+        },
+        // ¿Hay al menos un pago en efectivo con monto > 0?
         hayEfectivo() {
-            if (!this.venta || !this.venta.pagos) return false;
-            return this.venta.pagos.some(p => p.forma_pago === 'Efectivo' && parseFloat(p.monto) > 0);
+            return this.totalEfectivo > 0;
         },
-        // Indica si todos los pagos (con monto > 0) son en efectivo
+        // ¿Todos los pagos con monto > 0 son en efectivo?
         todosEfectivo() {
             if (!this.venta || !this.venta.pagos) return false;
             const pagosConMonto = this.venta.pagos.filter(p => parseFloat(p.monto) > 0);
             if (pagosConMonto.length === 0) return false;
             return pagosConMonto.every(p => p.forma_pago === 'Efectivo');
         },
-        // Cambio: solo si hay excedente y existe al menos un pago en efectivo
+        // Cambio a devolver: solo si hay excedente Y hay efectivo
+        // Nunca puede ser mayor al efectivo disponible
         cambio() {
             const totalPagado = this.totalPagado;
             const total = this.total;
             if (totalPagado > total && this.hayEfectivo) {
+                return Math.min(totalPagado - total, this.totalEfectivo);
+            }
+            return 0;
+        },
+        // Excedente que NO se puede devolver (no hay efectivo para cubrirlo)
+        excedenteSinDevolver() {
+            const totalPagado = this.totalPagado;
+            const total = this.total;
+            if (totalPagado > total && !this.hayEfectivo) {
                 return totalPagado - total;
             }
             return 0;
+        },
+        // Desglose por tipo de pago (solo montos > 0)
+        desglosePagos() {
+            const grupos = {};
+            if (!this.venta || !this.venta.pagos) return grupos;
+            this.venta.pagos
+                .filter(p => parseFloat(p.monto) > 0)
+                .forEach(p => {
+                    const tipo = p.forma_pago || 'Otro';
+                    grupos[tipo] = (grupos[tipo] || 0) + parseFloat(p.monto || 0);
+                });
+            return grupos;
         }
     },
     watch: {
@@ -419,15 +497,33 @@ export default {
             this.validarPagos();
         },
         eliminarPago(index) {
-            if (this.venta && this.venta.pagos && this.venta.pagos.length > 1) {
+            if (!this.venta || !this.venta.pagos) return;
+
+            const pago = this.venta.pagos[index];
+
+            // No permitir eliminar el pago en efectivo.
+            if (pago && pago.forma_pago === 'Efectivo') {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'No se puede eliminar',
+                    text: 'El pago en efectivo es obligatorio. Puedes cambiar el monto o el tipo de pago.',
+                    timer: 2500,
+                    showConfirmButton: false
+                });
+                return;
+            }
+
+            if (this.venta.pagos.length > 1) {
                 this.venta.pagos.splice(index, 1);
                 this.validarPagos();
             }
         },
-        // ✅ Validación de pagos (sin auto-llenado)
+        // ✅ Validación de pagos: se relaja la regla de no-efectivo > total
         validarPagos() {
             this.errorPago = null;
+
             const pagos = this.venta.pagos.filter(p => parseFloat(p.monto) > 0);
+
             if (pagos.length === 0) {
                 this.errorPago = 'Agrega al menos un pago con monto > 0';
                 return;
@@ -436,29 +532,16 @@ export default {
             const total = this.total;
             const totalPagado = pagos.reduce((sum, p) => sum + parseFloat(p.monto), 0);
 
-            // Verificar que ningún pago no-efectivo supere el total (individualmente)
-            for (let p of pagos) {
-                if (p.forma_pago !== 'Efectivo' && parseFloat(p.monto) > total) {
-                    this.errorPago = `El pago con ${p.forma_pago} ($${this.formatearNumero(p.monto)}) supera el total ($${this.formatearNumero(total)})`;
-                    return;
-                }
-            }
-
             // Verificar que el total pagado sea >= total
             if (totalPagado < total) {
                 this.errorPago = `El monto pagado ($${this.formatearNumero(totalPagado)}) es menor al total ($${this.formatearNumero(total)})`;
                 return;
             }
 
-            // Si hay pagos no-efectivo, su suma no debe superar el total (a menos que efectivo cubra el excedente)
-            const pagosNoEfectivo = pagos.filter(p => p.forma_pago !== 'Efectivo');
-            const totalNoEfectivo = pagosNoEfectivo.reduce((sum, p) => sum + parseFloat(p.monto), 0);
-            if (totalNoEfectivo > total) {
-                this.errorPago = `La suma de pagos no-efectivo ($${this.formatearNumero(totalNoEfectivo)}) supera el total ($${this.formatearNumero(total)})`;
-                return;
-            }
-
-            // Si hay efectivo, permitir excedente
+            // NOTA: se permite que el excedente exista.
+            // El excedente se maneja al confirmar la venta:
+            //   - Si hay efectivo: se devuelve como cambio.
+            //   - Si NO hay efectivo: se pide confirmación con Swal.
         },
 
         // =============================================
@@ -616,63 +699,76 @@ export default {
                 return;
             }
 
-            // Construcción del diálogo de confirmación
+            // ============================================================
+            // SWAL PREVIO: EXCEDENTE SIN EFECTIVO
+            // ============================================================
+            if (this.excedenteSinDevolver > 0) {
+                const confirmExcedente = await Swal.fire({
+                    icon: 'warning',
+                    title: 'Cobro mayor al total',
+                    html: `
+                        <div style="text-align: left;">
+                            <p>Estás cobrando <strong>$${this.formatearNumero(this.excedenteSinDevolver)}</strong> de más y no hay pago en efectivo.</p>
+                            <p>El excedente <strong>no podrá ser devuelto</strong>.</p>
+                            <p>¿Confirmas cobrar con excedente?</p>
+                        </div>
+                    `,
+                    showCancelButton: true,
+                    confirmButtonText: 'Confirmar cobro',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: '#f59e0b',
+                    cancelButtonColor: '#6b7280'
+                });
+
+                if (!confirmExcedente.isConfirmed) {
+                    return;
+                }
+            }
+
+            // ============================================================
+            // CONSTRUCCIÓN DEL DIÁLOGO DE CONFIRMACIÓN
+            // ============================================================
             let htmlContent = `
                 <div style="text-align: left;">
                     <p><strong>Total de la venta:</strong> $${this.formatearNumero(this.total)}</p>
                     <p><strong>Productos:</strong> ${this.carrito.length}</p>
                     <p><strong>Cliente:</strong> ${this.venta.cliente_id ? this.clientes.find(c => c.id === this.venta.cliente_id)?.nombre : 'Cliente genérico'}</p>
                     <hr style="margin: 8px 0;">
-                    <p><strong>Total pagado:</strong> $${this.formatearNumero(totalPagado)}</p>
+                    <p><strong>Desglose de pagos:</strong></p>
             `;
 
-            if (totalPagado > this.total) {
-                if (this.hayEfectivo) {
-                    const cambio = totalPagado - this.total;
-                    htmlContent += `
-                        <div style="background: #dbeafe; padding: 10px; border-radius: 8px; margin-top: 8px;">
-                            <p style="color: #1e40af; font-weight: bold; margin: 0;">🔄 Cambio a devolver (en efectivo):</p>
-                            <p style="color: #1e40af; font-size: 1.2rem; font-weight: bold; margin: 4px 0 0 0;">$${this.formatearNumero(cambio)}</p>
-                        </div>
-                    `;
-                    if (!this.todosEfectivo) {
-                        htmlContent += `
-                            <div style="background: #fef3c7; padding: 10px; border-radius: 8px; margin-top: 8px;">
-                                <p style="color: #92400e; font-weight: bold; margin: 0;">⚠️ Cobro superior al total</p>
-                                <p style="color: #92400e; margin: 4px 0 0 0;">
-                                    <strong>Monto a cobrar:</strong> $${this.formatearNumero(this.total)}<br>
-                                    <strong>Monto pagado:</strong> $${this.formatearNumero(totalPagado)}<br>
-                                    <strong>Diferencia:</strong> $${this.formatearNumero(cambio)}
-                                </p>
-                                <p style="color: #92400e; font-size: 0.8rem; margin-top: 4px;">
-                                    ⚠️ El excedente se devolverá en efectivo.
-                                </p>
-                            </div>
-                        `;
-                    }
-                } else {
-                    // No debería ocurrir porque validación lo impide, pero por seguridad
-                    htmlContent += `
-                        <div style="background: #fef3c7; padding: 10px; border-radius: 8px; margin-top: 8px;">
-                            <p style="color: #92400e; font-weight: bold; margin: 0;">⚠️ Cobro superior al total</p>
-                            <p style="color: #92400e; margin: 4px 0 0 0;">
-                                <strong>Monto a cobrar:</strong> $${this.formatearNumero(this.total)}<br>
-                                <strong>Monto pagado:</strong> $${this.formatearNumero(totalPagado)}<br>
-                                <strong>Diferencia:</strong> $${this.formatearNumero(totalPagado - this.total)}
-                            </p>
-                            <p style="color: #92400e; font-size: 0.8rem; margin-top: 4px;">
-                                ⚠️ No se permiten excedentes sin pago en efectivo.
-                            </p>
-                        </div>
-                    `;
-                }
+            // Desglose por tipo de pago
+            for (const [tipo, monto] of Object.entries(this.desglosePagos)) {
+                htmlContent += `<p style="margin: 2px 0;">• ${tipo}: $${this.formatearNumero(monto)}</p>`;
             }
+
+            htmlContent += `<p style="margin-top: 6px;"><strong>Suma:</strong> $${this.formatearNumero(totalPagado)}</p>`;
+
+            if (this.cambio > 0) {
+                htmlContent += `
+                    <div style="background: #d1fae5; padding: 10px; border-radius: 8px; margin-top: 8px;">
+                        <p style="color: #065f46; font-weight: bold; margin: 0;">🔄 Cambio a devolver (en efectivo):</p>
+                        <p style="color: #065f46; font-size: 1.2rem; font-weight: bold; margin: 4px 0 0 0;">$${this.formatearNumero(this.cambio)}</p>
+                    </div>
+                `;
+            }
+
+            if (this.excedenteSinDevolver > 0) {
+                htmlContent += `
+                    <div style="background: #fef3c7; padding: 10px; border-radius: 8px; margin-top: 8px;">
+                        <p style="color: #92400e; font-weight: bold; margin: 0;">⚠️ Excedente no devuelto</p>
+                        <p style="color: #92400e; font-size: 1.2rem; font-weight: bold; margin: 4px 0 0 0;">$${this.formatearNumero(this.excedenteSinDevolver)}</p>
+                        <p style="color: #92400e; font-size: 0.8rem; margin-top: 4px;">No hay efectivo, el excedente no se devuelve.</p>
+                    </div>
+                `;
+            }
+
             htmlContent += `</div>`;
 
             const result = await Swal.fire({
                 title: 'Confirmar Venta',
                 html: htmlContent,
-                icon: totalPagado > this.total && !this.todosEfectivo ? 'warning' : 'question',
+                icon: (this.cambio > 0 || this.excedenteSinDevolver > 0) ? 'warning' : 'question',
                 showCancelButton: true,
                 confirmButtonColor: '#3085d6',
                 cancelButtonColor: '#d33',
@@ -680,100 +776,117 @@ export default {
                 cancelButtonText: '❌ Guardar como pendiente'
             });
 
-            if (result.isConfirmed) {
-                this.guardando = true;
-                this.error = null;
+            if (!result.isConfirmed) {
+                await this.guardarPendiente();
+                return;
+            }
 
-                try {
-                    // ============================================================
-                    // AJUSTE DE PAGOS EN EFECTIVO (restar el excedente del efectivo)
-                    // ============================================================
-                    let pagosAjustados = this.venta.pagos
-                        .filter(p => p.monto > 0)
+            this.guardando = true;
+            this.error = null;
+
+            try {
+                // ============================================================
+                // AJUSTE DE PAGOS: restar el cambio SOLO del efectivo
+                // El monto enviado es el NETO (sin cambio)
+                // El cambio se envía como campo informativo
+                // ============================================================
+                let pagosAjustados = this.venta.pagos
+                    .filter(p => p.monto > 0)
+                    .map(p => ({
+                        forma_pago: p.forma_pago,
+                        monto: parseFloat(p.monto),
+                        cambio: 0
+                    }));
+
+                const totalPagadoOriginal = pagosAjustados.reduce((sum, p) => sum + p.monto, 0);
+                const diferencia = totalPagadoOriginal - this.total;
+
+                if (diferencia > 0) {
+                    // Calcular cuánto del excedente puede cubrirse con efectivo
+                    const totalEfectivo = pagosAjustados
+                        .filter(p => p.forma_pago === 'Efectivo')
+                        .reduce((sum, p) => sum + p.monto, 0);
+
+                    const cambioReal = Math.min(diferencia, totalEfectivo);
+                    const excedenteNoDevuelto = diferencia - cambioReal;
+
+                    // Restar el cambio del efectivo (dejar el efectivo en neto)
+                    let restante = cambioReal;
+                    let cambioAsignado = false;
+
+                    for (let pago of pagosAjustados) {
+                        if (pago.forma_pago === 'Efectivo' && restante > 0) {
+                            if (pago.monto >= restante) {
+                                pago.monto = pago.monto - restante;
+                                if (!cambioAsignado) {
+                                    pago.cambio = cambioReal;
+                                    cambioAsignado = true;
+                                }
+                                restante = 0;
+                            } else {
+                                restante -= pago.monto;
+                                pago.monto = 0;
+                            }
+                        }
+                        if (restante <= 0) break;
+                    }
+
+                    // Si sobra excedente (no había efectivo suficiente),
+                    // NO se descuenta de otros métodos; simplemente se pierde.
+                    // El monto enviado del resto queda tal cual.
+                    if (excedenteNoDevuelto > 0) {
+                        console.warn(
+                            `Excedente no devuelto de $${excedenteNoDevuelto.toFixed(2)} ` +
+                            `porque no había suficiente efectivo.`
+                        );
+                    }
+                }
+
+                // Construir payload con pagos ajustados
+                const data = {
+                    cliente_id: this.venta.cliente_id,
+                    productos: this.carrito.map(item => ({
+                        producto_id: item.id,
+                        cantidad: item.cantidad,
+                        precio: item.precio,
+                        descuento: 0
+                    })),
+                    pagos: pagosAjustados
+                        .filter(p => p.monto > 0 || p.cambio > 0)
                         .map(p => ({
                             forma_pago: p.forma_pago,
-                            monto: parseFloat(p.monto),
-                            cambio: parseFloat(p.cambio || 0)
-                        }));
-
-                    const totalPagadoOriginal = pagosAjustados.reduce((sum, p) => sum + p.monto, 0);
-                    const diferencia = totalPagadoOriginal - this.total;
-
-                    if (diferencia > 0) {
-                        let restante = diferencia;
-                        let cambioAsignado = false;
-
-                        for (let pago of pagosAjustados) {
-                            if (pago.forma_pago === 'Efectivo' && pago.monto > 0) {
-                                if (pago.monto >= restante) {
-                                    pago.monto = pago.monto - restante;
-                                    if (!cambioAsignado) {
-                                        pago.cambio = diferencia; // asignar cambio total al primer efectivo
-                                        cambioAsignado = true;
-                                    }
-                                    restante = 0;
-                                } else {
-                                    restante -= pago.monto;
-                                    pago.monto = 0;
-                                }
-                            }
-                            if (restante <= 0) break;
-                        }
-
-                        if (restante > 0) {
-                            console.warn('No se pudo ajustar completamente la diferencia', restante);
-                            throw new Error('Error al ajustar los pagos en efectivo');
-                        }
-                    }
-
-                    // Construir payload con pagos ajustados
-                    const data = {
-                        cliente_id: this.venta.cliente_id,
-                        productos: this.carrito.map(item => ({
-                            producto_id: item.id,
-                            cantidad: item.cantidad,
-                            precio: item.precio,
-                            descuento: 0
+                            monto: parseFloat(p.monto.toFixed(2)),
+                            cambio: parseFloat((p.cambio || 0).toFixed(2))
                         })),
-                        pagos: pagosAjustados
-                            .filter(p => p.monto > 0)
-                            .map(p => ({
-                                forma_pago: p.forma_pago,
-                                monto: parseFloat(p.monto.toFixed(2)),
-                                cambio: parseFloat(p.cambio ? p.cambio.toFixed(2) : 0)
-                            })),
-                        descuento_global: this.descuento,
-                        impuesto_global: this.impuesto,
-                        notas: this.venta.notas || ''
-                    };
+                    descuento_global: this.descuento,
+                    impuesto_global: this.impuesto,
+                    notas: this.venta.notas || ''
+                };
 
-                    await api.post('/ventas', data);
+                await api.post('/ventas', data);
 
-                    if (this.ventaPendienteId) {
-                        try { await api.delete('/ventas/pendiente/eliminar'); } catch (e) { }
-                    }
-
-                    Swal.fire({ icon: 'success', title: '¡Venta registrada!', timer: 2000, showConfirmButton: false });
-
-                    // Limpiar carrito
-                    this.carrito = [];
-                    this.venta.pagos = [{ forma_pago: 'Efectivo', monto: 0 }];
-                    this.descuento = 0;
-                    this.venta.cliente_id = null;
-                    this.venta.notas = '';
-                    this.ventaPendienteId = null;
-                    this.esVentaPendiente = false;
-                    this.error = null;
-                    this.errorPago = null;
-
-                } catch (error) {
-                    this.error = error.response?.data?.message || 'Error al registrar la venta';
-                    Swal.fire({ icon: 'error', title: 'Error', text: this.error });
-                } finally {
-                    this.guardando = false;
+                if (this.ventaPendienteId) {
+                    try { await api.delete('/ventas/pendiente/eliminar'); } catch (e) { }
                 }
-            } else {
-                await this.guardarPendiente();
+
+                Swal.fire({ icon: 'success', title: '¡Venta registrada!', timer: 2000, showConfirmButton: false });
+
+                // Limpiar carrito
+                this.carrito = [];
+                this.venta.pagos = [{ forma_pago: 'Efectivo', monto: 0 }];
+                this.descuento = 0;
+                this.venta.cliente_id = null;
+                this.venta.notas = '';
+                this.ventaPendienteId = null;
+                this.esVentaPendiente = false;
+                this.error = null;
+                this.errorPago = null;
+
+            } catch (error) {
+                this.error = error.response?.data?.message || 'Error al registrar la venta';
+                Swal.fire({ icon: 'error', title: 'Error', text: this.error });
+            } finally {
+                this.guardando = false;
             }
         }
     }
