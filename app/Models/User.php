@@ -31,6 +31,10 @@ class User extends Authenticatable
         'mac_vinculada',
         'origen_registro',
         'requiere_cambio_password',
+        // ✅ T&C
+        'terminos_aceptados',
+        'terminos_version',
+        'terminos_aceptados_at',
     ];
 
     /**
@@ -56,6 +60,9 @@ class User extends Authenticatable
             'activo' => 'boolean',
             'mac_vinculada' => 'boolean',
             'requiere_cambio_password' => 'boolean',
+            // ✅ T&C
+            'terminos_aceptados' => 'boolean',
+            'terminos_aceptados_at' => 'datetime',
         ];
     }
 
@@ -217,6 +224,7 @@ class User extends Authenticatable
             $this->rol,
             [
                 'cajero',
+                'vendedor',
                 'admin',
                 'superadmin',
             ],
@@ -288,6 +296,19 @@ class User extends Authenticatable
         }
 
         return strtolower((string) $this->mac_address) === strtolower((string) $mac);
+    }
+    /**
+     * ¿El usuario aceptó la versión ACTUAL de los T&C?
+     *
+     * Cambia la constante VERSION_TERMINOS cada vez que actualices
+     * el texto legal, y esto forzará re-aceptación.
+     */
+    public const VERSION_TERMINOS = '2026-09-19';
+
+    public function tieneTerminosAceptados(): bool
+    {
+        return $this->terminos_aceptados === true
+            && $this->terminos_version === self::VERSION_TERMINOS;
     }
     public function sendPasswordResetNotification($token)
     {

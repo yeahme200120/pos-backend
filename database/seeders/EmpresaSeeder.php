@@ -27,10 +27,10 @@ class EmpresaSeeder extends Seeder
                     'accent' => '#3B82F6',
                 ],
 
-                // ✅ NUEVA ESTRUCTURA UNIFICADA
+                // ✅ Nombres alineados con la app Flutter
                 'configuracion' => [
-                    'usa_mesas' => false,
-                    'usa_cajas' => false,
+                    'cajas_activas' => false,
+                    'mesas_activas' => false,
                 ],
 
                 'direccion' => 'Calle Falsa 123, Ciudad',
@@ -47,7 +47,6 @@ class EmpresaSeeder extends Seeder
 
                 'activo' => true,
 
-                // LICENCIA
                 'licencia_tipo' => 'mes',
                 'licencia_fecha_inicio' => $fechaInicio,
                 'licencia_fecha_fin' => $fechaFin,
@@ -69,8 +68,8 @@ class EmpresaSeeder extends Seeder
                 ],
 
                 'configuracion' => [
-                    'usa_mesas' => false,
-                    'usa_cajas' => false,
+                    'cajas_activas' => false,
+                    'mesas_activas' => false,
                 ],
 
                 'direccion' => 'prueba',
@@ -87,7 +86,6 @@ class EmpresaSeeder extends Seeder
 
                 'activo' => true,
 
-                // LICENCIA
                 'licencia_tipo' => 'mes',
                 'licencia_fecha_inicio' => $fechaInicio,
                 'licencia_fecha_fin' => $fechaFin,
@@ -109,8 +107,8 @@ class EmpresaSeeder extends Seeder
                 ],
 
                 'configuracion' => [
-                    'usa_mesas' => false,
-                    'usa_cajas' => false,
+                    'cajas_activas' => false,
+                    'mesas_activas' => false,
                 ],
 
                 'direccion' => null,
@@ -127,7 +125,6 @@ class EmpresaSeeder extends Seeder
 
                 'activo' => true,
 
-                // LICENCIA
                 'licencia_tipo' => 'mes',
                 'licencia_fecha_inicio' => $fechaInicio,
                 'licencia_fecha_fin' => $fechaFin,

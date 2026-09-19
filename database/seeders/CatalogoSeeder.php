@@ -1,73 +1,44 @@
 <?php
-// database/seeders/CatalogSeeder.php
 
 namespace Database\Seeders;
 
+use App\Models\Categoria;
+use App\Models\Empresa;
 use Illuminate\Database\Seeder;
-use App\Models\Producto;
-use App\Models\Cliente;
-use App\Models\Impuesto;
-use App\Models\FormaPago;
 
-class CatalogoSeeder extends Seeder
+class CategoriaSeeder extends Seeder
 {
     public function run(): void
     {
-        $empresaId = 1; // Asumiendo que existe la empresa con ID 1
+        $empresa = Empresa::first();
 
-        // Productos
-        Producto::create([
-            'empresa_id' => $empresaId,
-            'codigo' => 'PROD001',
-            'nombre' => 'Café Americano',
-            'descripcion' => 'Café negro recién hecho',
-            'precio' => 45.00,
-            'costo' => 15.00,
-            'impuesto' => 16,
-            'stock' => 100,
-            'stock_minimo' => 10,
-            'activo' => true,
-        ]);
-
-        Producto::create([
-            'empresa_id' => $empresaId,
-            'codigo' => 'PROD002',
-            'nombre' => 'Panqueque con miel',
-            'descripcion' => 'Panqueque esponjoso con miel de maple',
-            'precio' => 60.00,
-            'costo' => 25.00,
-            'impuesto' => 16,
-            'stock' => 50,
-            'stock_minimo' => 5,
-            'activo' => true,
-        ]);
-
-        // Clientes
-        Cliente::create([
-            'empresa_id' => $empresaId,
-            'nombre' => 'Cliente Genérico',
-            'email' => 'cliente@test.com',
-            'telefono' => '555-0000',
-            'direccion' => 'Calle Principal 123',
-            'activo' => true,
-        ]);
-
-        // Impuestos
-        Impuesto::create([
-            'empresa_id' => $empresaId,
-            'nombre' => 'IVA General',
-            'porcentaje' => 16,
-            'activo' => true,
-        ]);
-
-        // Formas de pago
-        $formas = ['Efectivo', 'Tarjeta de Crédito', 'Tarjeta de Débito', 'Transferencia', 'Mercado Pago'];
-        foreach ($formas as $nombre) {
-            FormaPago::create([
-                'empresa_id' => $empresaId,
-                'nombre' => $nombre,
-                'activo' => true,
-            ]);
+        if (!$empresa) {
+            $this->command->error('❌ Ejecuta EmpresaSeeder primero.');
+            return;
         }
+
+        $categorias = [
+            ['nombre' => 'Bebidas',        'icono' => '☕', 'color' => '#3B82F6'],
+            ['nombre' => 'Alimentos',      'icono' => '🍔', 'color' => '#10B981'],
+            ['nombre' => 'Postres',        'icono' => '🍰', 'color' => '#EC4899'],
+            ['nombre' => 'Snacks',         'icono' => '🍿', 'color' => '#F59E0B'],
+            ['nombre' => 'Pollo',          'icono' => '🍗', 'color' => '#EF4444'],
+            ['nombre' => 'Bebidas Frías',  'icono' => '🧊', 'color' => '#06B6D4'],
+        ];
+
+        foreach ($categorias as $cat) {
+            Categoria::firstOrCreate(
+                [
+                    'nombre' => $cat['nombre'],
+                    'empresa_id' => $empresa->id,
+                ],
+                array_merge($cat, [
+                    'empresa_id' => $empresa->id,
+                    'activo' => true,
+                ])
+            );
+        }
+
+        $this->command->info('✅ Categorías creadas.');
     }
 }

@@ -12,6 +12,7 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('empresa_id');
             $table->string('nombre');
+            $table->string('codigo')->nullable();
             $table->boolean('activo')->default(true);
             $table->timestamps();
 

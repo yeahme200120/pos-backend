@@ -9,22 +9,27 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('clientes', function (Blueprint $table) {
-             $table->id();
+            $table->id();
             $table->unsignedBigInteger('empresa_id');
+
             $table->string('nombre');
             $table->string('email')->nullable();
             $table->string('telefono')->nullable();
             $table->text('direccion')->nullable();
             $table->string('rfc')->nullable();
+
             $table->string('codigo_postal')->nullable();
             $table->string('ciudad')->nullable();
             $table->string('estado')->nullable();
+
             $table->string('tipo')->default('particular');
             $table->decimal('limite_credito', 10, 2)->default(0);
             $table->decimal('saldo_pendiente', 10, 2)->default(0);
+
             $table->text('notas')->nullable();
             $table->timestamp('ultima_compra')->nullable();
             $table->boolean('activo')->default(true);
+
             $table->softDeletes();
             $table->timestamps();
 

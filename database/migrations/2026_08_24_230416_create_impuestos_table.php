@@ -12,7 +12,7 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('empresa_id');
             $table->string('nombre');
-            $table->decimal('valor', 5, 2);
+            $table->decimal('valor', 5, 2)->default(0);
             $table->boolean('activo')->default(true);
             $table->timestamps();
 

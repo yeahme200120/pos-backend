@@ -2,9 +2,9 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Seeder;
-use App\Models\FormaPago;
 use App\Models\Empresa;
+use App\Models\FormaPago;
+use Illuminate\Database\Seeder;
 
 class FormaPagoSeeder extends Seeder
 {
@@ -17,12 +17,23 @@ class FormaPagoSeeder extends Seeder
             return;
         }
 
-        $formas = ['Efectivo', 'Tarjeta Crédito', 'Tarjeta Débito', 'Transferencia'];
+        $formas = [
+            'Efectivo',
+            'Tarjeta Crédito',
+            'Tarjeta Débito',
+            'Transferencia',
+        ];
 
         foreach ($formas as $nombre) {
             FormaPago::firstOrCreate(
-                ['nombre' => $nombre, 'empresa_id' => $empresa->id],
-                ['activo' => true]
+                [
+                    'nombre' => $nombre,
+                    'empresa_id' => $empresa->id,
+                ],
+                [
+                    'empresa_id' => $empresa->id,
+                    'activo' => true,
+                ]
             );
         }
 

@@ -430,12 +430,14 @@ class AuthController extends Controller
             'token_type' =>
             'Bearer',
 
-            // CORREGIDO: la spec espera requiere_cambio_password
-            // DENTRO de "user". Se anida y se conserva también en
-            // la raíz por compatibilidad con clientes existentes.
             'user' => array_merge($userData, [
                 'requiere_cambio_password' =>
                 (bool) $user->requiere_cambio_password,
+
+                // ✅ T&C
+                'terminos_aceptados' => (bool) $user->terminos_aceptados,
+                'terminos_version' => $user->terminos_version,
+                'terminos_aceptados_at' => $user->terminos_aceptados_at?->toIso8601String(),
             ]),
 
             'requiere_cambio_password' =>
@@ -535,6 +537,11 @@ class AuthController extends Controller
             'rol',
             'activo',
         ]);
+
+        // ✅ T&C
+        $userData['terminos_aceptados'] = (bool) $user->terminos_aceptados;
+        $userData['terminos_version'] = $user->terminos_version;
+        $userData['terminos_aceptados_at'] = $user->terminos_aceptados_at?->toIso8601String();
 
         return response()->json([
             'success' => true,
@@ -1209,5 +1216,63 @@ class AuthController extends Controller
         return json_last_error() === JSON_ERROR_NONE
             ? $decoded
             : $value;
+    }
+    /**
+     * Registrar la aceptación de T&C por parte del usuario autenticado.
+     *
+     * Se usa:
+     *   • Para usuarios existentes que aún no habían aceptado.
+     *   • Para forzar re-aceptación cuando actualizas los T&C.
+     */
+    public function aceptarTerminos(Request $request)
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'error' => 'UNAUTHENTICATED',
+                'message' => 'Usuario no autenticado.',
+            ], 401);
+        }
+
+        $data = $request->validate([
+            'terminos_version' => ['required', 'string', 'max:50'],
+        ]);
+
+        $terminosVersion = trim($data['terminos_version']);
+        $terminosAceptadosAt = now();
+
+        $user->forceFill([
+            'terminos_aceptados' => true,
+            'terminos_version' => $terminosVersion,
+            'terminos_aceptados_at' => $terminosAceptadosAt,
+        ])->save();
+
+        app(AuditoriaService::class)->registrar(
+            $request,
+            'terminos.aceptados',
+            'users',
+            $user->id,
+            null,
+            [
+                'terminos_version' => $terminosVersion,
+                'terminos_aceptados_at' => $terminosAceptadosAt->toIso8601String(),
+                'ip' => $request->ip(),
+                'user_agent' => substr((string) $request->userAgent(), 0, 255),
+            ],
+            $user->empresa_id,
+            $user->id
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Términos aceptados correctamente.',
+            'terminos' => [
+                'aceptados' => true,
+                'version' => $terminosVersion,
+                'aceptados_at' => $terminosAceptadosAt->toIso8601String(),
+            ],
+        ]);
     }
 }

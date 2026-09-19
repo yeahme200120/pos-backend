@@ -11,55 +11,48 @@ return new class extends Migration
         Schema::create('empresas', function (Blueprint $table) {
             $table->id();
 
-            // ==========================================
-            // DATOS GENERALES DE LA EMPRESA
-            // ==========================================
+            // ---------------------------------------------
+            // DATOS GENERALES
+            // ---------------------------------------------
             $table->string('nombre');
             $table->string('logo')->nullable();
 
-            // ==========================================
-            // IDENTIDAD / DATOS FISCALES
-            // ==========================================
+            // ---------------------------------------------
+            // IDENTIDAD FISCAL
+            // ---------------------------------------------
             $table->string('rfc')->nullable();
             $table->string('razon_social')->nullable();
 
-            // ==========================================
-            // DATOS DE CONTACTO
-            // ==========================================
+            // ---------------------------------------------
+            // CONTACTO
+            // ---------------------------------------------
             $table->string('direccion')->nullable();
             $table->string('telefono')->nullable();
             $table->string('email_contacto')->nullable();
 
-            // ==========================================
-            // CONFIGURACIÓN VISUAL
-            // ==========================================
+            // ---------------------------------------------
+            // CONFIGURACIÓN
+            // ---------------------------------------------
             $table->json('colores')->nullable();
-
-            // ==========================================
-            // CONFIGURACIÓN GENERAL DEL POS
-            // ==========================================
             $table->json('configuracion')->nullable();
-
-            // ==========================================
-            // CONFIGURACIÓN DEL TICKET
-            // ==========================================
             $table->text('leyenda_ticket')->nullable();
 
-            // ==========================================
+            // ---------------------------------------------
             // WHATSAPP
-            // ==========================================
+            // ---------------------------------------------
             $table->string('whatsapp_numero')->nullable();
             $table->string('whatsapp_mensaje_default')->nullable();
 
-            // ==========================================
-            // ESTADO DE LA EMPRESA
-            // ==========================================
+            // ---------------------------------------------
+            // ESTADO
+            // ---------------------------------------------
             $table->boolean('activo')->default(true);
 
-            // ==========================================
-            // LICENCIA DE LA EMPRESA
-            // ==========================================
+            // ---------------------------------------------
+            // LICENCIA
+            // ---------------------------------------------
             $table->enum('licencia_tipo', [
+                'prueba',
                 'dia',
                 'semana',
                 'quincena',
@@ -72,28 +65,16 @@ return new class extends Migration
             ])->nullable();
 
             $table->timestamp('licencia_fecha_inicio')->nullable();
-
             $table->timestamp('licencia_fecha_fin')->nullable();
+            $table->boolean('licencia_activa')->default(true);
+            $table->timestamp('licencia_ultima_validacion')->nullable();
 
-            $table->boolean('licencia_activa')
-                ->default(true);
-
-            $table->timestamp('licencia_ultima_validacion')
-                ->nullable();
-
-            // ==========================================
-            // MARCAS DE TIEMPO
-            // ==========================================
+            $table->softDeletes();
             $table->timestamps();
 
-            // ==========================================
-            // ELIMINACIÓN LÓGICA
-            // ==========================================
-            $table->softDeletes();
-
-            // ==========================================
+            // ---------------------------------------------
             // ÍNDICES
-            // ==========================================
+            // ---------------------------------------------
             $table->index('rfc');
             $table->index('activo');
             $table->index('licencia_tipo');

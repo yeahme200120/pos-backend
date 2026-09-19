@@ -2,9 +2,9 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Seeder;
 use App\Models\ConfiguracionTicket;
 use App\Models\Empresa;
+use Illuminate\Database\Seeder;
 
 class ConfiguracionTicketSeeder extends Seeder
 {
@@ -27,16 +27,22 @@ class ConfiguracionTicketSeeder extends Seeder
                 'mostrar_logo' => true,
                 'mostrar_qr' => true,
                 'qr_contenido' => 'https://miempresa.com',
-                'campos' => json_encode([
+
+                // ✅ FIX: pasar array directo.
+                // El modelo ya tiene casts => ['campos' => 'array'],
+                // así que Laravel lo codifica solo. NO usar json_encode().
+                'campos' => [
                     ['nombre' => 'nombre_negocio', 'visible' => true, 'orden' => 1],
-                    ['nombre' => 'direccion', 'visible' => true, 'orden' => 2],
-                    ['nombre' => 'telefono', 'visible' => true, 'orden' => 3],
-                    ['nombre' => 'fecha', 'visible' => true, 'orden' => 4],
-                    ['nombre' => 'productos', 'visible' => true, 'orden' => 5],
-                    ['nombre' => 'total', 'visible' => true, 'orden' => 6],
-                ]),
+                    ['nombre' => 'direccion',      'visible' => true, 'orden' => 2],
+                    ['nombre' => 'telefono',       'visible' => true, 'orden' => 3],
+                    ['nombre' => 'fecha',          'visible' => true, 'orden' => 4],
+                    ['nombre' => 'productos',      'visible' => true, 'orden' => 5],
+                    ['nombre' => 'total',          'visible' => true, 'orden' => 6],
+                ],
+
                 'cabecera' => '¡Gracias por su compra!',
                 'pie_pagina' => 'Visítenos en www.miempresa.com',
+                'activo' => true,
             ]
         );
 

@@ -20,7 +20,20 @@ class RegistroPrueba extends Model
         'user_id',
         'estado',
         'razon_rechazo',
+         // ✅ T&C — evidencia completa del consentimiento
+        'terminos_aceptados',
+        'terminos_version',
+        'terminos_aceptados_at',
+        'terminos_ip',
+        'terminos_user_agent',
     ];
+     protected function casts(): array
+    {
+        return [
+            'terminos_aceptados' => 'boolean',
+            'terminos_aceptados_at' => 'datetime',
+        ];
+    }
 
     public function empresa()
     {

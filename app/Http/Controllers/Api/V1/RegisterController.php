@@ -20,22 +20,23 @@ class RegisterController extends Controller
 {
     private const DIAS_PRUEBA = 7;
 
+    /**
+     * Versión vigente del texto legal.
+     *
+     * Si actualizas los T&C, cambia esta constante Y la de
+     * App\Models\User::VERSION_TERMINOS.
+     */
+    private const VERSION_TERMINOS = '2026-09-19';
+
     public function __construct(
         private readonly AuditoriaService $auditoriaService
     ) {}
 
-    /**
-     * Genera una contraseña aleatoria legible:
-     *   - 12 caracteres
-     *   - Al menos 1 mayúscula, 1 minúscula, 1 número
-     *   - Sin símbolos (fácil de copiar a mano)
-     *   - Sin caracteres ambiguos (O/0, I/l/1)
-     */
     private function generarPasswordAleatoria(): string
     {
-        $mayusculas = 'ABCDEFGHJKLMNPQRSTUVWXYZ';   // sin I, O
-        $minusculas = 'abcdefghijkmnopqrstuvwxyz';  // sin l
-        $numeros    = '23456789';                    // sin 0, 1
+        $mayusculas = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+        $minusculas = 'abcdefghijkmnopqrstuvwxyz';
+        $numeros    = '23456789';
 
         $password = [
             $mayusculas[random_int(0, strlen($mayusculas) - 1)],
@@ -54,11 +55,6 @@ class RegisterController extends Controller
         return implode('', $password);
     }
 
-    /**
-     * Registrar una nueva empresa con licencia de prueba.
-     *
-     * SOLO desde la app móvil.
-     */
     public function register(Request $request)
     {
         // ----------------------------------------------------------
@@ -87,11 +83,16 @@ class RegisterController extends Controller
             'telefono' => ['nullable', 'string', 'max:20'],
             'mac_address' => ['required', 'string', 'max:45'],
             'rfc' => ['nullable', 'string', 'max:20'],
-            // 🆕 UBICACIÓN (opcional, validada si viene)
+
+            // 🆕 UBICACIÓN (opcional)
             'latitud' => ['nullable', 'numeric', 'between:-90,90'],
             'longitud' => ['nullable', 'numeric', 'between:-180,180'],
             'precision_metros' => ['nullable', 'numeric', 'min:0', 'max:10000'],
             'ubicacion_provider' => ['nullable', 'string', 'max:30'],
+
+            // ✅ T&C — obligatorios
+            'terminos_aceptados' => ['required', 'accepted'],
+            'terminos_version' => ['required', 'string', 'max:50'],
         ]);
 
         $email = strtolower(trim($data['email']));
@@ -164,14 +165,6 @@ class RegisterController extends Controller
         // ----------------------------------------------------------
         // VERIFICAR QUE LA EMPRESA NO TENGA YA UN USUARIO
         // ----------------------------------------------------------
-        // Regla de negocio (spec §1.2 y §2):
-        //   Desde la app solo se permite 1 usuario por empresa.
-        //
-        // NOTA: Si la empresa no existía (validación anterior),
-        // esta condición nunca puede cumplirse hoy. Se conserva
-        // por defensa en profundidad para el día en que se permita
-        // registrar sobre empresas existentes.
-        // ----------------------------------------------------------
         $empresaExistente = Empresa::withTrashed()
             ->whereRaw('LOWER(nombre) = ?', [strtolower($empresaNombre)])
             ->first();
@@ -240,10 +233,20 @@ class RegisterController extends Controller
         // ----------------------------------------------------------
         // CONTRASEÑA ALEATORIA
         // ----------------------------------------------------------
-        // La contraseña se genera aquí y se guarda hasheada en el
-        // usuario. Se devuelve en texto plano SOLO en esta respuesta
-        // para que el usuario pueda guardarla.
         $passwordPlano = $this->generarPasswordAleatoria();
+
+        // ----------------------------------------------------------
+        // ✅ T&C: preparar evidencia del consentimiento
+        // ----------------------------------------------------------
+        $terminosAceptados = (bool) $data['terminos_aceptados'];
+        $terminosVersion = trim($data['terminos_version']);
+        $terminosAceptadosAt = now();
+        $terminosIp = $ip;
+        $terminosUserAgent = substr(
+            (string) $request->userAgent(),
+            0,
+            255
+        );
 
         // ----------------------------------------------------------
         // CREAR TODO EN UNA TRANSACCIÓN
@@ -255,7 +258,12 @@ class RegisterController extends Controller
                 $mac,
                 $empresaNombre,
                 $ip,
-                $passwordPlano
+                $passwordPlano,
+                $terminosAceptados,
+                $terminosVersion,
+                $terminosAceptadosAt,
+                $terminosIp,
+                $terminosUserAgent
             ) {
                 // ----------------------------------------------
                 // EMPRESA
@@ -307,10 +315,15 @@ class RegisterController extends Controller
                     'mac_vinculada' => true,
                     'origen_registro' => 'app',
                     'requiere_cambio_password' => true,
+
+                    // ✅ T&C
+                    'terminos_aceptados' => $terminosAceptados,
+                    'terminos_version' => $terminosVersion,
+                    'terminos_aceptados_at' => $terminosAceptadosAt,
                 ]);
 
                 // ----------------------------------------------
-                // REGISTRO DE PRUEBA (anti-abuso)
+                // REGISTRO DE PRUEBA (anti-abuso + T&C)
                 // ----------------------------------------------
                 RegistroPrueba::create([
                     'email' => $email,
@@ -320,6 +333,13 @@ class RegisterController extends Controller
                     'empresa_id' => $empresa->id,
                     'user_id' => $user->id,
                     'estado' => 'aprobado',
+
+                    // ✅ T&C — evidencia completa
+                    'terminos_aceptados' => $terminosAceptados,
+                    'terminos_version' => $terminosVersion,
+                    'terminos_aceptados_at' => $terminosAceptadosAt,
+                    'terminos_ip' => $terminosIp,
+                    'terminos_user_agent' => $terminosUserAgent,
                 ]);
 
                 return [
@@ -357,6 +377,8 @@ class RegisterController extends Controller
                     'ip' => $ip,
                     'licencia_tipo' => 'semana',
                     'licencia_fin' => $empresa->licencia_fecha_fin?->toISOString(),
+                    'terminos_version' => $terminosVersion,
+                    'terminos_aceptados_at' => $terminosAceptadosAt->toIso8601String(),
                 ],
                 $empresa->id,
                 $user->id
@@ -367,6 +389,7 @@ class RegisterController extends Controller
                 'user_id' => $user->id,
                 'numero_usuario' => $numeroUsuario,
                 'mac' => $mac,
+                'terminos_version' => $terminosVersion,
             ]);
 
             // ----------------------------------------------
@@ -385,6 +408,11 @@ class RegisterController extends Controller
                     'rol' => $user->rol,
                     'activo' => (bool) $user->activo,
                     'requiere_cambio_password' => true,
+
+                    // ✅ T&C
+                    'terminos_aceptados' => (bool) $user->terminos_aceptados,
+                    'terminos_version' => $user->terminos_version,
+                    'terminos_aceptados_at' => $user->terminos_aceptados_at?->toIso8601String(),
                 ],
                 'empresa' => [
                     'id' => $empresa->id,
@@ -416,6 +444,11 @@ class RegisterController extends Controller
                         . 'Cópiala en un lugar seguro. '
                         . 'Debes cambiarla desde Configuración → Usuario.',
                 ],
+                'terminos' => [
+                    'aceptados' => true,
+                    'version' => $terminosVersion,
+                    'aceptados_at' => $terminosAceptadosAt->toIso8601String(),
+                ],
             ], 201);
         } catch (Throwable $e) {
             Log::error('Error al registrar prueba.', [
@@ -433,9 +466,6 @@ class RegisterController extends Controller
         }
     }
 
-    /**
-     * Verificar si un email está disponible.
-     */
     public function checkEmail(Request $request)
     {
         $data = $request->validate([
@@ -453,9 +483,6 @@ class RegisterController extends Controller
         ]);
     }
 
-    /**
-     * Verificar si una empresa está disponible.
-     */
     public function checkEmpresa(Request $request)
     {
         $data = $request->validate([

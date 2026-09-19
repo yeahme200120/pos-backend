@@ -13,17 +13,13 @@ return new class extends Migration
             $table->unsignedBigInteger('empresa_id');
             $table->string('nombre');
             $table->string('abreviatura')->nullable();
-            $table->enum('tipo', ['unidad', 'peso', 'volumen', 'longitud', 'servicio'])->default('unidad');
+            $table->string('tipo')->default('unidad');
             $table->boolean('fraccionable')->default(false);
             $table->decimal('factor_conversion', 10, 4)->default(1);
-            $table->unsignedBigInteger('unidad_base_id')->nullable();
             $table->boolean('activo')->default(true);
             $table->timestamps();
-            $table->softDeletes();
 
             $table->index('empresa_id');
-            $table->index(['empresa_id', 'tipo']);
-            $table->index('unidad_base_id');
         });
     }
 

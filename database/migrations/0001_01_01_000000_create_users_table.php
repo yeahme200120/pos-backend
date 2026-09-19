@@ -9,24 +9,62 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('users', function (Blueprint $table) {
-             $table->id();
+            $table->id();
+
+            // -------------------------------------------------
+            // IDENTIFICACIÓN
+            // -------------------------------------------------
             $table->bigInteger('numero_usuario')->unique()->nullable();
             $table->string('name');
             $table->string('email')->unique();
             $table->string('telefono')->nullable();
+
+            // -------------------------------------------------
+            // DISPOSITIVO (app móvil)
+            // -------------------------------------------------
+            $table->string('mac_address', 45)->nullable();
+            $table->boolean('mac_vinculada')->default(false);
+            $table->string('origen_registro', 20)->nullable();
+            $table->boolean('requiere_cambio_password')->default(false);
+
+            // -------------------------------------------------
+            // AUTENTICACIÓN
+            // -------------------------------------------------
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
+            $table->rememberToken();
+
+            // -------------------------------------------------
+            // EMPRESA Y ROL
+            // -------------------------------------------------
             $table->unsignedBigInteger('empresa_id')->nullable();
-            $table->enum('rol', ['superadmin', 'admin', 'cajero', 'vendedor'])->default('vendedor');
+            $table->enum('rol', ['superadmin', 'admin', 'cajero', 'vendedor'])
+                ->default('vendedor');
+
+            // -------------------------------------------------
+            // TÉRMINOS Y CONDICIONES
+            // -------------------------------------------------
+            $table->boolean('terminos_aceptados')->default(false);
+            $table->string('terminos_version', 50)->nullable();
+            $table->timestamp('terminos_aceptados_at')->nullable();
+
+            // -------------------------------------------------
+            // EXTRA
+            // -------------------------------------------------
             $table->string('logo')->nullable();
             $table->boolean('activo')->default(true);
-            $table->rememberToken();
+
             $table->softDeletes();
             $table->timestamps();
 
+            // -------------------------------------------------
+            // ÍNDICES
+            // -------------------------------------------------
             $table->index('empresa_id');
             $table->index('email');
             $table->index('numero_usuario');
+            $table->index('mac_address');
+            $table->index('origen_registro');
         });
     }
 

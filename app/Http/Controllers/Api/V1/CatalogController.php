@@ -157,11 +157,13 @@ class CatalogController extends Controller
                     $fechaSync
                 ),
 
-                'formas_pago' => $this->getCatalog(
-                    FormaPago::class,
-                    $empresaId,
-                    $fechaSync
-                ),
+                /*
+                 * Formas de pago: catálogo GLOBAL.
+                 *
+                 * No se filtra por empresa: se devuelven todas
+                 * las formas de pago registradas en el sistema.
+                 */
+                'formas_pago' => $this->getFormasPagoGlobales($fechaSync),
 
                 'unidades_medida' => $this->getCatalog(
                     UnidadMedida::class,
@@ -345,6 +347,36 @@ class CatalogController extends Controller
     }
 
     /**
+     * Obtener formas de pago globales.
+     *
+     * A diferencia de getCatalog, este método NO filtra por
+     * empresa.
+     *
+     * Las formas de pago son un catálogo compartido entre
+     * todas las empresas del sistema.
+     *
+     * @param string|null $fechaSync
+     *        Si tiene valor, solamente registros modificados
+     *        después de esa fecha.
+     */
+    private function getFormasPagoGlobales(?string $fechaSync)
+    {
+        $query = FormaPago::query();
+
+        /*
+         * Sin filtro por empresa: catálogo global.
+         */
+
+        if ($fechaSync !== null && trim($fechaSync) !== '') {
+            $query->where('updated_at', '>', $fechaSync);
+        }
+
+        return $query
+            ->orderBy('id')
+            ->get();
+    }
+
+    /**
      * Obtener las versiones de los catálogos.
      *
      * Todas las consultas están aisladas por empresa.
@@ -369,7 +401,6 @@ class CatalogController extends Controller
                 ->max('updated_at'),
 
             'formas_pago' => FormaPago::query()
-                ->where('empresa_id', $empresaId)
                 ->max('updated_at'),
 
             'unidades_medida' => UnidadMedida::query()
@@ -427,8 +458,17 @@ class CatalogController extends Controller
                 }
 
                 $query = $modelClass::withTrashed()
-                    ->where('empresa_id', $empresaId)
                     ->whereNotNull('deleted_at');
+
+                /*
+                 * FormaPago es un catálogo global: NO se filtra
+                 * por empresa.
+                 *
+                 * Todos los demás catálogos SÍ se filtran.
+                 */
+                if ($modelClass !== FormaPago::class) {
+                    $query->where('empresa_id', $empresaId);
+                }
 
                 if ($fechaSync !== null && trim($fechaSync) !== '') {
                     $query->where('deleted_at', '>', $fechaSync);

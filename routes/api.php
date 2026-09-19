@@ -114,6 +114,10 @@ Route::prefix('v1')->group(function () {
                 AdminController::class,
                 'eliminarUsuario',
             ]);
+            Route::post('/user/terminos/aceptar', [
+                AuthController::class,
+                'aceptarTerminos',
+            ]);
 
             /*
             |--------------------------------------------------------------------------
@@ -809,6 +813,5 @@ Route::prefix('v1')->group(function () {
             ClienteController::class,
             'destroy',
         ]);
-
     });
 });

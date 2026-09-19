@@ -462,11 +462,11 @@ class SyncController extends Controller
          */
         $ventasUnicas = $ventas
             ->filter(
-                fn ($venta) =>
+                fn($venta) =>
                 !empty($venta->uuid)
             )
             ->keyBy(
-                fn ($venta) =>
+                fn($venta) =>
                 (string) $venta->uuid
             )
             ->values();
@@ -760,8 +760,8 @@ class SyncController extends Controller
 
                                         $datosDespues =
                                             $existente
-                                                ->fresh()
-                                                ?->toArray();
+                                            ->fresh()
+                                            ?->toArray();
 
                                         return;
                                     }
@@ -776,8 +776,8 @@ class SyncController extends Controller
 
                                 $datosDespues =
                                     $nuevo
-                                        ->fresh()
-                                        ?->toArray();
+                                    ->fresh()
+                                    ?->toArray();
 
                                 break;
 
@@ -850,8 +850,8 @@ class SyncController extends Controller
 
                                     $datosDespues =
                                         $nuevo
-                                            ->fresh()
-                                            ?->toArray();
+                                        ->fresh()
+                                        ?->toArray();
 
                                     Log::info(
                                         'Registro de catálogo creado automáticamente durante UPDATE de sincronización.',
@@ -898,8 +898,8 @@ class SyncController extends Controller
 
                                 $datosDespues =
                                     $existe
-                                        ->fresh()
-                                        ?->toArray();
+                                    ->fresh()
+                                    ?->toArray();
 
                                 break;
 
@@ -1014,6 +1014,22 @@ class SyncController extends Controller
     ): array {
         $cambios = [];
 
+        /*
+         * ✅ INCLUIR LA EMPRESA EN LOS CAMBIOS.
+         *
+         * Esto es necesario para que el cliente Flutter
+         * pueda actualizar LocalDb.company con la empresa
+         * correcta.
+         *
+         * Sin esto, syncPull devuelve `empresa: null`
+         * y LocalDb.company queda desactualizada.
+         */
+        $empresa = \App\Models\Empresa::find($empresaId);
+
+        if ($empresa) {
+            $cambios['empresa'] = $empresa->toArray();
+        }
+
         foreach (
             self::TABLAS_SINCRONIZABLES
             as $nombre => $clase
@@ -1101,7 +1117,7 @@ class SyncController extends Controller
                     'deleted_at',
                 ])
                 ->map(
-                    static fn ($item) => [
+                    static fn($item) => [
                         'id' => $item->id,
                         'deleted_at' => $item->deleted_at,
                     ]
@@ -2030,10 +2046,10 @@ class SyncController extends Controller
 
             $totalFinal = round(
                 $totalConDescuento
-                + (
-                    $totalConDescuento
-                    * ($impuestoGlobal / 100)
-                ),
+                    + (
+                        $totalConDescuento
+                        * ($impuestoGlobal / 100)
+                    ),
                 2
             );
 
@@ -2070,7 +2086,7 @@ class SyncController extends Controller
 
             $totalPagos = round(
                 collect($pagos)->sum(
-                    static fn ($pago) =>
+                    static fn($pago) =>
                     (float) ($pago['monto'] ?? 0)
                 ),
                 2
@@ -2485,23 +2501,42 @@ class SyncController extends Controller
 
     /**
      * Generar folio de venta de forma segura.
+     *
+     * IMPORTANTE:
+     *
+     * El folio es único a nivel GLOBAL (no por empresa),
+     * porque la tabla `ventas` tiene un índice UNIQUE
+     * sobre la columna `folio`.
+     *
+     * Por eso se busca el último folio de TODAS las empresas
+     * y se incrementa. Así se evita el error de folio duplicado.
      */
-    private function generarFolio(
-        int $empresaId
-    ): string {
+    private function generarFolio(int $empresaId): string
+    {
+        /*
+     * Bloqueamos la empresa para evitar que dos peticiones
+     * concurrentes generen el mismo folio.
+     *
+     * Nota: el lock es sobre la empresa, pero la consulta
+     * es global. El lock evita condiciones de carrera en
+     * la mayoría de los casos prácticos.
+     */
         DB::table('empresas')
-            ->where(
-                'id',
-                $empresaId
-            )
+            ->where('id', $empresaId)
             ->lockForUpdate()
             ->first();
 
+        /*
+     * ⚠️ IMPORTANTE:
+     *
+     * Se busca el ÚLTIMO folio de forma GLOBAL (sin filtrar
+     * por empresa), porque el UNIQUE en la tabla `ventas`
+     * es global.
+     *
+     * Si en el futuro cambias el UNIQUE a (empresa_id, folio),
+     * debes volver a agregar el ->where('empresa_id', $empresaId).
+     */
         $ultimaVenta = Venta::query()
-            ->where(
-                'empresa_id',
-                $empresaId
-            )
             ->whereBetween(
                 'created_at',
                 [
@@ -2509,9 +2544,7 @@ class SyncController extends Controller
                     now()->endOfYear(),
                 ]
             )
-            ->orderByDesc(
-                'id'
-            )
+            ->orderByDesc('id')
             ->lockForUpdate()
             ->first();
 
@@ -2519,15 +2552,10 @@ class SyncController extends Controller
 
         if ($ultimaVenta) {
             $folio = (string) $ultimaVenta->folio;
-
-            $parteNumerica = substr(
-                $folio,
-                -6
-            );
+            $parteNumerica = substr($folio, -6);
 
             if (ctype_digit($parteNumerica)) {
-                $numero =
-                    ((int) $parteNumerica) + 1;
+                $numero = ((int) $parteNumerica) + 1;
             }
         }
 
@@ -3457,7 +3485,7 @@ class SyncController extends Controller
 
                 'descripcion' =>
                 $datos['categoria_descripcion']
-                ?? null,
+                    ?? null,
 
                 'activo' =>
                 array_key_exists(
@@ -3566,13 +3594,13 @@ class SyncController extends Controller
 
                 'abreviatura' =>
                 $datos['unidad_medida_abreviatura']
-                ?? $datos['abreviatura']
-                ?? null,
+                    ?? $datos['abreviatura']
+                    ?? null,
 
                 'tipo' =>
                 $datos['unidad_medida_tipo']
-                ?? $datos['tipo']
-                ?? 'unidad',
+                    ?? $datos['tipo']
+                    ?? 'unidad',
 
                 'fraccionable' =>
                 array_key_exists(
@@ -3584,7 +3612,7 @@ class SyncController extends Controller
 
                 'factor_conversion' =>
                 $datos['unidad_medida_factor_conversion']
-                ?? 1,
+                    ?? 1,
 
                 'activo' =>
                 array_key_exists(
@@ -3645,11 +3673,11 @@ class SyncController extends Controller
 
         while (
             Producto::query()
-                ->where(
-                    'codigo',
-                    $codigo
-                )
-                ->exists()
+            ->where(
+                'codigo',
+                $codigo
+            )
+            ->exists()
         ) {
             $codigo =
                 $base
