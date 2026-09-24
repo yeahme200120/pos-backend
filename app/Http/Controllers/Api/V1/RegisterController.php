@@ -275,7 +275,7 @@ class RegisterController extends Controller
                     'telefono' => $data['telefono'] ?? null,
                     'configuracion' => [
                         'cajas_activas' => true,
-                        'mesas_activas' => true,
+                        'mesas_activas' => false,
                     ],
                     'colores' => [
                         'primary' => '#1E293B',
